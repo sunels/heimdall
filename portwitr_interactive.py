@@ -13,6 +13,10 @@ KEY_SEP_UP = ord('+')
 KEY_SEP_DOWN = ord('-')
 KEY_TAB = 9
 
+# --------------------------------------------------
+# Checks
+# --------------------------------------------------
+
 def check_python_version():
     if sys.version_info < (3, 6):
         print("Python 3.6 or newer is required.")
@@ -24,11 +28,13 @@ def check_witr_exists():
         sys.exit(1)
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Interactive port/process viewer for Linux (requires 'witr')."
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument('--version', action='version', version='portwitr-interactive 1.0')
     return parser.parse_args()
+
+# --------------------------------------------------
+# Utils
+# --------------------------------------------------
 
 def strip_ansi(line):
     return re.sub(r'\x1b\[[0-9;]*m', '', line)
@@ -61,8 +67,6 @@ def parse_ss():
     return rows
 
 def get_witr_output(port):
-    if not port or not str(port).isdigit():
-        return ["Invalid port."]
     try:
         result = subprocess.run(
             ["sudo", "witr", "--port", str(port)],
@@ -71,59 +75,116 @@ def get_witr_output(port):
             text=True,
             timeout=3
         )
-        lines = result.stdout.splitlines()
-        lines = [strip_ansi(line) for line in lines if line.strip()]
-        if result.returncode != 0 or not lines:
-            err = result.stderr.strip()
-            if err:
-                lines.append(f"Failed to get witr output: {err}")
-            else:
-                lines.append("Failed to get witr output.")
-        return lines
+        lines = [strip_ansi(l) for l in result.stdout.splitlines() if l.strip()]
+        return lines if lines else ["No data"]
     except Exception as e:
-        return [f"Failed to get witr output: {e}"]
+        return [str(e)]
+
+def extract_user_from_witr(lines):
+    for l in lines:
+        m = re.search(r'User\s*:\s*(\S+)', l, re.I)
+        if m:
+            return m.group(1)
+    return "-"
+
+def extract_process_from_witr(lines):
+    for l in lines:
+        m = re.search(r'Process\s*:\s*(.+)', l, re.I)
+        if m:
+            return m.group(1)
+    return "-"
 
 def get_open_files(pid):
     files = []
-    if not pid or not str(pid).isdigit():
+    if not pid or not pid.isdigit():
         return files
     fd_dir = f"/proc/{pid}/fd"
-    if not os.path.isdir(fd_dir):
-        return files
     try:
+        if not os.path.isdir(fd_dir):
+            return files
         for fd in sorted(os.listdir(fd_dir), key=lambda x: int(x)):
             try:
                 path = os.readlink(os.path.join(fd_dir, fd))
                 files.append((fd, path))
-            except Exception:
+            except PermissionError:
+                files.append((fd, "Permission denied"))
+            except OSError:
                 continue
-    except Exception:
-        pass
+    except PermissionError:
+        files.append(("-", "Permission denied (run as root to view)"))
     return files
 
-def draw_table(win, rows, selected, offset):
+# --------------------------------------------------
+# Splash Screen
+# --------------------------------------------------
+
+def splash_screen(stdscr, rows, cache):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 9, min(72, w - 4)
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    total = len(rows)
+
+    for i, row in enumerate(rows, 1):
+        port = row[0]
+        win.erase()
+        win.box()
+        title = " Initializing Port / Process Viewer "
+        win.addstr(0, (bw - len(title)) // 2, title, curses.A_BOLD)
+        win.addstr(2, 3, "Collecting data...")
+        win.addstr(4, 3, f"Port: {port}")
+
+        bar_w = bw - 10
+        filled = int(bar_w * i / total)
+        bar = "█" * filled + " " * (bar_w - filled)
+        win.addstr(6, 4, f"[{bar}]")
+        win.addstr(7, bw - 12, f"{i}/{total}")
+        win.refresh()
+
+        lines = get_witr_output(port)
+        cache[port] = {
+            "user": extract_user_from_witr(lines),
+            "process": extract_process_from_witr(lines),
+            "lines": lines,
+            "wrapped": []
+        }
+
+    win.erase()
+    win.box()
+    done = " Initialization Complete "
+    win.addstr(bh // 2, (bw - len(done)) // 2, done, curses.A_BOLD)
+    win.refresh()
+    time.sleep(0.8)
+    stdscr.clear()
+    stdscr.refresh()
+
+# --------------------------------------------------
+# UI Draw
+# --------------------------------------------------
+
+def draw_table(win, rows, selected, offset, cache):
     win.erase()
     h, w = win.getmaxyx()
-    headers = ["PORT", "PROTOCOL", "PID/PROGRAM", "TARGET"]
-    widths = [8, 12, 24, w - 46]
+    headers = ["PORT", "PROTO", "PROCESS", "USER"]
+    widths = [8, 8, 32, w - 50]
     x = 1
-    for i, hdr in enumerate(headers):
-        win.addstr(1, x, hdr.ljust(widths[i]), curses.A_BOLD)
-        x += widths[i]
+    for htxt, wd in zip(headers, widths):
+        win.addstr(1, x, htxt.ljust(wd), curses.A_BOLD)
+        x += wd
     win.hline(2, 1, curses.ACS_HLINE, w - 2)
-    max_rows = h - 4
-    for i in range(max_rows):
+    for i in range(h - 4):
         idx = offset + i
         if idx >= len(rows):
-            continue
+            break
         attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+        port, proto = rows[idx][0], rows[idx][1]
+        proc = cache.get(port, {}).get("process", "-")
+        user = cache.get(port, {}).get("user", "-")
+        data = [port, proto, proc, user]
         x = 1
-        for col, width in zip(rows[idx][:4], widths):
-            val = str(col)
-            if len(val) > width:
-                val = val[:width-1] + "…"
-            win.addstr(i + 3, x, val.ljust(width), attr)
-            x += width
+        for val, wd in zip(data, widths):
+            win.addstr(i + 3, x, val[:wd].ljust(wd), attr)
+            x += wd
     win.box()
     win.noutrefresh()
 
@@ -144,24 +205,21 @@ def draw_open_files(win, pid, prog, files, scroll=0):
     win.box()
     win.noutrefresh()
 
-def draw_detail(win, wrapped_lines, scroll=0):
+def draw_detail(win, lines, scroll=0):
     win.erase()
-    h, w = win.getmaxyx()
-    total_lines = len(wrapped_lines)
-    visible_lines = wrapped_lines[scroll:scroll + h - 2]
-    for i, line in enumerate(visible_lines):
-        if i + 1 < h - 1:
-            win.addstr(i + 1, 2, line)
     win.box()
+    h, w = win.getmaxyx()
+    for i, line in enumerate(lines[scroll:scroll + h - 2]):
+        win.addstr(i + 1, 2, line)
     win.noutrefresh()
-    return total_lines
+    return len(lines)
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
     if show_detail:
-        help_text = " [↑/↓] Scroll   [Tab] Netstat Table   [q] Quit "
+        help_text = " [↑/↓] Scroll   [Tab] Maximize/Restore Witr Pane   [q] Quit "
     else:
-        help_text = " [↑/↓] Select   [+/-] Resize   [r] Refresh   [Tab] Switch View   [→/←] Open Files Scroll   [s] Stop Proc/Service   [q] Quit "
+        help_text = " [↑/↓] Select   [+/-] Resize   [r] Refresh   [Tab] Maximize/Restore Witr Pane   [→/←] Open Files Scroll   [s] Stop Proc/Service   [q] Quit "
     bar_win = curses.newwin(3, w, h - 3, 0)
     bar_win.erase()
     bar_win.box()
@@ -230,18 +288,24 @@ def stop_process_or_service(pid, prog, stdscr):
     stdscr.getch()
     stdscr.timeout(-1)
 
+# --------------------------------------------------
+# Main Loop
+# --------------------------------------------------
+
 def main(stdscr):
     curses.curs_set(0)
     stdscr.keypad(True)
 
     rows = parse_ss()
+    cache = {}
+    splash_screen(stdscr, rows, cache)
+
     selected = 0 if rows else -1
     offset = 0
     table_h = max(6, (curses.LINES - 3) // 2)
     show_detail = False
     detail_scroll = 0
     open_files_scroll = 0
-
     cached_port = None
     cached_wrapped_lines = []
     cached_total_lines = 0
@@ -250,49 +314,55 @@ def main(stdscr):
         h, w = stdscr.getmaxyx()
         max_h = h - 3 - 2
         min_h = 6
-
-        max_rows = table_h - 4
-        visible = max_rows
+        visible_rows = table_h - 4
 
         if not show_detail and rows:
-            table_panel = curses.newwin(table_h, w // 2, 0, 0)
-            draw_table(table_panel, rows, selected, offset)
-            open_files_panel = curses.newwin(table_h, w - w // 2, 0, w // 2)
+            table_win = curses.newwin(table_h, w // 2, 0, 0)
+            draw_table(table_win, rows, selected, offset, cache)
+
+            open_files_win = curses.newwin(table_h, w - w // 2, 0, w // 2)
             pid = rows[selected][4] if selected >= 0 else "-"
             prog = rows[selected][3] if selected >= 0 else "-"
             files = get_open_files(pid)
-            draw_open_files(open_files_panel, pid, prog, files, scroll=open_files_scroll)
-            detail = curses.newwin(h - table_h - 3, w, table_h, 0)
+            draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll)
+
+            detail_win = curses.newwin(h - table_h - 3, w, table_h, 0)
             if selected >= 0 and rows:
                 port = rows[selected][0]
                 if cached_port != port:
                     cached_port = port
                     lines = get_witr_output(port)
                     wrapped = []
-                    for line in lines:
-                        wrapped += textwrap.wrap(line, width=w-4) or [""]
+                    for l in lines:
+                        wrapped += textwrap.wrap(l, width=w - 4) or [""]
                     cached_wrapped_lines = wrapped
                     cached_total_lines = len(wrapped)
-                draw_detail(detail, cached_wrapped_lines, scroll=detail_scroll)
+                draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll)
             else:
-                draw_detail(detail, [], scroll=0)
-            draw_help_bar(stdscr, show_detail)
-            total_detail_lines = cached_total_lines
-        elif show_detail:
-            detail = curses.newwin(h - 3, w, 0, 0)
-            draw_detail(detail, cached_wrapped_lines, scroll=detail_scroll)
-            draw_help_bar(stdscr, show_detail)
-            total_detail_lines = cached_total_lines
-        curses.doupdate()
+                draw_detail(detail_win, [], scroll=0)
 
+            draw_help_bar(stdscr, show_detail)
+            total_detail_lines = cached_total_lines
+
+        elif show_detail:
+            detail_win = curses.newwin(h - 3, w, 0, 0)
+            draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll)
+            draw_help_bar(stdscr, show_detail)
+            total_detail_lines = cached_total_lines
+
+        curses.doupdate()
         k = stdscr.getch()
 
+        # -----------------
+        # Key handling
+        # -----------------
         if k == ord('q'):
             break
-        elif show_detail:
+
+        if show_detail:
             if k == curses.KEY_UP and detail_scroll > 0:
                 detail_scroll -= 1
-            elif k == curses.KEY_DOWN and total_detail_lines > 0 and detail_scroll < total_detail_lines - (h - 3 - 2):
+            elif k == curses.KEY_DOWN and detail_scroll < max(0, total_detail_lines - (h - 3)):
                 detail_scroll += 1
             elif k == KEY_TAB:
                 show_detail = False
@@ -308,13 +378,15 @@ def main(stdscr):
                 table_h -= 1
             elif k == ord('r'):
                 rows = parse_ss()
-                if rows:
-                    selected = 0
-                    offset = 0
+                cache.clear()
+                splash_screen(stdscr, rows, cache)
+                if selected >= len(rows):
+                    selected = len(rows) - 1
+                offset = 0
             elif k == KEY_TAB:
                 show_detail = True
                 detail_scroll = 0
-            elif k == curses.KEY_RIGHT and open_files_scroll < max(0, len(get_open_files(rows[selected][4])) - (table_h - 4)):
+            elif k == curses.KEY_RIGHT:
                 open_files_scroll += 1
             elif k == curses.KEY_LEFT and open_files_scroll > 0:
                 open_files_scroll -= 1
@@ -324,15 +396,17 @@ def main(stdscr):
                 if confirm:
                     stop_process_or_service(pid, prog, stdscr)
                     rows = parse_ss()
+                    cache.clear()
+                    splash_screen(stdscr, rows, cache)
                     if selected >= len(rows):
                         selected = len(rows) - 1
-                    if selected < 0 and rows:
-                        selected = 0
+
+            # Scroll offset for port list
             if selected >= len(rows):
                 selected = len(rows) - 1
             if selected < 0 and rows:
                 selected = 0
-            offset = min(max(selected - (visible // 2), 0), max(0, len(rows) - visible))
+            offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
 
 if __name__ == "__main__":
     check_python_version()
