@@ -8,6 +8,7 @@ import os
 import time
 import argparse
 from shutil import which
+from collections import Counter
 
 KEY_SEP_UP = ord('+')
 KEY_SEP_DOWN = ord('-')
@@ -29,7 +30,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='portwitr-interactive 2.0')
+    parser.add_argument('--version', action='version', version='portwitr-interactive 2.1')
     return parser.parse_args()
 
 # --------------------------------------------------
@@ -144,6 +145,54 @@ def get_process_usage(pid):
         return f"{mem}/{cpu}%"
     except Exception:
         return "-"
+
+# --------------------------------------------------
+# Connection Visibility
+# --------------------------------------------------
+# --------------------------------------------------
+# Connection Visibility (Güncel)
+# --------------------------------------------------
+def get_connections_info(port):
+    """Return dict with active connections and top IPs"""
+    try:
+        # ESTABLISHED bağlantıları al
+        result = subprocess.run(
+            ["ss", "-ntu", "state", "established", f"( dport = :{port} or sport = :{port} )"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        lines = result.stdout.strip().splitlines()[1:]  # skip header
+
+        unique_connections = set()  # IP:PORT bazlı tekil bağlantı
+        ips = []
+
+        for l in lines:
+            parts = l.split()
+            if len(parts) >= 5:
+                raddr = parts[4]
+                # Tekil bağlantı
+                if raddr not in unique_connections:
+                    unique_connections.add(raddr)
+                    ip = raddr.rsplit(":", 1)[0]
+                    ips.append(ip)
+
+        counter = Counter(ips)
+        top_ip = counter.most_common(1)[0] if counter else ("-", 0)
+        return {
+            "active_connections": len(unique_connections),
+            "top_ip": top_ip[0],
+            "top_ip_count": top_ip[1],
+            "all_ips": counter
+        }
+
+    except Exception:
+        return {
+            "active_connections": 0,
+            "top_ip": "-",
+            "top_ip_count": 0,
+            "all_ips": {}
+        }
 
 # --------------------------------------------------
 # Splash Screen
@@ -292,18 +341,12 @@ def show_message(stdscr, msg, duration=1.5):
 # --------------------------------------------------
 # UI Draw
 # --------------------------------------------------
-# --------------------------------------------------
-# UI Draw (Güncellenmiş)
-# --------------------------------------------------
-# --------------------------------------------------
-# UI Draw (Düzeltilmiş)
-# --------------------------------------------------
 def draw_table(win, rows, selected, offset, cache, firewall_status):
     win.erase()
     h, w = win.getmaxyx()
     # Header
     headers = ["🌐 PORT", "PROTO", "📊 USAGE [Mem/CPU]", "🧠 PROCESS", "👤 USER"]
-    widths = [10, 8, 18, 28, w - 68]  # PORT-PROTO arası boşluk artırıldı, PROCESS-USER arası azaltıldı
+    widths = [10, 8, 18, 28, w - 68]
     x = 1
     for htxt, wd in zip(headers, widths):
         win.addstr(1, x, htxt.ljust(wd), curses.A_BOLD)
@@ -318,9 +361,7 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
         port, proto, pidprog, prog, pid = rows[idx]
         usage = get_process_usage(pid)
         user = cache.get(port, {}).get("user", "-")
-        # Process ikon seçimi: root vs normal
         proc_icon = "👑" if user=="root" else "🧑"
-        # TCP/UDP ikon sadece PROTO header altında
         fw_icon = "⚡" if firewall_status.get(port, True) else "⛔"
         data = [f"{fw_icon} {port}", proto.upper(), usage, f"{proc_icon} {prog}", f"👤 {user}"]
         x = 1
@@ -330,7 +371,7 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
     win.box()
     win.noutrefresh()
 
-def draw_detail(win, lines, scroll=0):
+def draw_detail(win, lines, scroll=0, conn_info=None):
     win.erase()
     h, w = win.getmaxyx()
     header = f"📝 Detail View — {len(lines)} lines"
@@ -338,36 +379,30 @@ def draw_detail(win, lines, scroll=0):
     win.hline(2, 1, curses.ACS_HLINE, w - 2)
     max_rows = h - 4
 
-    # ikon eşlemesi
-    icons = {
-        "Target": "🎯",
-        "Container": "🐳",
-        "Command": "🧠",
-        "Started": "⏱ ",
-        "Why it Exists": "🧠",
-        "Source": "📦",
-        "Working Dir": "🗂 ",
-        "Listening": "👂",
-        "Socket": "🔌",
-        "Warnings": "⚠️ ",
-        "PID": "🆔",
-        "User": "👤",
-        "Process": "🧠"
-    }
+    # Connection panel
+    conn_panel_w = max(30, w//2)
+    conn_panel_x = w - conn_panel_w - 1
+    if conn_info:
+        win.addstr(3, conn_panel_x, "🔴 Connection Visibility", curses.A_BOLD | curses.A_UNDERLINE)
+        win.addstr(5, conn_panel_x, f"Active Connections: {conn_info['active_connections']}")
+        win.addstr(6, conn_panel_x, f"Top IP: {conn_info['top_ip']} ({conn_info['top_ip_count']})")
+        win.addstr(7, conn_panel_x, "All IPs:")
+        row_y = 8
+        for ip, cnt in conn_info['all_ips'].most_common(5):
+            if row_y >= h-1:
+                break
+            win.addstr(row_y, conn_panel_x, f"{ip}: {cnt}")
+            row_y +=1
 
+    # Detail lines
     for i in range(max_rows):
         idx = scroll + i
         if idx >= len(lines):
             continue
         line = lines[idx]
-        # Her satır türüne ikon ekle
-        for key, icon in icons.items():
-            if key in line:
-                line = line.replace(key, f"{icon} {key}")
-        win.addstr(i+3, 2, line[:w-4])
+        win.addstr(i+3, 2, line[:conn_panel_x-3])
     win.box()
     win.noutrefresh()
-
 
 def draw_open_files(win, pid, prog, files, scroll=0):
     win.erase()
@@ -387,11 +422,9 @@ def draw_open_files(win, pid, prog, files, scroll=0):
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
-    if show_detail:
-        help_text = " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
-    else:
-        help_text = (" 🧭 ↑/↓ Select   ↕️ +/- Resize   🔄 r Refresh   "
-                     "📂 ←/→ Open Files Scroll   ⛔ s Stop Proc/Service   🔥 f Toggle Firewall   ❌ q Quit ")
+    help_text = (" 🧭 ↑/↓ Select   ↕️ +/- Resize   🔄 r Refresh   "
+                 "📂 ←/→ Open Files Scroll   ⛔ s Stop Proc/Service   🔥 f Toggle Firewall   ❌ q Quit ") \
+        if not show_detail else " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
     bar_win = curses.newwin(3, w, h-3, 0)
     bar_win.erase()
     bar_win.box()
@@ -423,11 +456,10 @@ def main(stdscr):
     cached_port = None
     cached_wrapped_lines = []
     cached_total_lines = 0
+    cached_conn_info = None
 
     while True:
         h, w = stdscr.getmaxyx()
-        max_h = h-3-2
-        min_h = 6
         visible_rows = table_h-4
 
         if not show_detail and rows:
@@ -449,21 +481,20 @@ def main(stdscr):
                     lines = annotate_warnings(lines)
                     wrapped = []
                     for l in lines:
-                        wrapped += textwrap.wrap(l, width=w-4) or [""]
+                        wrapped += textwrap.wrap(l, width=w//2-4) or [""]
                     cached_wrapped_lines = wrapped
                     cached_total_lines = len(wrapped)
-                draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll)
+                    cached_conn_info = get_connections_info(port)
+                draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             else:
-                draw_detail(detail_win, [], scroll=0)
+                draw_detail(detail_win, [], scroll=0, conn_info=None)
 
             draw_help_bar(stdscr, show_detail)
-            total_detail_lines = cached_total_lines
 
         elif show_detail:
             detail_win = curses.newwin(h-3, w, 0, 0)
-            draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll)
+            draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             draw_help_bar(stdscr, show_detail)
-            total_detail_lines = cached_total_lines
 
         curses.doupdate()
         k = stdscr.getch()
@@ -473,7 +504,7 @@ def main(stdscr):
         if show_detail:
             if k == curses.KEY_UP and detail_scroll>0:
                 detail_scroll -= 1
-            elif k == curses.KEY_DOWN and detail_scroll < max(0,total_detail_lines-(h-3)):
+            elif k == curses.KEY_DOWN and detail_scroll < max(0,cached_total_lines-(h-3)):
                 detail_scroll += 1
             elif k == KEY_TAB:
                 show_detail = False
@@ -483,9 +514,9 @@ def main(stdscr):
                 selected -=1
             elif k == curses.KEY_DOWN and selected<len(rows)-1:
                 selected +=1
-            elif k == KEY_SEP_UP and table_h<max_h:
+            elif k == KEY_SEP_UP and table_h<max(6, h-3-2):
                 table_h +=1
-            elif k == KEY_SEP_DOWN and table_h>min_h:
+            elif k == KEY_SEP_DOWN and table_h>6:
                 table_h -=1
             elif k == ord('r'):
                 rows = parse_ss()
