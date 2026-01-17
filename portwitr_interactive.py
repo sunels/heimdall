@@ -184,6 +184,53 @@ def splash_screen(stdscr, rows, cache):
     stdscr.clear()
     stdscr.refresh()
 
+def stop_process_or_service(pid, prog, stdscr):
+    if not pid or not pid.isdigit():
+        show_message(stdscr, "Invalid PID.")
+        return
+
+    # Önce systemd service mi diye bak
+    try:
+        result = subprocess.run(
+            ["systemctl", "status", prog],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        if result.returncode == 0:
+            subprocess.run(["sudo", "systemctl", "stop", prog])
+            show_message(stdscr, f"Service '{prog}' stopped.")
+            return
+    except Exception:
+        pass
+
+    # Değilse normal process öldür
+    try:
+        subprocess.run(["sudo", "kill", "-TERM", pid])
+        show_message(stdscr, f"Process {pid} stopped.")
+    except Exception as e:
+        show_message(stdscr, f"Failed to stop {pid}: {e}")
+
+def confirm_dialog(stdscr, question):
+    h, w = stdscr.getmaxyx()
+    win_h, win_w = 5, min(60, w - 4)
+    win = curses.newwin(
+        win_h,
+        win_w,
+        (h - win_h) // 2,
+        (w - win_w) // 2
+    )
+    win.box()
+    win.addstr(1, 2, question, curses.A_BOLD)
+    win.addstr(3, 2, "[y] Yes    [n] No")
+
+    win.refresh()
+    while True:
+        k = win.getch()
+        if k in (ord('y'), ord('Y')):
+            return True
+        if k in (ord('n'), ord('N'), 27):
+            return False
+
 # --------------------------------------------------
 # Warnings / Annotation
 # --------------------------------------------------
