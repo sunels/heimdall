@@ -9,6 +9,7 @@ import time
 import argparse
 from shutil import which
 from collections import Counter
+import ipaddress
 
 KEY_SEP_UP = ord('+')
 KEY_SEP_DOWN = ord('-')
@@ -32,6 +33,71 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--version', action='version', version='portwitr-interactive 2.1')
     return parser.parse_args()
+
+# --------------------------------------------------
+# 🌍 Network Scope / Exposure
+# --------------------------------------------------
+def analyze_network_scope(port):
+    listening_ips = set()
+    interfaces = set()
+    scope = "Unknown"
+    external = False
+
+    # Listening IP’leri bul
+    try:
+        result = subprocess.run(
+            ["ss", "-lntu"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 5:
+                addr = parts[4]
+                if addr.endswith(f":{port}"):
+                    ip = addr.rsplit(":", 1)[0].strip("[]")
+                    listening_ips.add(ip)
+    except:
+        pass
+
+    # Interface eşleştir
+    try:
+        ip_out = subprocess.run(
+            ["ip", "-o", "addr"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        for line in ip_out.stdout.splitlines():
+            parts = line.split()
+            iface = parts[1]
+            ip = parts[3].split("/")[0]
+            if ip in listening_ips:
+                interfaces.add(iface)
+    except:
+        pass
+
+    # Scope belirle
+    for ip in listening_ips:
+        try:
+            addr = ipaddress.ip_address(ip)
+            if addr.is_loopback:
+                scope = "Localhost"
+            elif addr.is_private:
+                if scope != "Localhost":
+                    scope = "Internal"
+            else:
+                scope = "Public"
+                external = True
+        except:
+            continue
+
+    return {
+        "scope": scope,
+        "interfaces": ", ".join(sorted(interfaces)) if interfaces else "-",
+        "external": "YES" if external else "NO"
+    }
 
 # --------------------------------------------------
 # Utils
@@ -379,30 +445,79 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
     win.hline(2, 1, curses.ACS_HLINE, w - 2)
     max_rows = h - 4
 
-    # Connection panel
-    conn_panel_w = max(30, w//2)
-    conn_panel_x = w - conn_panel_w - 1
-    if conn_info:
-        win.addstr(3, conn_panel_x, "🔴 Connection Visibility", curses.A_BOLD | curses.A_UNDERLINE)
-        win.addstr(5, conn_panel_x, f"Active Connections: {conn_info['active_connections']}")
-        win.addstr(6, conn_panel_x, f"Top IP: {conn_info['top_ip']} ({conn_info['top_ip_count']})")
-        win.addstr(7, conn_panel_x, "All IPs:")
-        row_y = 8
-        for ip, cnt in conn_info['all_ips'].most_common(5):
-            if row_y >= h-1:
-                break
-            win.addstr(row_y, conn_panel_x, f"{ip}: {cnt}")
-            row_y +=1
+    # 🔹 Icon mapping (RESTORED)
+    icons = {
+        "Target": "🎯",
+        "Container": "🐳",
+        "Command": "🧠",
+        "Started": "⏱",
+        "Why it Exists": "❓",
+        "Source": "📦",
+        "Working Dir": "🗂",
+        "Listening": "👂",
+        "Socket": "🔌",
+        "Warnings": "⚠️",
+        "PID": "🆔",
+        "User": "👤",
+        "Process": "🧠"
+    }
 
-    # Detail lines
+    # 🔹 Right-side panel
+    conn_panel_w = max(34, w // 2)
+    conn_panel_x = w - conn_panel_w - 1
+
+    if conn_info:
+        # 🔴 Connection Visibility
+        win.addstr(3, conn_panel_x,
+                   "🔴 Connection Visibility",
+                   curses.A_BOLD | curses.A_UNDERLINE)
+
+        win.addstr(5, conn_panel_x,
+                   f"Active Connections : {conn_info['active_connections']}")
+        win.addstr(6, conn_panel_x,
+                   f"Top IP : {conn_info['top_ip']} ({conn_info['top_ip_count']})")
+
+        win.addstr(7, conn_panel_x, "IPs:")
+        row_y = 8
+        for ip, cnt in conn_info["all_ips"].most_common(5):
+            if row_y >= h - 10:
+                break
+            win.addstr(row_y, conn_panel_x, f"{ip} : {cnt}")
+            row_y += 1
+
+        # 🔥 PROCESS REALITY CHECK (DEBUG) — RESTORED
+        row_y += 1
+        win.addstr(row_y, conn_panel_x,
+                   "🔥 Process Reality Check (DEBUG)",
+                   curses.A_BOLD | curses.A_UNDERLINE)
+
+        pid = conn_info.get("pid")
+        if pid and pid.isdigit():
+            chain = get_process_parent_chain(pid)
+            tree = format_process_tree(chain)
+            for i, line in enumerate(tree):
+                if row_y + 1 + i >= h - 2:
+                    break
+                win.addstr(row_y + 1 + i, conn_panel_x, line)
+        else:
+            win.addstr(row_y + 1, conn_panel_x, "<no pid>")
+
+    # 🔹 Detail lines (LEFT PANE + ICONS)
     for i in range(max_rows):
         idx = scroll + i
         if idx >= len(lines):
             continue
+
         line = lines[idx]
-        win.addstr(i+3, 2, line[:conn_panel_x-3])
+        for key, icon in icons.items():
+            if key in line and not line.strip().startswith(icon):
+                line = line.replace(key, f"{icon} {key}", 1)
+
+        win.addstr(i + 3, 2, line[:conn_panel_x - 3])
+
     win.box()
     win.noutrefresh()
+
 
 def draw_open_files(win, pid, prog, files, scroll=0):
     win.erase()
@@ -485,6 +600,9 @@ def main(stdscr):
                     cached_wrapped_lines = wrapped
                     cached_total_lines = len(wrapped)
                     cached_conn_info = get_connections_info(port)
+                    cached_conn_info["port"] = port
+                    cached_conn_info["pid"] = rows[selected][4]
+
                 draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             else:
                 draw_detail(detail_win, [], scroll=0, conn_info=None)
@@ -551,6 +669,49 @@ def main(stdscr):
             if selected < 0 and rows:
                 selected = 0
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
+
+def get_process_parent_chain(pid, max_depth=10):
+    """
+    Return real parent/supervisor chain like:
+    systemd(1) -> sshd(742) -> sshd(3112)
+    """
+    chain = []
+    seen = set()
+
+    while pid and pid.isdigit() and pid not in seen and len(chain) < max_depth:
+        seen.add(pid)
+        try:
+            with open(f"/proc/{pid}/stat", "r") as f:
+                stat = f.read().split()
+                ppid = stat[3]
+
+            with open(f"/proc/{pid}/comm", "r") as f:
+                name = f.read().strip()
+
+            chain.append(f"{name}({pid})")
+
+            if ppid == "0" or ppid == pid:
+                break
+
+            pid = ppid
+        except Exception:
+            break
+
+    return list(reversed(chain))
+
+
+def format_process_tree(chain):
+    """
+    Pretty tree output for UI
+    """
+    if not chain:
+        return ["<no process chain>"]
+
+    lines = ["🌳 Process Tree:"]
+    for i, node in enumerate(chain):
+        prefix = "   " * i + ("└─ " if i else "")
+        lines.append(f"{prefix}{node}")
+    return lines
 
 if __name__ == "__main__":
     check_python_version()
