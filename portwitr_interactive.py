@@ -441,11 +441,12 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
     win.erase()
     h, w = win.getmaxyx()
     header = f"📝 Detail View — {len(lines)} lines"
-    win.addstr(1, 2, header, curses.A_BOLD)
-    win.hline(2, 1, curses.ACS_HLINE, w - 2)
+    if h > 1:
+        win.addstr(1, 2, header[:w-4], curses.A_BOLD)
+        win.hline(2, 1, curses.ACS_HLINE, w - 2)
     max_rows = h - 4
 
-    # 🔹 Icon mapping (RESTORED)
+    # 🔹 Icon mapping
     icons = {
         "Target": "🎯",
         "Container": "🐳",
@@ -467,57 +468,85 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
     conn_panel_x = w - conn_panel_w - 1
 
     if conn_info:
+        row_y = 3
+        def safe_add(y, x, txt, attr=0):
+            if y < h - 1:
+                try:
+                    win.addstr(y, x, txt[:w - x -1], attr)
+                except curses.error:
+                    pass
+
         # 🔴 Connection Visibility
-        win.addstr(3, conn_panel_x,
-                   "🔴 Connection Visibility",
-                   curses.A_BOLD | curses.A_UNDERLINE)
-
-        win.addstr(5, conn_panel_x,
-                   f"Active Connections : {conn_info['active_connections']}")
-        win.addstr(6, conn_panel_x,
-                   f"Top IP : {conn_info['top_ip']} ({conn_info['top_ip_count']})")
-
-        win.addstr(7, conn_panel_x, "IPs:")
-        row_y = 8
+        safe_add(row_y, conn_panel_x, "🔴 Connection Visibility", curses.A_BOLD | curses.A_UNDERLINE)
+        row_y += 2
+        safe_add(row_y, conn_panel_x, f"Active Connections : {conn_info['active_connections']}")
+        row_y += 1
+        safe_add(row_y, conn_panel_x, f"Top IP : {conn_info['top_ip']} ({conn_info['top_ip_count']})")
+        row_y += 1
+        safe_add(row_y, conn_panel_x, "IPs:")
+        row_y += 1
         for ip, cnt in conn_info["all_ips"].most_common(5):
-            if row_y >= h - 10:
+            if row_y >= h - 1:
                 break
-            win.addstr(row_y, conn_panel_x, f"{ip} : {cnt}")
+            safe_add(row_y, conn_panel_x, f"{ip} : {cnt}")
             row_y += 1
 
-        # 🔥 PROCESS REALITY CHECK (DEBUG) — RESTORED
-        row_y += 1
-        win.addstr(row_y, conn_panel_x,
-                   "🔥 Process Reality Check (DEBUG)",
-                   curses.A_BOLD | curses.A_UNDERLINE)
+        # 🔥 PROCESS REALITY CHECK
+        if row_y < h - 1:
+            safe_add(row_y, conn_panel_x, "🔥 Process Reality Check (DEBUG)", curses.A_BOLD | curses.A_UNDERLINE)
+            row_y += 1
 
         pid = conn_info.get("pid")
         if pid and pid.isdigit():
             chain = get_process_parent_chain(pid)
             tree = format_process_tree(chain)
-            for i, line in enumerate(tree):
-                if row_y + 1 + i >= h - 2:
+            for line in tree:
+                if row_y >= h - 1:
                     break
-                win.addstr(row_y + 1 + i, conn_panel_x, line)
+                safe_add(row_y, conn_panel_x, line)
+                row_y += 1
+
+            # 🔥 RESOURCE PRESSURE → File Descriptor Pressure
+            row_y += 1
+
+            if row_y < h - 1:
+                safe_add(row_y, conn_panel_x, "🔥 RESOURCE PRESSURE (OPS)", curses.A_BOLD | curses.A_UNDERLINE)
+                row_y += 1
+            if row_y < h - 1:
+                safe_add(row_y, conn_panel_x, "🔥 4. File Descriptor Pressure")
+                row_y += 1
+            if row_y < h - 1:
+                safe_add(row_y, conn_panel_x, "📂 File Descriptors :")
+                row_y += 1
+
+            fd_info = get_fd_pressure(pid)
+            for key in ["open", "limit", "usage"]:
+                if row_y >= h - 1:
+                    break
+                safe_add(row_y, conn_panel_x, f"  {key.capitalize()} : {fd_info[key]}")
+                row_y += 1
+            if row_y < h - 1:
+                safe_add(row_y, conn_panel_x, f"  Risk  : {fd_info['risk']}")
+                row_y += 1
         else:
-            win.addstr(row_y + 1, conn_panel_x, "<no pid>")
+            safe_add(row_y, conn_panel_x, "<no pid>")
 
     # 🔹 Detail lines (LEFT PANE + ICONS)
     for i in range(max_rows):
         idx = scroll + i
         if idx >= len(lines):
             continue
-
         line = lines[idx]
         for key, icon in icons.items():
             if key in line and not line.strip().startswith(icon):
                 line = line.replace(key, f"{icon} {key}", 1)
-
-        win.addstr(i + 3, 2, line[:conn_panel_x - 3])
+        try:
+            win.addstr(i + 3, 2, line[:conn_panel_x - 3])
+        except curses.error:
+            pass
 
     win.box()
     win.noutrefresh()
-
 
 def draw_open_files(win, pid, prog, files, scroll=0):
     win.erase()
@@ -712,6 +741,52 @@ def format_process_tree(chain):
         prefix = "   " * i + ("└─ " if i else "")
         lines.append(f"{prefix}{node}")
     return lines
+
+def get_fd_pressure(pid):
+    """
+    Return dict with open, limit, usage% and risk comment
+    """
+    fd_info = {
+        "open": "-",
+        "limit": "-",
+        "usage": "-",
+        "risk": "-"
+    }
+    if not pid or not pid.isdigit():
+        return fd_info
+    try:
+        open_count = len(os.listdir(f"/proc/{pid}/fd"))
+    except PermissionError:
+        open_count = "-"
+    except FileNotFoundError:
+        open_count = "-"
+
+    try:
+        with open(f"/proc/{pid}/limits", "r") as f:
+            for line in f:
+                if "Max open files" in line:
+                    parts = line.split()
+                    limit = int(parts[3])
+                    break
+            else:
+                limit = "-"
+    except Exception:
+        limit = "-"
+
+    if isinstance(open_count, int) and isinstance(limit, int) and limit > 0:
+        usage = int(open_count / limit * 100)
+        risk = "⚠️ FD exhaustion prod’da sık patlar." if usage > 80 else "✔ Normal"
+    else:
+        usage = "-"
+        risk = "-"
+
+    fd_info.update({
+        "open": open_count,
+        "limit": limit,
+        "usage": f"{usage}%" if usage != "-" else "-",
+        "risk": risk
+    })
+    return fd_info
 
 if __name__ == "__main__":
     check_python_version()
