@@ -15,7 +15,10 @@
 - 🖥️ Fully interactive **terminal UI (curses)**
 - ⚡ Real-time refresh
 - 🛑 Stop a **process or systemd service** directly from the UI (with confirmation)
-- 📝 **Warnings annotation** (e.g., suspicious working directory is flagged but explained)
+- 📝 Warnings annotation (e.g., suspicious working directory is flagged but explained)
+- 🛠️ **Action Center (Modal)** — quick operational panel for ports & processes (see below)
+- 🚫 **Block IP** operation (Action Center → Block IP): block a source IP for a port via iptables (sudo required)
+- 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights, single‑key selection, ESC to close each modal
 
 ---
 
@@ -63,6 +66,14 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 <img src="pp-2.png" alt="portwitr-interactive detail view" width="100%"/>
 
 ---
+### 🧾 Detail View — Actions Center (Modal)
+<img src="pp-3.png" alt="portwitr-interactive detail view" width="100%"/>
+
+---
+### 🧾 Detail View — Block IP Modal
+<img src="pp-4.png" alt="portwitr-interactive detail view" width="100%"/>
+
+---
 
 
 ## 🎮 Key Bindings
@@ -78,6 +89,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | Tab | Switch to detail view |
 | s | Stop selected process / service |
 | f | Toggle firewall for selected port |
+| a | Actions (open Action Center modal) |
 | q | Quit |
 
 ### 📜 Detail View (witr output)
@@ -135,13 +147,64 @@ cd portwitr-interactive
 python3 portwitr_interactive.py
 ```
 
-## ⚠️ Safety Notes
+## 🛠 Action Center (Interactive Operations)
 
-- 🛑 Destructive actions always require confirmation
-- 🧠 PID `1` (systemd) is protected
-- ⚡ Firewall toggle only affects traffic temporarily, does **not stop process**
-- 👀 Non-root usage limits visibility (expected behavior)
-- 📝 Warnings (like suspicious working directory) are annotated with explanation
+Press `a` from the main screen to open the Action Center modal — a compact two-column modal grouping common operational actions for ports and processes.
+
+UI / behavior highlights
+- Monospace rendering inside curses; bordered window uses curses box().
+- Padding: 2 spaces internal; text kept away from borders.
+- Highlighting: reverse + bold for flash feedback (150–200ms) when a key is pressed.
+- Single-key control: press the shown single-letter key (e.g., `b`) — no Enter or mouse required.
+- ESC closes the topmost modal; each modal closes independently. When the modal stack is empty the main screen is redrawn (same effect as pressing `r`).
+- All actions run inside the same curses process and provide immediate feedback.
+
+Action Center layout (icons mirror the UI)
+- Left column — 🌐 PORT OPERATIONS
+  - 🚫  [b] Block IP
+  - 💥  [k] Kill Connections (planned)
+  - 🚦  [l] Connection Limit (planned)
+- Right column — 🧠 PROCESS OPERATIONS
+  - ⚡  [h] Reload (SIGHUP)
+  - 💀  [9] Force Kill (SIGKILL)
+  - ⏸  [p] Pause Process
+  - ▶  [c] Continue Process
+  - 🐢  [n] Renice
+  - 🔄  [r] Restart Service
+  - ☠  [o] Adjust OOM Score
+  - 🐞  [d] Debug Dump
+
+## 🚫 Block IP — details
+
+Invoked from Action Center via `[b]`:
+
+- Two ways to choose an IP:
+  1. Select from "Top connections" list (single-key 1..8). Selection flashes briefly and executes immediately.
+  2. Manual entry: press `m` to start manual input, type the IP (digits, `.` for IPv4, `:` and hex for IPv6 allowed), Backspace supported, press `x` to execute.
+- Validation:
+  - Uses Python's `ipaddress` module for final validation before applying rules.
+  - Textual length limits applied (reasonable max for IPv4/IPv6) to reject obviously invalid submissions.
+- Execution:
+  - Blocks via iptables (sudo) using a DROP rule limited to the selected port.
+  - The UI updates a local cache of blocked IPs and shows that list inside the modal under "⛔ Blocked IPs".
+  - After a successful block the application requests a full refresh (same behavior as pressing `r`) so the main view reflects changes immediately.
+- Safety notes:
+  - Blocking requires sudo and iptables — ensure appropriate privileges.
+  - Actions are immediate and affect live traffic; use with care.
+
+## UI / Implementation notes
+
+- Modal sizing is responsive to terminal size and has been widened to reduce text wrapping compared to earlier versions.
+- Feedback messages are shown using a short non-blocking centered message overlay (no need to press an extra key to continue).
+- The "Block IP" modal uses emoji/iconography to make options clearer and more visible in the TUI.
+
+---
+
+## ⚠️ Safety Notes (expanded)
+
+- Destructive actions (stop, kill, firewall changes) require explicit keys; confirmation dialogs are used for stop operations.
+- Blocking via iptables is immediate—this tool does not create persistent firewall rules across reboots.
+- Non-root usage limits visibility; some operations require sudo.
 
 ---
 

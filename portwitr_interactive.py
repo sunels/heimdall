@@ -16,6 +16,9 @@ KEY_SEP_DOWN = ord('-')
 KEY_TAB = 9
 KEY_FIREWALL = ord('f')
 
+# initialize global refresh trigger used by request_full_refresh()
+TRIGGER_REFRESH = False
+
 # --------------------------------------------------
 # Checks
 # --------------------------------------------------
@@ -259,6 +262,10 @@ def get_connections_info(port):
             "top_ip_count": 0,
             "all_ips": {}
         }
+def request_full_refresh():
+    """Signal main loop to perform full refresh (same as pressing 'r')."""
+    global TRIGGER_REFRESH
+    TRIGGER_REFRESH = True
 
 # --------------------------------------------------
 # Splash Screen
@@ -394,15 +401,32 @@ def toggle_firewall(port, stdscr, firewall_status):
     show_message(stdscr, msg)
 
 def show_message(stdscr, msg, duration=1.5):
+    """
+    Display a small centered message for `duration` seconds without altering stdscr timeout.
+    Uses sleep + refresh so it does not interfere with main input loop.
+    """
     h, w = stdscr.getmaxyx()
-    win_h, win_w = 3, min(60, w - 4)
+    win_h, win_w = 3, min(80, w - 4)
     win = curses.newwin(win_h, win_w, (h - win_h)//2, (w - win_w)//2)
-    win.box()
-    win.addstr(1, 2, msg)
-    win.refresh()
-    stdscr.timeout(int(duration*1000))
-    stdscr.getch()
-    stdscr.timeout(-1)
+    try:
+        win.box()
+        # center message or left-pad a bit if too long
+        msg_display = msg if len(msg) <= win_w - 4 else msg[:win_w - 7] + "..."
+        win.addstr(1, 2, msg_display)
+        win.refresh()
+        # sleep without touching stdscr timeout; ensures UI remains visible for duration
+        time.sleep(duration)
+    except Exception:
+        pass
+    finally:
+        try:
+            win.erase()
+            win.refresh()
+            del win
+        except Exception:
+            pass
+        stdscr.touchwin()
+        curses.doupdate()
 
 # --------------------------------------------------
 # UI Draw
@@ -581,9 +605,12 @@ def draw_open_files(win, pid, prog, files, scroll=0):
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
-    help_text = (" 🧭 ↑/↓ Select   ↕️ +/- Resize   🔄 r Refresh   "
-                 "📂 ←/→ Open Files Scroll   ⛔ s Stop Proc/Service   🔥 f Toggle Firewall   ❌ q Quit ") \
-        if not show_detail else " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
+    # include Actions (a) hint for main view
+    help_text = (
+        " 🧭 [↑/↓] Select   ↕️  [+/-] Resize   🔄 [r] Refresh   "
+        "📂 [←/→] Open Files Scroll   ⛔ [s] Stop Proc/Service   🔥 [f] Toggle Firewall   "
+        "🛠  [a] Actions  ❌ [q] Quit "
+    ) if not show_detail else " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
     bar_win = curses.newwin(3, w, h-3, 0)
     bar_win.erase()
     bar_win.box()
@@ -593,6 +620,406 @@ def draw_help_bar(stdscr, show_detail):
     except:
         bar_win.addstr(1, x, help_text)
     bar_win.noutrefresh()
+
+# -------------------------
+# Action Center / Modals
+# -------------------------
+def draw_action_center_modal(stdscr, highlight_key=None):
+    """
+    Draw Action Center in a responsive modal with two columns.
+    Ensures minimum/maximum sizes so it behaves on small terminals and is cleanly redrawable.
+    """
+    h, w = stdscr.getmaxyx()
+    pad = 3
+    # compute modal size respecting terminal
+    bh = 14
+    bh = min(bh, max(8, h - 6))
+    bw = min(64, max(40, w - 10))
+    y = max(0, (h - bh) // 2)
+    x = max(0, (w - bw) // 2)
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.erase()
+    win.box()
+
+    title = " 🔧 Action Center "
+    try:
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # columns
+    col_gap = 3
+    inner_w = bw - pad*2
+    col_w = max(12, (inner_w - col_gap) // 2)
+    left_x = pad
+    right_x = pad + col_w + col_gap
+
+    left_lines = [
+        ("🌐 PORT OPERATIONS", None),
+        ("  🚫  [b] Block IP", 'b'),
+        ("  💥  [k] Kill Connections", 'k'),
+        ("  🚦  [l] Connection Limit", 'l'),
+    ]
+    right_lines = [
+        ("🧠 PROCESS OPERATIONS", None),
+        ("  ⚡  [h] Reload (SIGHUP)", 'h'),
+        ("  💀  [9] Force Kill (SIGKILL)", '9'),
+        ("  ⏸   [p] Pause Process", 'p'),
+        ("  ▶   [c] Continue Process", 'c'),
+        ("  🐢  [n] Renice", 'n'),
+        ("  🔄  [r] Restart Service", 'r'),
+        ("  ☠   [o] Adjust OOM Score", 'o'),
+        ("  🐞  [d] Debug Dump", 'd'),
+    ]
+
+    start_row = 2
+    for i, (txt, key) in enumerate(left_lines):
+        attr = curses.A_NORMAL
+        if key and highlight_key and key == highlight_key:
+            attr = curses.A_REVERSE | curses.A_BOLD
+        try:
+            win.addstr(start_row + i, left_x, txt[:col_w].ljust(col_w), attr)
+        except curses.error:
+            pass
+
+    for i, (txt, key) in enumerate(right_lines):
+        attr = curses.A_NORMAL
+        if key and highlight_key and key == highlight_key:
+            attr = curses.A_REVERSE | curses.A_BOLD
+        try:
+            win.addstr(start_row + i, right_x, txt[:col_w].ljust(col_w), attr)
+        except curses.error:
+            pass
+
+    footer = "[ESC] Cancel"
+    try:
+        win.addstr(bh - 2, pad, footer)
+    except curses.error:
+        pass
+
+    win.noutrefresh()
+    curses.doupdate()
+    return win
+
+
+def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
+    """
+    Draw the action center and handle single-key operations.
+    Ensure modal fully clears on ESC and leaves main screen consistent.
+    """
+    if selected < 0 or selected >= len(rows):
+        show_message(stdscr, "No port selected.")
+        return
+
+    port = rows[selected][0]
+    conn_info = get_connections_info(port)
+    conn_info["port"] = port
+
+    win = draw_action_center_modal(stdscr)
+    while True:
+        k = win.getch()
+        if k == 27:  # ESC
+            # cleanly remove modal and refresh main screen
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except Exception:
+                pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        try:
+            ch = chr(k)
+        except Exception:
+            ch = None
+
+        if not ch:
+            continue
+
+        # Flash highlight feedback
+        draw_action_center_modal(stdscr, highlight_key=ch)
+        curses.doupdate()
+        time.sleep(0.16)  # 160ms flash
+        win = draw_action_center_modal(stdscr)  # redraw without highlight
+
+        if ch == 'b':
+            # Open Block IP modal
+            draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status)
+            # after modal returns, ensure main UI will be redrawn by caller
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except Exception:
+                pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        else:
+            # For other keys, simple not-implemented message
+            if ch in ('k','l','h','9','p','c','n','r','o','d'):
+                show_message(stdscr, f"Action '{ch}' not implemented yet.")
+                win = draw_action_center_modal(stdscr)
+            else:
+                # ignore other keys
+                pass
+
+
+def execute_block_ip(ip, port, cache, stdscr):
+    """
+    Validate IP strictly, run iptables to DROP traffic to the given port from ip,
+    update cache[port]['blocked_ips'] and show a short message.
+    """
+    # basic safety checks
+    try:
+        addr = ipaddress.ip_address(ip)
+    except Exception:
+        show_message(stdscr, "Invalid IP address.")
+        return
+
+    # length sanity: protect against overly long / malicious input
+    if isinstance(addr, ipaddress.IPv4Address) and len(ip) > 15:
+        show_message(stdscr, "IPv4 length too long.")
+        return
+    if isinstance(addr, ipaddress.IPv6Address) and len(ip) > 45:
+        show_message(stdscr, "IPv6 length too long.")
+        return
+
+    # Attempt to apply iptables rule
+    try:
+        subprocess.run(
+            ["sudo", "iptables", "-I", "INPUT", "-s", ip, "-p", "tcp", "--dport", str(port), "-j", "DROP"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        # update cache for immediate UI reflection
+        cache.setdefault(port, {})
+        blocked = cache[port].setdefault("blocked_ips", set())
+        blocked.add(ip)
+        show_message(stdscr, f"Blocked {ip} → port {port}")
+        # request main loop to refresh the whole UI (same behavior as pressing 'r')
+        request_full_refresh()
+    except subprocess.CalledProcessError:
+        show_message(stdscr, "iptables failed (check sudo/iptables).")
+    except Exception as e:
+        show_message(stdscr, f"Error: {e}")
+
+
+def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
+    """
+    Block IP modal (iconography-enhanced):
+    - Improved hints with emojis/icons
+    - Shows Top connections and current ⛔ Blocked IPs for the port
+    - Retains manual entry / numeric selection behavior
+    """
+    h, w = stdscr.getmaxyx()
+    pad = 2
+    # slightly wider modal to reduce wrapping
+    prev_limit = min(100, max(60, w - 8))
+    bw = min(w - 4, max(72, int(prev_limit * 1.10)))
+    bh = min(18, max(10, h - 6))
+    y = max(0, (h - bh) // 2)
+    x = max(0, (w - bw) // 2)
+
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.timeout(-1)
+    win.erase()
+    win.box()
+    title = f" 🚫 Block IP — port {port} "
+    try:
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # Top IPs
+    top_ips = []
+    all_ips = conn_info.get("all_ips", {})
+    for i, (ip, cnt) in enumerate(all_ips.most_common(8), start=1):
+        top_ips.append((str(i), ip, cnt))
+
+    # Current blocked IPs from cache
+    blocked_set = set()
+    try:
+        blocked_set = set(cache.get(port, {}).get("blocked_ips", set()) or set())
+    except Exception:
+        blocked_set = set()
+
+    row = 2
+    # Header / instructions with icons
+    try:
+        hint = "🔎 Select a Top IP [1-8]  •  ✍️  Press 'm' to enter manually  •  ▶ Press 'x' to execute manual"
+        win.addstr(row, pad, hint[:bw - pad*2], curses.A_NORMAL)
+    except curses.error:
+        pass
+    row += 2
+
+    top_start_row = None
+    if top_ips:
+        try:
+            win.addstr(row, pad, "🔥 Top connections (most active):", curses.A_BOLD)
+        except curses.error:
+            pass
+        row += 1
+        top_start_row = row
+        for key, ip, cnt in top_ips:
+            line = f"  [{key}] {ip}  •  {cnt} conn"
+            try:
+                win.addstr(row, pad, line[:bw - pad*2])
+            except curses.error:
+                pass
+            row += 1
+    else:
+        try:
+            win.addstr(row, pad, "ℹ️ No active connections found.", curses.A_DIM)
+        except curses.error:
+            pass
+        row += 1
+
+    # Show current blocked IPs if any
+    row += 0
+    try:
+        win.addstr(row, pad, "⛔ Blocked IPs:", curses.A_BOLD)
+    except curses.error:
+        pass
+    row += 1
+    if blocked_set:
+        for ip in sorted(blocked_set)[: (bh - row - 5)]:
+            try:
+                win.addstr(row, pad, f"  • {ip}")
+            except curses.error:
+                pass
+            row += 1
+    else:
+        try:
+            win.addstr(row, pad, "  (none)", curses.A_DIM)
+        except curses.error:
+            pass
+        row += 1
+
+    # Manual hint
+    try:
+        manual_hint = "⌨️ Manual entry: press 'm' then type digits/dots (':' allowed for IPv6). ⌫ Backspace supported."
+        win.addstr(row + 1, pad, manual_hint[:bw - pad*2], curses.A_NORMAL)
+    except curses.error:
+        pass
+
+    input_buf = ""
+    manual_mode = False
+
+    def redraw_input():
+        try:
+            win.addstr(bh - 3, pad, " " * (bw - pad*2))
+            prompt = ("🖊️  Manual IP: " + input_buf) if manual_mode else "✅ Ready"
+            attr = curses.A_REVERSE | curses.A_BOLD if manual_mode else curses.A_DIM
+            win.addstr(bh - 3, pad, prompt[:bw - pad*2], attr)
+            win.noutrefresh()
+            curses.doupdate()
+        except curses.error:
+            pass
+
+    redraw_input()
+
+    while True:
+        k = win.getch()
+        # ESC: cancel and cleanup
+        if k == 27:
+            try:
+                win.erase(); win.refresh(); del win
+            except Exception:
+                pass
+            stdscr.touchwin(); curses.doupdate()
+            return
+
+        # Manual input first (so digits are consumed into input_buf)
+        if manual_mode:
+            # Backspace variants
+            if k in (8, 127, curses.KEY_BACKSPACE, 263):
+                input_buf = input_buf[:-1]
+                redraw_input()
+                continue
+            # Execute manual entry
+            if k == ord('x'):
+                if not input_buf:
+                    show_message(stdscr, "⚠️ No IP entered.")
+                    manual_mode = False
+                    redraw_input()
+                    continue
+                # Validate IP
+                try:
+                    parsed = ipaddress.ip_address(input_buf)
+                    if (isinstance(parsed, ipaddress.IPv4Address) and len(input_buf) > 15) or \
+                       (isinstance(parsed, ipaddress.IPv6Address) and len(input_buf) > 45):
+                        raise ValueError("IP textual length invalid.")
+                except Exception:
+                    show_message(stdscr, "❌ Invalid IP format.")
+                    manual_mode = False
+                    redraw_input()
+                    continue
+
+                # flash and execute
+                try:
+                    win.addstr(bh - 3, pad, f"⏳ Blocking {input_buf}...".ljust(bw - pad*2), curses.A_REVERSE | curses.A_BOLD)
+                    win.noutrefresh(); curses.doupdate(); time.sleep(0.16)
+                except curses.error:
+                    pass
+
+                execute_block_ip(input_buf, port, cache, stdscr)
+
+                try:
+                    win.erase(); win.refresh(); del win
+                except Exception:
+                    pass
+                stdscr.touchwin(); curses.doupdate()
+                return
+
+            # Accept digits, dot, colon (for IPv6), hex letters for IPv6 a-f/A-F
+            if (48 <= k <= 57) or k in (ord('.'), ord(':'), ord('a'), ord('b'), ord('c'), ord('d'), ord('e'), ord('f'),
+                                        ord('A'), ord('B'), ord('C'), ord('D'), ord('E'), ord('F')):
+                if len(input_buf) < 64:
+                    input_buf += chr(k)
+                    redraw_input()
+                continue
+
+            # ignore other keys while in manual
+            continue
+
+        # Toggle manual input
+        if k in (ord('m'), ord('M')):
+            manual_mode = True
+            input_buf = ""
+            redraw_input()
+            continue
+
+        # Numeric selection for top IPs (single-key)
+        if 48 <= k <= 57 and top_ips:
+            key = chr(k)
+            for idx, (tkey, ip, cnt) in enumerate(top_ips):
+                if tkey == key:
+                    # highlight, flash
+                    if top_start_row is not None:
+                        line_y = top_start_row + idx
+                    else:
+                        line_y = 5 + idx
+                    try:
+                        win.addstr(line_y, pad, f"  [{tkey}] {ip}  •  {cnt} conn".ljust(bw - pad*2), curses.A_REVERSE | curses.A_BOLD)
+                        win.noutrefresh(); curses.doupdate(); time.sleep(0.16)
+                    except curses.error:
+                        pass
+                    # execute block
+                    execute_block_ip(ip, port, cache, stdscr)
+                    try:
+                        win.erase(); win.refresh(); del win
+                    except Exception:
+                        pass
+                    stdscr.touchwin(); curses.doupdate()
+                    return
+            continue
+
+        # any other key is ignored in non-manual mode
 
 # --------------------------------------------------
 # Main Loop
@@ -617,6 +1044,7 @@ def main(stdscr):
     cached_total_lines = 0
     cached_conn_info = None
 
+    global TRIGGER_REFRESH  # we will mutate this inside the loop
     while True:
         h, w = stdscr.getmaxyx()
         visible_rows = table_h-4
@@ -659,6 +1087,21 @@ def main(stdscr):
             draw_help_bar(stdscr, show_detail)
 
         curses.doupdate()
+
+        # If any modal/action requested a full refresh, do the same sequence used for 'r'
+        if TRIGGER_REFRESH:
+            TRIGGER_REFRESH = False
+            rows = parse_ss()
+            cache.clear()
+            splash_screen(stdscr, rows, cache)
+            if selected >= len(rows):
+                selected = len(rows) - 1
+            if selected < 0 and rows:
+                selected = 0
+            offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
+            # after refresh, immediately redraw (continue to top of loop)
+            continue
+
         k = stdscr.getch()
 
         if k == ord('q'):
@@ -704,6 +1147,9 @@ def main(stdscr):
                     splash_screen(stdscr, rows, cache)
                     if selected >= len(rows):
                         selected = len(rows) - 1
+            elif k == ord('a'):
+                # open Action Center modal
+                handle_action_center_input(stdscr, rows, selected, cache, firewall_status)
             elif k == KEY_FIREWALL and selected >= 0 and rows:
                 port = rows[selected][0]
                 toggle_firewall(port, stdscr, firewall_status)
