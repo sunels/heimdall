@@ -10,6 +10,8 @@ import argparse
 from shutil import which
 from collections import Counter
 import ipaddress
+import functools
+import threading
 
 KEY_SEP_UP = ord('+')
 KEY_SEP_DOWN = ord('-')
@@ -154,6 +156,28 @@ def get_witr_output(port):
     except Exception as e:
         return [str(e)]
 
+def get_witr_output_cached(port, ttl=None):
+    """
+    Return cached witr output lines for a port. Calls get_witr_output() only
+    if no cached entry exists or TTL expired.
+
+    Use ttl=None so we can read the global WITR_TTL at runtime (avoids NameError
+    when function is defined before the constant).
+    """
+    if ttl is None:
+        ttl = globals().get("WITR_TTL", 1.5)
+    if not port:
+        return ["No data"]
+    now = time.time()
+    entry = _witr_cache.get(str(port))
+    if entry:
+        val, ts = entry
+        if now - ts < ttl:
+            return val
+    val = get_witr_output(port)
+    _witr_cache[str(port)] = (val, now)
+    return val
+
 def extract_user_from_witr(lines):
     for l in lines:
         m = re.search(r'User\s*:\s*(\S+)', l, re.I)
@@ -199,7 +223,7 @@ def format_mem_kb(kb):
     return f"{mb:.0f}M"
 
 def get_process_usage(pid):
-    """Return CPU%/MEM formatted as MB or GB"""
+    """Return CPU%/MEM formatted as MB or GB (legacy uncached)."""
     if not pid or not pid.isdigit():
         return "-"
     try:
@@ -215,12 +239,110 @@ def get_process_usage(pid):
     except Exception:
         return "-"
 
-# --------------------------------------------------
-# Connection Visibility
-# --------------------------------------------------
-# --------------------------------------------------
-# Connection Visibility (Güncel)
-# --------------------------------------------------
+# Cache TTLs (seconds)
+USAGE_TTL = 1.0
+FILES_TTL = 1.0
+PARSE_TTL = 0.7
+WITR_TTL = 1.5
+CONN_TTL = 1.0
+SELECT_STABLE_TTL = 0.40
+TABLE_ROW_TTL = 1.0  # New for preformatted rows
+
+# Simple caches: pid/port -> (value, timestamp)
+_proc_usage_cache = {}
+_open_files_cache = {}
+_parse_cache = {"rows": None, "ts": 0.0}
+_witr_cache = {}
+_conn_cache = {}
+_table_row_cache = {}  # New: port -> (preformatted_str, ts)
+
+# NEW: snapshot flag and additional caches for fully eager preload
+SNAPSHOT_MODE = False             # when True, parse_ss_cached returns the snapshot and no heavy calls during scroll
+_proc_chain_cache = {}           # pid -> chain list
+_fd_cache = {}                   # pid -> fd_info dict
+_runtime_cache = {}              # pid -> runtime dict
+
+# New cached wrapper for get_process_usage to reduce subprocess calls on fast scrolling.
+def get_process_usage_cached(pid, ttl=USAGE_TTL):
+    """
+    Return cached process usage string. Calls underlying get_process_usage()
+    only if cache expired or pid changed.
+    """
+    if not pid or not pid.isdigit():
+        return "-"
+    now = time.time()
+    entry = _proc_usage_cache.get(pid)
+    if entry:
+        val, ts = entry
+        if now - ts < ttl:
+            return val
+    # refresh
+    val = get_process_usage(pid)
+    _proc_usage_cache[pid] = (val, now)
+    return val
+
+def get_open_files_cached(pid, ttl=FILES_TTL):
+    """
+    Return cached open-files list; refresh only if TTL expired or not cached.
+    """
+    if not pid or not pid.isdigit():
+        return []
+    now = time.time()
+    entry = _open_files_cache.get(pid)
+    if entry:
+        val, ts = entry
+        if now - ts < ttl:
+            return val
+    val = get_open_files(pid)
+    _open_files_cache[pid] = (val, now)
+    return val
+
+def parse_ss_cached(ttl=PARSE_TTL):
+    """Cached wrapper for parse_ss. When SNAPSHOT_MODE is True and rows exist, return snapshot only."""
+    now = time.time()
+    # If snapshot exists and snapshot mode is active -> always return cached snapshot
+    if _parse_cache.get("rows") is not None and SNAPSHOT_MODE:
+        return _parse_cache["rows"]
+    # otherwise honor TTL
+    entry_ts = _parse_cache.get("ts", 0.0)
+    if _parse_cache.get("rows") is not None and (now - entry_ts) < ttl:
+        return _parse_cache["rows"]
+    rows = parse_ss()
+    _parse_cache["rows"] = rows
+    _parse_cache["ts"] = now
+    return rows
+
+# Cached wrappers for process chain / fd / runtime so draw_detail never runs heavy ops directly
+def get_process_parent_chain_cached(pid):
+    if not pid or not pid.isdigit():
+        return []
+    entry = _proc_chain_cache.get(pid)
+    if entry is not None:
+        return entry
+    val = get_process_parent_chain(pid)
+    _proc_chain_cache[pid] = val
+    return val
+
+def get_fd_pressure_cached(pid):
+    if not pid or not pid.isdigit():
+        return {"open": "-", "limit": "-", "usage": "-", "risk": "-"}
+    entry = _fd_cache.get(pid)
+    if entry is not None:
+        return entry
+    val = get_fd_pressure(pid)
+    _fd_cache[pid] = val
+    return val
+
+def detect_runtime_type_cached(pid):
+    if not pid or not pid.isdigit():
+        return {"type": "-", "mode": "-", "gc": "-"}
+    entry = _runtime_cache.get(pid)
+    if entry is not None:
+        return entry
+    val = detect_runtime_type(pid)
+    _runtime_cache[pid] = val
+    return val
+
 def get_connections_info(port):
     """Return dict with active connections and top IPs"""
     try:
@@ -262,13 +384,33 @@ def get_connections_info(port):
             "top_ip_count": 0,
             "all_ips": {}
         }
+
+def get_connections_info_cached(port, ttl=CONN_TTL):
+    """Cached wrapper for get_connections_info; short TTL to avoid frequent ss calls while scrolling."""
+    if not port:
+        return {
+            "active_connections": 0,
+            "top_ip": "-",
+            "top_ip_count": 0,
+            "all_ips": Counter()
+        }
+    now = time.time()
+    entry = _conn_cache.get(str(port))
+    if entry:
+        val, ts = entry
+        if now - ts < ttl:
+            return val
+    val = get_connections_info(port)
+    _conn_cache[str(port)] = (val, now)
+    return val
+
 def request_full_refresh():
     """Signal main loop to perform full refresh (same as pressing 'r')."""
     global TRIGGER_REFRESH
     TRIGGER_REFRESH = True
 
 # --------------------------------------------------
-# Splash Screen
+# Splash Screen with Preloading
 # --------------------------------------------------
 def splash_screen(stdscr, rows, cache):
     h, w = stdscr.getmaxyx()
@@ -290,13 +432,67 @@ def splash_screen(stdscr, rows, cache):
         win.addstr(6, 4, f"[{bar}]")
         win.addstr(7, bw - 12, f"{i}/{total}")
         win.refresh()
-        lines = get_witr_output(port)
-        cache[port] = {
-            "user": extract_user_from_witr(lines),
-            "process": extract_process_from_witr(lines),
-            "lines": lines,
-            "wrapped": []
-        }
+
+        # preload everything needed later (eager snapshot)
+        try:
+            # witr + cached metadata
+            lines = get_witr_output(port)
+            _witr_cache[str(port)] = (lines, time.time())
+            user = extract_user_from_witr(lines)
+            process = extract_process_from_witr(lines)
+            # Pre-process wrapped and iconified lines (use a fixed width or estimate)
+            detail_width = w - 4  # Use full width for prewrap; can rewrap if needed but for perf, predo
+            wrapped_icon_lines = prepare_witr_content(lines, detail_width)
+            cache[port] = {
+                "user": user,
+                "process": process,
+                "lines": lines,
+                "wrapped_icon_lines": wrapped_icon_lines,
+                "prewrapped_width": detail_width
+            }
+        except Exception:
+            cache[port] = {"user": "-", "process": "-", "lines": ["No data"], "wrapped_icon_lines": []}
+
+        # preload connections info
+        try:
+            conn = get_connections_info(port)
+            _conn_cache[str(port)] = (conn, time.time())
+        except Exception:
+            _conn_cache[str(port)] = ({"active_connections": 0, "top_ip": "-", "top_ip_count": 0, "all_ips": Counter()}, time.time())
+
+        # preload process-related caches if pid present
+        try:
+            pid = row[4] if len(row) > 4 else "-"
+            if pid and pid.isdigit():
+                try:
+                    _proc_usage_cache[pid] = (get_process_usage(pid), time.time())
+                except Exception:
+                    _proc_usage_cache[pid] = ("-", time.time())
+                try:
+                    _open_files_cache[pid] = (get_open_files(pid), time.time())
+                except Exception:
+                    _open_files_cache[pid] = ([], time.time())
+                try:
+                    _proc_chain_cache[pid] = get_process_parent_chain(pid)
+                except Exception:
+                    _proc_chain_cache[pid] = []
+                try:
+                    _fd_cache[pid] = get_fd_pressure(pid)
+                except Exception:
+                    _fd_cache[pid] = {"open": "-", "limit": "-", "usage": "-", "risk": "-"}
+                try:
+                    _runtime_cache[pid] = detect_runtime_type(pid)
+                except Exception:
+                    _runtime_cache[pid] = {"type": "-", "mode": "-", "gc": "-"}
+        except Exception:
+            pass
+
+        cache[port]["preloaded"] = True
+
+    # After eager preload: mark snapshot mode on so UI uses cached snapshot exclusively
+    global SNAPSHOT_MODE
+    SNAPSHOT_MODE = True
+
     win.erase()
     win.box()
     done = " Initialization Complete "
@@ -305,6 +501,32 @@ def splash_screen(stdscr, rows, cache):
     time.sleep(0.8)
     stdscr.clear()
     stdscr.refresh()
+
+def prepare_witr_content(lines, width):
+    lines = annotate_warnings(lines)
+    wrapped = []
+    icons = {
+        "Target": "🎯",
+        "Container": "🐳",
+        "Command": "🧠",
+        "Started": "⏱",
+        "Why it Exists": "❓",
+        "Source": "📦",
+        "Working Dir": "🗂",
+        "Listening": "👂",
+        "Socket": "🔌",
+        "Warnings": "⚠️",
+        "PID": "🆔",
+        "User": "👤",
+        "Process": "🧠"
+    }
+    for line in lines:
+        # icon replacement sadece bir kere yapılacak
+        for key, icon in icons.items():
+            if key in line and not line.strip().startswith(icon):
+                line = line.replace(key, f"{icon} {key}", 1)
+        wrapped.extend(textwrap.wrap(line, width=width) or [""])
+    return wrapped
 
 def stop_process_or_service(pid, prog, stdscr):
     if not pid or not pid.isdigit():
@@ -431,6 +653,29 @@ def show_message(stdscr, msg, duration=1.5):
 # --------------------------------------------------
 # UI Draw
 # --------------------------------------------------
+def get_preformatted_table_row(row, cache, firewall_status, w):
+    port, proto, pidprog, prog, pid = row
+    user = cache.get(port, {}).get("user", "-")
+    now = time.time()
+    key = str(port)
+    entry = _table_row_cache.get(key)
+    if entry:
+        val, ts = entry
+        if now - ts < TABLE_ROW_TTL:
+            return val
+
+    usage = get_process_usage_cached(pid)
+    fw_icon = "⚡" if firewall_status.get(port, True) else "⛔"
+    proc_icon = "👑" if user == "root" else "🧑"
+    # Preformat with widths (adjust to table widths)
+    widths = [10, 8, 18, 28, w - 68]  # same as headers
+    data = [f"{fw_icon} {port}", proto.upper(), usage, f"{proc_icon} {prog}", f"👤 {user}"]
+    row_str = ""
+    for val, wd in zip(data, widths):
+        row_str += val.ljust(wd)
+    _table_row_cache[key] = (row_str, now)
+    return row_str
+
 def draw_table(win, rows, selected, offset, cache, firewall_status):
     win.erase()
     h, w = win.getmaxyx()
@@ -448,44 +693,19 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
         if idx >= len(rows):
             break
         attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
-        port, proto, pidprog, prog, pid = rows[idx]
-        usage = get_process_usage(pid)
-        user = cache.get(port, {}).get("user", "-")
-        proc_icon = "👑" if user=="root" else "🧑"
-        fw_icon = "⚡" if firewall_status.get(port, True) else "⛔"
-        data = [f"{fw_icon} {port}", proto.upper(), usage, f"{proc_icon} {prog}", f"👤 {user}"]
-        x = 1
-        for val, wd in zip(data, widths):
-            win.addstr(i+3, x, val[:wd].ljust(wd), attr)
-            x += wd
+        pre_row_str = get_preformatted_table_row(rows[idx], cache, firewall_status, w)
+        win.addstr(i+3, 1, pre_row_str[:w-2], attr)
     win.box()
     win.noutrefresh()
 
-def draw_detail(win, lines, scroll=0, conn_info=None):
+def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
     win.erase()
     h, w = win.getmaxyx()
-    header = f"📝 Detail View — {len(lines)} lines"
+    header = f"📝 Detail View — {len(wrapped_icon_lines)} lines"
     if h > 1:
         win.addstr(1, 2, header[:w-4], curses.A_BOLD)
         win.hline(2, 1, curses.ACS_HLINE, w - 2)
     max_rows = h - 4
-
-    # 🔹 Icon mapping
-    icons = {
-        "Target": "🎯",
-        "Container": "🐳",
-        "Command": "🧠",
-        "Started": "⏱",
-        "Why it Exists": "❓",
-        "Source": "📦",
-        "Working Dir": "🗂",
-        "Listening": "👂",
-        "Socket": "🔌",
-        "Warnings": "⚠️",
-        "PID": "🆔",
-        "User": "👤",
-        "Process": "🧠"
-    }
 
     # 🔹 Right-side panel
     conn_panel_w = max(34, w // 2)
@@ -523,7 +743,8 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
 
         pid = conn_info.get("pid")
         if pid and pid.isdigit():
-            chain = get_process_parent_chain(pid)
+            # use cached wrappers to avoid running heavy /proc ops during scroll
+            chain = get_process_parent_chain_cached(pid)
             tree = format_process_tree(chain)
             for line in tree:
                 if row_y >= h - 1:
@@ -531,9 +752,8 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
                 safe_add(row_y, conn_panel_x, line)
                 row_y += 1
 
-            # 🔥 RESOURCE PRESSURE → File Descriptor Pressure
+            # FILE DESCRIPTOR PRESSURE (use cached)
             row_y += 1
-
             if row_y < h - 1:
                 safe_add(row_y, conn_panel_x, "🔥 RESOURCE PRESSURE (OPS)", curses.A_BOLD | curses.A_UNDERLINE)
                 row_y += 1
@@ -544,19 +764,20 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
                 safe_add(row_y, conn_panel_x, "📂 File Descriptors :")
                 row_y += 1
 
-            fd_info = get_fd_pressure(pid)
+            fd_info = get_fd_pressure_cached(pid)
             for key in ["open", "limit", "usage"]:
                 if row_y >= h - 1:
                     break
                 safe_add(row_y, conn_panel_x, f"  {key.capitalize()} : {fd_info[key]}")
                 row_y += 1
             if row_y < h - 1:
-                safe_add(row_y, conn_panel_x, f"  Risk  : {fd_info['risk']}")
+                safe_add(row_y, conn_panel_x, f"  Risk  : {fd_info.get('risk','-')}")
                 row_y += 1
             row_y += 1
-            # 🔹 RUNTIME CLASSIFICATION (SMART)
+
+            # RUNTIME CLASSIFICATION (use cached)
             if pid and pid.isdigit() and row_y < h - 1:
-                runtime = detect_runtime_type(pid)
+                runtime = detect_runtime_type_cached(pid)
                 safe_add(row_y, conn_panel_x, "6️⃣ RUNTIME CLASSIFICATION (SMART)", curses.A_BOLD | curses.A_UNDERLINE)
                 row_y += 1
                 safe_add(row_y, conn_panel_x, f"🧩 Runtime :")
@@ -570,15 +791,12 @@ def draw_detail(win, lines, scroll=0, conn_info=None):
         else:
             safe_add(row_y, conn_panel_x, "<no pid>")
 
-    # 🔹 Detail lines (LEFT PANE + ICONS)
+    # 🔹 Detail lines (LEFT PANE) - prewrapped and iconified
     for i in range(max_rows):
         idx = scroll + i
-        if idx >= len(lines):
+        if idx >= len(wrapped_icon_lines):
             continue
-        line = lines[idx]
-        for key, icon in icons.items():
-            if key in line and not line.strip().startswith(icon):
-                line = line.replace(key, f"{icon} {key}", 1)
+        line = wrapped_icon_lines[idx]
         try:
             win.addstr(i + 3, 2, line[:conn_panel_x - 3])
         except curses.error:
@@ -605,12 +823,17 @@ def draw_open_files(win, pid, prog, files, scroll=0):
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
-    # include Actions (a) hint for main view
-    help_text = (
+    # include Actions (a) hint for main view; indicate snapshot mode
+    base_help = (
         " 🧭 [↑/↓] Select   ↕️  [+/-] Resize   🔄 [r] Refresh   "
         "📂 [←/→] Open Files Scroll   ⛔ [s] Stop Proc/Service   🔥 [f] Toggle Firewall   "
         "🛠  [a] Actions  ❌ [q] Quit "
     ) if not show_detail else " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
+
+    # snapshot indicator
+    snap_label = " [SNAPSHOT - press 'r' to refresh] " if SNAPSHOT_MODE else ""
+    help_text = (snap_label + base_help) if not show_detail else base_help
+
     bar_win = curses.newwin(3, w, h-3, 0)
     bar_win.erase()
     bar_win.box()
@@ -1027,8 +1250,11 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
 def main(stdscr):
     curses.curs_set(0)
     stdscr.keypad(True)
+    # make input non-blocking with short timeout so we can debounce selection and let caches serve during fast scroll
+    stdscr.timeout(120)  # ms
 
-    rows = parse_ss()
+    # use cached parse initially to reduce startup churn
+    rows = parse_ss_cached()
     cache = {}
     firewall_status = {}
     splash_screen(stdscr, rows, cache)
@@ -1040,42 +1266,75 @@ def main(stdscr):
     detail_scroll = 0
     open_files_scroll = 0
     cached_port = None
-    cached_wrapped_lines = []
+    cached_wrapped_icon_lines = []
     cached_total_lines = 0
     cached_conn_info = None
+
+    # track selection changes to avoid fetching heavy details while user scrolls quickly
+    last_selected = selected
+    last_selected_change_time = time.time()
 
     global TRIGGER_REFRESH  # we will mutate this inside the loop
     while True:
         h, w = stdscr.getmaxyx()
         visible_rows = table_h-4
 
+        # refresh rows from cached parser (fast)
+        rows = parse_ss_cached()
+
         if not show_detail and rows:
             table_win = curses.newwin(table_h, w//2, 0, 0)
             draw_table(table_win, rows, selected, offset, cache, firewall_status)
 
             open_files_win = curses.newwin(table_h, w-w//2, 0, w//2)
-            pid = rows[selected][4] if selected>=0 else "-"
-            prog = rows[selected][3] if selected>=0 else "-"
-            files = get_open_files(pid)
+            pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
+            prog = rows[selected][3] if selected>=0 and selected < len(rows) else "-"
+            # use cached open-files to avoid expensive /proc reads on every keypress
+            files = get_open_files_cached(pid)
             draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll)
 
             detail_win = curses.newwin(h-table_h-3, w, table_h, 0)
+
+            # debounce heavy detail fetch: only update cached_wrapped_lines / conn_info when selection stable
+            now = time.time()
+            selection_changed = (selected != last_selected)
+            if selection_changed:
+                last_selected_change_time = now
+                last_selected = selected
+
+            selection_stable = (now - last_selected_change_time) >= SELECT_STABLE_TTL
+
             if selected>=0 and rows:
                 port = rows[selected][0]
+                # only refresh heavy witr+conn+proc details if selection stable or cached_port different
                 if cached_port != port:
-                    cached_port = port
-                    lines = get_witr_output(port)
-                    lines = annotate_warnings(lines)
-                    wrapped = []
-                    for l in lines:
-                        wrapped += textwrap.wrap(l, width=w//2-4) or [""]
-                    cached_wrapped_lines = wrapped
-                    cached_total_lines = len(wrapped)
-                    cached_conn_info = get_connections_info(port)
-                    cached_conn_info["port"] = port
-                    cached_conn_info["pid"] = rows[selected][4]
-
-                draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll, conn_info=cached_conn_info)
+                    # Prefer already-preloaded cached data even if selection debounce not yet expired.
+                    port_cache = cache.get(port, {})
+                    witr_entry = _witr_cache.get(str(port))
+                    conn_entry = _conn_cache.get(str(port))
+                    if selection_stable or (witr_entry is not None and conn_entry is not None):
+                        cached_port = port
+                        # Use prewrapped icon lines from cache
+                        cached_wrapped_icon_lines = port_cache.get("wrapped_icon_lines", [])
+                        cached_total_lines = len(cached_wrapped_icon_lines)
+                        cached_conn_info = get_connections_info_cached(port)
+                        cached_conn_info["port"] = port
+                        cached_conn_info["pid"] = rows[selected][4]
+                    else:
+                        # show quick placeholder until stable or until preloaded
+                        placeholder = ["Waiting for selection to stabilize..."]
+                        cached_wrapped_icon_lines = placeholder
+                        cached_total_lines = len(placeholder)
+                        cached_conn_info = {"active_connections": 0, "top_ip": "-", "top_ip_count": 0, "all_ips": Counter(), "port": port, "pid": rows[selected][4]}
+                # Check if window resized significantly, rewrap if needed
+                prewrapped_width = port_cache.get("prewrapped_width", 0)
+                if abs(w - prewrapped_width) > 10:  # Threshold for rewrap
+                    lines = port_cache.get("lines", [])
+                    cached_wrapped_icon_lines = prepare_witr_content(lines, w - 4)
+                    cache[port]["wrapped_icon_lines"] = cached_wrapped_icon_lines
+                    cache[port]["prewrapped_width"] = w
+                    cached_total_lines = len(cached_wrapped_icon_lines)
+                draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             else:
                 draw_detail(detail_win, [], scroll=0, conn_info=None)
 
@@ -1083,7 +1342,7 @@ def main(stdscr):
 
         elif show_detail:
             detail_win = curses.newwin(h-3, w, 0, 0)
-            draw_detail(detail_win, cached_wrapped_lines, scroll=detail_scroll, conn_info=cached_conn_info)
+            draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             draw_help_bar(stdscr, show_detail)
 
         curses.doupdate()
@@ -1091,7 +1350,10 @@ def main(stdscr):
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
         if TRIGGER_REFRESH:
             TRIGGER_REFRESH = False
-            rows = parse_ss()
+            rows = parse_ss()  # force real parse
+            # clear caches to avoid stale data after global changes
+            _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
+            _table_row_cache.clear()
             cache.clear()
             splash_screen(stdscr, rows, cache)
             if selected >= len(rows):
@@ -1103,6 +1365,10 @@ def main(stdscr):
             continue
 
         k = stdscr.getch()
+
+        # if no key pressed (timeout), continue loop so cached parse and selection debounce can update UI
+        if k == -1:
+            continue
 
         if k == ord('q'):
             break
@@ -1124,7 +1390,10 @@ def main(stdscr):
             elif k == KEY_SEP_DOWN and table_h>6:
                 table_h -=1
             elif k == ord('r'):
+                # force real refresh and clear caches
                 rows = parse_ss()
+                _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
+                _table_row_cache.clear()
                 cache.clear()
                 splash_screen(stdscr, rows, cache)
                 if selected>=len(rows):
@@ -1143,6 +1412,8 @@ def main(stdscr):
                 if confirm:
                     stop_process_or_service(pid, prog, stdscr)
                     rows = parse_ss()
+                    _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
+                    _table_row_cache.clear()
                     cache.clear()
                     splash_screen(stdscr, rows, cache)
                     if selected >= len(rows):
