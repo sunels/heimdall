@@ -510,7 +510,7 @@ def prepare_witr_content(lines, width):
         "Container": "🐳",
         "Command": "🧠",
         "Started": "⏱",
-        "Why it Exists": "❓",
+        "Why it Exists!": "🔍",
         "Source": "📦",
         "Working Dir": "🗂",
         "Listening": "👂",
@@ -701,7 +701,7 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
 def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
     win.erase()
     h, w = win.getmaxyx()
-    header = f"📝 Detail View — {len(wrapped_icon_lines)} lines"
+    header = f"❓ Why It Exists — {len(wrapped_icon_lines)} lines"
     if h > 1:
         win.addstr(1, 2, header[:w-4], curses.A_BOLD)
         win.hline(2, 1, curses.ACS_HLINE, w - 2)
@@ -825,13 +825,13 @@ def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
     # include Actions (a) hint for main view; indicate snapshot mode
     base_help = (
-        " 🧭 [↑/↓] Select   ↕️  [+/-] Resize   🔄 [r] Refresh   "
-        "📂 [←/→] Open Files Scroll   ⛔ [s] Stop Proc/Service   🔥 [f] Toggle Firewall   "
-        "🛠  [a] Actions  ❌ [q] Quit "
+        "  [🧭 ↑/↓ Select]  [↕️ +/- Resize] [⇱⇲ Tab Witr Pane]"
+        " [📂 ←/→ Files Scroll]  [⛔ s Stop Proc/Service]  [🔥 f Toggle Firewall]"
+        "  [🛠 a Actions]  [❌ q Quit]"
     ) if not show_detail else " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
 
     # snapshot indicator
-    snap_label = " [SNAPSHOT - press 'r' to refresh] " if SNAPSHOT_MODE else ""
+    snap_label = " [🔄 'r' Refresh] " if SNAPSHOT_MODE else ""
     help_text = (snap_label + base_help) if not show_detail else base_help
 
     bar_win = curses.newwin(3, w, h-3, 0)
