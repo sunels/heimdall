@@ -1,8 +1,8 @@
-# portwitr-interactive
+# HEIMDALL
 
 **Interactive terminal-based port, process, file, and resource inspector for Linux**
 
-`portwitr-interactive` is a high-performance, **curses-based Terminal User Interface (TUI)** designed to give you **instant visibility and control** over your Linux system — all from a single, interactive view.
+`heimdall` is a high-performance, **curses-based Terminal User Interface (TUI)** designed to give you **instant visibility and control** over your Linux system — all from a single, interactive view.
 
 ## ✨ Features
 
@@ -31,7 +31,7 @@ This eliminates the need to jump between multiple tools such as `ss`, `netstat`,
 
 ---
 
-![portwitr-interactive logo](logo.png)
+![heimdall logo](logo.png)
 
 ---
 
@@ -50,7 +50,7 @@ portwitr
 ## 🧠 What Makes It Special?
 
 Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),  
-**portwitr-interactive connects everything together**:
+**heimdall connects everything together**:
 
 🔌 **Port** → ⚡ **CPU/MEM Usage** → 🧠 **Process / Service** → ⛔ **Firewall Control** → 📂 **All open files**
 
@@ -59,20 +59,20 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 ## 📸 Screenshots
 
 ### 🔍 Main View — Ports, Processes & Open Files
-<img src="pp-1.png" alt="portwitr-interactive main view" width="100%"/>
+<img src="pp-1.png" alt="heimdall main view" width="100%"/>
 
 ---
 
 ### 🧾 Detail View — Deep Port & Process Inspection
-<img src="pp-2.png" alt="portwitr-interactive detail view" width="100%"/>
+<img src="pp-2.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Actions Center (Modal)
-<img src="pp-3.png" alt="portwitr-interactive detail view" width="100%"/>
+<img src="pp-3.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Block IP Modal
-<img src="pp-4.png" alt="portwitr-interactive detail view" width="100%"/>
+<img src="pp-4.png" alt="heimdall detail view" width="100%"/>
 
 ---
 
@@ -143,9 +143,9 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 ## 🚀 Installation
 
 ```bash
-git clone https://github.com/sunels/portwitr-interactive.git
-cd portwitr-interactive
-python3 portwitr_interactive.py
+git clone https://github.com/sunels/heimdall.git
+cd heimdall
+python3 heimdall.py
 ```
 
 ## 🛠 Action Center (Interactive Operations)
@@ -224,8 +224,8 @@ Invoked from Action Center via `[b]`:
 
 ## 📁 Project Structure
 ```bash
-portwitr-interactive/
-├── portwitr_interactive.py
+heimdall/
+├── heimdall.py
 ├── README.md
 ├── pp-1.png
 └── pp-2.png
@@ -253,7 +253,7 @@ MIT License
 
 ---
 
-> 🔌 **portwitr-interactive**  
+> 🔌 **heimdall**  
 > *See the whole picture — not just the port.*
 
 ## 🛠 Performance / Startup caching
