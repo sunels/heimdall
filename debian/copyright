@@ -1,0 +1,11 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: heimdall
+Upstream-Contact: https://github.com/sunels/heimdall
+
+Files: *
+Copyright: 2026 Serkan
+License: MIT
+
+Files: debian/*
+Copyright: 2026 Serkan
+License: MIT

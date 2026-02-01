@@ -1291,6 +1291,155 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
 
         # any other key is ignored in non-manual mode
 
+
+def get_process_parent_chain(pid, max_depth=10):
+    """
+    Return real parent/supervisor chain like:
+    systemd(1) -> sshd(742) -> sshd(3112)
+    """
+    chain = []
+    seen = set()
+
+    while pid and pid.isdigit() and pid not in seen and len(chain) < max_depth:
+        seen.add(pid)
+        try:
+            with open(f"/proc/{pid}/stat", "r") as f:
+                stat = f.read().split()
+                ppid = stat[3]
+
+            with open(f"/proc/{pid}/comm", "r") as f:
+                name = f.read().strip()
+
+            chain.append(f"{name}({pid})")
+
+            if ppid == "0" or ppid == pid:
+                break
+
+            pid = ppid
+        except Exception:
+            break
+
+    return list(reversed(chain))
+
+
+def format_process_tree(chain):
+    """
+    Pretty tree output for UI
+    """
+    if not chain:
+        return ["<no process chain>"]
+
+    lines = ["🌳 Process Tree:"]
+    for i, node in enumerate(chain):
+        prefix = "   " * i + ("└─ " if i else "")
+        lines.append(f"{prefix}{node}")
+    return lines
+
+def get_fd_pressure(pid):
+    """
+    Return dict with open, limit, usage% and risk comment
+    """
+    fd_info = {
+        "open": "-",
+        "limit": "-",
+        "usage": "-",
+        "risk": "-"
+    }
+    if not pid or not pid.isdigit():
+        return fd_info
+    try:
+        open_count = len(os.listdir(f"/proc/{pid}/fd"))
+    except PermissionError:
+        open_count = "-"
+    except FileNotFoundError:
+        open_count = "-"
+
+    try:
+        with open(f"/proc/{pid}/limits", "r") as f:
+            for line in f:
+                if "Max open files" in line:
+                    parts = line.split()
+                    limit = int(parts[3])
+                    break
+            else:
+                limit = "-"
+    except Exception:
+        limit = "-"
+
+    if isinstance(open_count, int) and isinstance(limit, int) and limit > 0:
+        usage = int(open_count / limit * 100)
+        risk = "⚠️ FD exhaustion prod’da sık patlar." if usage > 80 else "✔ Normal"
+    else:
+        usage = "-"
+        risk = "-"
+
+    fd_info.update({
+        "open": open_count,
+        "limit": limit,
+        "usage": f"{usage}%" if usage != "-" else "-",
+        "risk": risk
+    })
+    return fd_info
+
+def detect_runtime_type(pid):
+    """
+    Detect runtime environment from PID.
+    Returns dict:
+    {
+        "type": "-",
+        "mode": "-",
+        "gc": "-"
+    }
+    """
+    runtime = {"type": "-", "mode": "-", "gc": "-"}
+    if not pid or not pid.isdigit():
+        return runtime
+    try:
+        # cmdline
+        with open(f"/proc/{pid}/cmdline", "r") as f:
+            cmdline = f.read().replace("\0", " ").lower()
+
+        # environ
+        env = {}
+        try:
+            with open(f"/proc/{pid}/environ", "r") as f:
+                for e in f.read().split("\0"):
+                    if "=" in e:
+                        k,v = e.split("=",1)
+                        env[k] = v
+        except Exception:
+            pass
+
+        # Java detection
+        if "java" in cmdline:
+            runtime["type"] = "Java"
+            if "spring-boot" in cmdline or "springboot" in cmdline:
+                runtime["mode"] = "Spring Boot Server"
+            else:
+                runtime["mode"] = "Server" if "-jar" in cmdline else "App"
+            # detect GC type from JAVA_OPTS or cmdline
+            gc_match = re.search(r"-XX:\+Use([A-Za-z0-9]+)GC", cmdline)
+            if not gc_match:
+                gc_match = re.search(r"GC=([A-Za-z0-9]+)", " ".join(env.get("JAVA_OPTS","").split()))
+            runtime["gc"] = gc_match.group(1) if gc_match else "Unknown"
+        elif "node" in cmdline or "nodejs" in cmdline:
+            runtime["type"] = "Node"
+            runtime["mode"] = "Server"
+        elif "python" in cmdline:
+            runtime["type"] = "Python"
+            runtime["mode"] = "Script"
+        elif "nginx" in cmdline:
+            runtime["type"] = "Nginx"
+            runtime["mode"] = "Server"
+        elif "postgres" in cmdline or "postmaster" in cmdline:
+            runtime["type"] = "Postgres"
+            runtime["mode"] = "DB Server"
+        elif "go" in cmdline:
+            runtime["type"] = "Go"
+            runtime["mode"] = "Server"
+    except Exception:
+        pass
+    return runtime
 # --------------------------------------------------
 # Main Loop
 # --------------------------------------------------
@@ -1478,157 +1627,15 @@ def main(stdscr):
                 selected = 0
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
 
-def get_process_parent_chain(pid, max_depth=10):
-    """
-    Return real parent/supervisor chain like:
-    systemd(1) -> sshd(742) -> sshd(3112)
-    """
-    chain = []
-    seen = set()
 
-    while pid and pid.isdigit() and pid not in seen and len(chain) < max_depth:
-        seen.add(pid)
-        try:
-            with open(f"/proc/{pid}/stat", "r") as f:
-                stat = f.read().split()
-                ppid = stat[3]
-
-            with open(f"/proc/{pid}/comm", "r") as f:
-                name = f.read().strip()
-
-            chain.append(f"{name}({pid})")
-
-            if ppid == "0" or ppid == pid:
-                break
-
-            pid = ppid
-        except Exception:
-            break
-
-    return list(reversed(chain))
-
-
-def format_process_tree(chain):
-    """
-    Pretty tree output for UI
-    """
-    if not chain:
-        return ["<no process chain>"]
-
-    lines = ["🌳 Process Tree:"]
-    for i, node in enumerate(chain):
-        prefix = "   " * i + ("└─ " if i else "")
-        lines.append(f"{prefix}{node}")
-    return lines
-
-def get_fd_pressure(pid):
-    """
-    Return dict with open, limit, usage% and risk comment
-    """
-    fd_info = {
-        "open": "-",
-        "limit": "-",
-        "usage": "-",
-        "risk": "-"
-    }
-    if not pid or not pid.isdigit():
-        return fd_info
-    try:
-        open_count = len(os.listdir(f"/proc/{pid}/fd"))
-    except PermissionError:
-        open_count = "-"
-    except FileNotFoundError:
-        open_count = "-"
-
-    try:
-        with open(f"/proc/{pid}/limits", "r") as f:
-            for line in f:
-                if "Max open files" in line:
-                    parts = line.split()
-                    limit = int(parts[3])
-                    break
-            else:
-                limit = "-"
-    except Exception:
-        limit = "-"
-
-    if isinstance(open_count, int) and isinstance(limit, int) and limit > 0:
-        usage = int(open_count / limit * 100)
-        risk = "⚠️ FD exhaustion prod’da sık patlar." if usage > 80 else "✔ Normal"
-    else:
-        usage = "-"
-        risk = "-"
-
-    fd_info.update({
-        "open": open_count,
-        "limit": limit,
-        "usage": f"{usage}%" if usage != "-" else "-",
-        "risk": risk
-    })
-    return fd_info
-
-def detect_runtime_type(pid):
-    """
-    Detect runtime environment from PID.
-    Returns dict:
-    {
-        "type": "-",
-        "mode": "-",
-        "gc": "-"
-    }
-    """
-    runtime = {"type": "-", "mode": "-", "gc": "-"}
-    if not pid or not pid.isdigit():
-        return runtime
-    try:
-        # cmdline
-        with open(f"/proc/{pid}/cmdline", "r") as f:
-            cmdline = f.read().replace("\0", " ").lower()
-
-        # environ
-        env = {}
-        try:
-            with open(f"/proc/{pid}/environ", "r") as f:
-                for e in f.read().split("\0"):
-                    if "=" in e:
-                        k,v = e.split("=",1)
-                        env[k] = v
-        except Exception:
-            pass
-
-        # Java detection
-        if "java" in cmdline:
-            runtime["type"] = "Java"
-            if "spring-boot" in cmdline or "springboot" in cmdline:
-                runtime["mode"] = "Spring Boot Server"
-            else:
-                runtime["mode"] = "Server" if "-jar" in cmdline else "App"
-            # detect GC type from JAVA_OPTS or cmdline
-            gc_match = re.search(r"-XX:\+Use([A-Za-z0-9]+)GC", cmdline)
-            if not gc_match:
-                gc_match = re.search(r"GC=([A-Za-z0-9]+)", " ".join(env.get("JAVA_OPTS","").split()))
-            runtime["gc"] = gc_match.group(1) if gc_match else "Unknown"
-        elif "node" in cmdline or "nodejs" in cmdline:
-            runtime["type"] = "Node"
-            runtime["mode"] = "Server"
-        elif "python" in cmdline:
-            runtime["type"] = "Python"
-            runtime["mode"] = "Script"
-        elif "nginx" in cmdline:
-            runtime["type"] = "Nginx"
-            runtime["mode"] = "Server"
-        elif "postgres" in cmdline or "postmaster" in cmdline:
-            runtime["type"] = "Postgres"
-            runtime["mode"] = "DB Server"
-        elif "go" in cmdline:
-            runtime["type"] = "Go"
-            runtime["mode"] = "Server"
-    except Exception:
-        pass
-    return runtime
-
-if __name__ == "__main__":
+def cli_entry():
+    """terminal command 'heimdall' entry point"""
     check_python_version()
     check_witr_exists()
     parse_args()
     curses.wrapper(main)
+
+
+if __name__ == "__main__":
+    # developer entry python heimdall.py
+    cli_entry()

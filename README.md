@@ -147,10 +147,38 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ## 🚀 Installation
 
-```bash
-git clone https://github.com/sunels/heimdall.git
-cd heimdall
-python3 heimdall.py
+### Option 1 – From .deb package (recommended for Debian/Ubuntu)
+
+Download the latest `.deb` from [Releases](https://github.com/sunels/heimdall/releases):
+
+```
+    wget https://github.com/sunels/heimdall/releases/download/v0.1.0/heimdall_0.1.0-1_all.deb
+    sudo dpkg -i heimdall_0.1.0-1_all.deb
+
+    #If dependencies are missing (rare):
+
+    sudo apt update
+    sudo apt install -f
+
+    Run:
+    sudo heimdall
+    
+    # or just
+    heimdall
+```
+### Option 2 – From source
+
+Ensure you have Python 3.6+ and `witr` installed and accessible in your PATH.
+
+Then clone the repository and run:
+
+``` 
+    git clone https://github.com/sunels/heimdall.git
+    cd heimdall
+    chmod +x heimdall.py
+    sudo cp heimdall.py /usr/local/bin/heimdall
+    # or create symlink
+    sudo ln -s $(pwd)/heimdall.py /usr/local/bin/heimdall
 ```
 
 ## 🛠 Action Center (Interactive Operations)

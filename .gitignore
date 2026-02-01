@@ -1,0 +1,41 @@
+# Python bytecode ve cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Build ve distro dirs
+build/
+dist/
+deb_dist/
+*.egg
+*.egg-info/
+.eggs/
+
+# pybuild (pybuild / stdeb remiant )
+.pybuild/
+
+# Debian packaing temporary files
+debian/files
+debian/*.debhelper
+debian/*.log
+debian/*.substvars
+debian/debhelper-build-stamp
+debian/tmp/
+debian/heimdall/
+debian/heimald/   # yazım hatası olabilir, varsa sil
+
+# Editör / IDE files
+.idea/
+*.swp
+*~
+.vscode/
+.DS_Store
+
+
+# Diğer olası kalıntılar
+*.bak
+*.tmp
+*.log
