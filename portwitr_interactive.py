@@ -509,13 +509,13 @@ def prepare_witr_content(lines, width):
         "Target": "🎯",
         "Container": "🐳",
         "Command": "🧠",
-        "Started": "⏱",
+        "Started": "⏱ ",
         "Why it Exists!": "🔍",
         "Source": "📦",
-        "Working Dir": "🗂",
+        "Working Dir": "🗂 ",
         "Listening": "👂",
         "Socket": "🔌",
-        "Warnings": "⚠️",
+        "Warnings": "⚠️ ",
         "PID": "🆔",
         "User": "👤",
         "Process": "🧠"
@@ -680,7 +680,7 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
     win.erase()
     h, w = win.getmaxyx()
     # Header
-    headers = ["🌐 PORT", "PROTO", "📊 USAGE [Mem/CPU]", "🧠 PROCESS", "👤 USER"]
+    headers = ["🌐 PORT", "PROTO", "📊 USAGE [Mem/CPU]", "  🧠 PROCESS", "   👤 USER"]
     widths = [10, 8, 18, 28, w - 68]
     x = 1
     for htxt, wd in zip(headers, widths):
