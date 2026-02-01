@@ -413,35 +413,90 @@ def request_full_refresh():
 # Splash Screen with Preloading
 # --------------------------------------------------
 def splash_screen(stdscr, rows, cache):
+    if curses.has_colors():
+        curses.start_color()
+        curses.init_pair(1, curses.COLOR_MAGENTA, curses.COLOR_BLACK)   # Mor başlık
+        curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)      # Accent / slogan
+        curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)     # Normal metin
+        curses.init_pair(4, curses.COLOR_YELLOW, curses.COLOR_BLACK)    # Progress vurgu
+
     h, w = stdscr.getmaxyx()
-    bh, bw = 9, min(72, w - 4)
+
+    bh = min(18, h - 6)          # Daha yüksek pencere
+    bw = min(99, w - 6)          # Daha geniş (taşma önlemek için yeterli)
     y, x = (h - bh) // 2, (w - bw) // 2
     win = curses.newwin(bh, bw, y, x)
+
+    heimdall_art = [
+        "  ██╗  ██╗███████╗██╗███╗   ███╗██████╗  █████╗ ██╗     ██╗     ",
+        "  ██║  ██║██╔════╝██║████╗ ████║██╔══██╗██╔══██╗██║     ██║     ",
+        "  ███████║█████╗  ██║██╔████╔██║██║  ██║███████║██║     ██║     ",
+        "  ██╔══██║██╔══╝  ██║██║╚██╔╝██║██║  ██║██╔══██║██║     ██║     ",
+        "  ██║  ██║███████╗██║██║ ╚═╝ ██║██████╔╝██║  ██║███████╗███████╗",
+        "  ╚═╝  ╚═╝╚══════╝╚═╝╚═╝     ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝",
+    ]
+
+    art_height = len(heimdall_art)
+    slogan = "The All-Seeing Port & Process Guardian"
+    slogan_y = art_height + 1
+
     total = len(rows)
+    progress_y = slogan_y + 3
+
+    # Bar genişliğini biraz daha güvenli ve kontrollü yapalım
+    bar_w = max(40, bw - 20)   # min 40 karakter garanti, taşma olmaz
+
     for i, row in enumerate(rows, 1):
         port = row[0]
+
         win.erase()
         win.box()
-        title = " Initializing Port / Process Viewer "
-        win.addstr(0, (bw - len(title)) // 2, title, curses.A_BOLD)
-        win.addstr(2, 3, "Collecting data...")
-        win.addstr(4, 3, f"Port: {port}")
-        bar_w = bw - 10
+
+        # HEIMDALL yazısı (mor)
+        for idx, line in enumerate(heimdall_art):
+            line_x = max(0, (bw - len(line)) // 2)
+            win.addstr(2 + idx, line_x, line[:bw-4],
+                       curses.color_pair(1) | curses.A_BOLD)
+
+        # Slogan (cyan)
+        slogan_x = max(0, (bw - len(slogan)) // 2)
+        win.addstr(slogan_y + 2, slogan_x, slogan,
+                   curses.color_pair(2) | curses.A_ITALIC)
+
+        # Alt kısım: Collecting data + port
+        win.addstr(progress_y, 4, "Collecting system intelligence...", curses.color_pair(3))
+        win.addstr(progress_y + 1, 4, f"Scanning port: {port}", curses.color_pair(4))
+
+        # Progress bar + adım sayısı BAR'IN İÇİNDE (taşma imkansız)
         filled = int(bar_w * i / total)
-        bar = "█" * filled + " " * (bar_w - filled)
-        win.addstr(6, 4, f"[{bar}]")
-        win.addstr(7, bw - 12, f"{i}/{total}")
+        bar = "█" * filled + "░" * (bar_w - filled)
+
+        progress_str = f" {i}/{total} "
+        mid = bar_w // 2
+        start_pos = mid - len(progress_str) // 2
+
+        # Eğer bar çok kısa ise başa yasla (güvenlik)
+        if start_pos < 0:
+            start_pos = 0
+        if start_pos + len(progress_str) > bar_w:
+            start_pos = bar_w - len(progress_str)
+
+        bar_with_progress = (
+            bar[:start_pos] + progress_str + bar[start_pos + len(progress_str):]
+        )
+
+        bar_x = (bw - bar_w) // 2
+        win.addstr(progress_y + 3, bar_x, f"[{bar_with_progress}]", curses.A_BOLD)
+
         win.refresh()
 
-        # preload everything needed later (eager snapshot)
+        # --- Mevcut preload kodları (hiç değişmiyor) ---
         try:
-            # witr + cached metadata
             lines = get_witr_output(port)
             _witr_cache[str(port)] = (lines, time.time())
             user = extract_user_from_witr(lines)
             process = extract_process_from_witr(lines)
-            # Pre-process wrapped and iconified lines (use a fixed width or estimate)
-            detail_width = w - 4  # Use full width for prewrap; can rewrap if needed but for perf, predo
+            detail_width = w - 4
             wrapped_icon_lines = prepare_witr_content(lines, detail_width)
             cache[port] = {
                 "user": user,
@@ -453,54 +508,46 @@ def splash_screen(stdscr, rows, cache):
         except Exception:
             cache[port] = {"user": "-", "process": "-", "lines": ["No data"], "wrapped_icon_lines": []}
 
-        # preload connections info
         try:
             conn = get_connections_info(port)
             _conn_cache[str(port)] = (conn, time.time())
         except Exception:
             _conn_cache[str(port)] = ({"active_connections": 0, "top_ip": "-", "top_ip_count": 0, "all_ips": Counter()}, time.time())
 
-        # preload process-related caches if pid present
         try:
             pid = row[4] if len(row) > 4 else "-"
             if pid and pid.isdigit():
-                try:
-                    _proc_usage_cache[pid] = (get_process_usage(pid), time.time())
-                except Exception:
-                    _proc_usage_cache[pid] = ("-", time.time())
-                try:
-                    _open_files_cache[pid] = (get_open_files(pid), time.time())
-                except Exception:
-                    _open_files_cache[pid] = ([], time.time())
-                try:
-                    _proc_chain_cache[pid] = get_process_parent_chain(pid)
-                except Exception:
-                    _proc_chain_cache[pid] = []
-                try:
-                    _fd_cache[pid] = get_fd_pressure(pid)
-                except Exception:
-                    _fd_cache[pid] = {"open": "-", "limit": "-", "usage": "-", "risk": "-"}
-                try:
-                    _runtime_cache[pid] = detect_runtime_type(pid)
-                except Exception:
-                    _runtime_cache[pid] = {"type": "-", "mode": "-", "gc": "-"}
+                _proc_usage_cache[pid] = (get_process_usage(pid), time.time())
+                _open_files_cache[pid] = (get_open_files(pid), time.time())
+                _proc_chain_cache[pid] = get_process_parent_chain(pid)
+                _fd_cache[pid] = get_fd_pressure(pid)
+                _runtime_cache[pid] = detect_runtime_type(pid)
         except Exception:
             pass
 
         cache[port]["preloaded"] = True
 
-    # After eager preload: mark snapshot mode on so UI uses cached snapshot exclusively
-    global SNAPSHOT_MODE
-    SNAPSHOT_MODE = True
-
+    # Bitiş ekranı
     win.erase()
     win.box()
-    done = " Initialization Complete "
-    win.addstr(bh // 2, (bw - len(done)) // 2, done, curses.A_BOLD)
+
+    done_lines = [
+        "Initialization Complete",
+        "Heimdall is now watching..."
+    ]
+    for idx, text in enumerate(done_lines):
+        text_x = max(0, (bw - len(text)) // 2)
+        win.addstr(bh // 2 - 1 + idx, text_x, text,
+                   curses.color_pair(1) | curses.A_BOLD)
+
     win.refresh()
-    time.sleep(0.8)
+    time.sleep(1.2)
+
     stdscr.clear()
     stdscr.refresh()
+
+    global SNAPSHOT_MODE
+    SNAPSHOT_MODE = True
 
 def prepare_witr_content(lines, width):
     lines = annotate_warnings(lines)
