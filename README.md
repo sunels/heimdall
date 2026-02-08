@@ -226,6 +226,31 @@ Invoked from Action Center via `[b]`:
   - Blocking requires sudo and iptables — ensure appropriate privileges.
   - Actions are immediate and affect live traffic; use with care.
 
+## 💥 Kill Connections — details
+
+Invoked from Action Center via `[k]`:
+
+- Lists all active ESTABLISHED connections for the selected port (up to 9 connections shown for single-key selection)
+- Each connection shows: protocol (TCP/UDP), local address:port, and remote address:port
+- Selection:
+  - Press a number key (1-9) to select and kill the corresponding connection
+  - Selected connection flashes briefly before termination
+  - Press ESC to cancel without killing any connection
+- Execution:
+  - Primary method: Uses `sudo ss -K` to forcefully terminate the TCP connection
+  - Fallback method: If `ss -K` fails, attempts to use `conntrack -D` to drop the connection from the connection tracking table
+  - After successful termination, the UI automatically refreshes to reflect changes
+- Use cases:
+  - Terminate suspicious or unwanted connections
+  - Free up connection slots when debugging connection limits
+  - Quickly disconnect specific clients without affecting other connections
+- Safety notes:
+  - Requires sudo privileges for `ss -K` or `conntrack` commands
+  - Connection termination is immediate and forceful (similar to TCP RST)
+  - Use with caution in production environments
+  - If connection count exceeds 9, only the first 9 are shown (consider using Block IP for bulk operations)
+
+
 ## UI / Implementation notes
 
 - Modal sizing is responsive to terminal size and has been widened to reduce text wrapping compared to earlier versions.

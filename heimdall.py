@@ -385,6 +385,70 @@ def get_connections_info(port):
             "all_ips": {}
         }
 
+def get_connection_list(port):
+    """
+    Return list of active connections for a port with detailed info.
+    Each connection is a dict with: proto, local_addr, remote_addr, state
+    
+    Note: Deduplicates bidirectional connections to avoid showing the same
+    connection twice (once from each direction).
+    """
+    connections = []
+    seen_pairs = set()  # Track unique connection pairs
+    
+    try:
+        result = subprocess.run(
+            ["ss", "-ntu", "state", "established", f"( dport = :{port} or sport = :{port} )"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        lines = result.stdout.strip().splitlines()[1:]  # skip header
+        
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 5:
+                proto = parts[0].lower()
+                local = parts[3]
+                remote = parts[4]
+                state = parts[1] if len(parts) > 1 else "ESTAB"
+                
+                # Create a normalized pair to detect duplicates
+                # Sort addresses to ensure (A,B) and (B,A) are treated as same
+                pair = tuple(sorted([local, remote]))
+                
+                # Skip if we've already seen this connection pair
+                if pair in seen_pairs:
+                    continue
+                    
+                seen_pairs.add(pair)
+                
+                # Prefer showing the connection where our port is on the local side
+                # This makes it clearer which is the server and which is the client
+                local_port = local.rsplit(":", 1)[1]
+                remote_port = remote.rsplit(":", 1)[1]
+                
+                if local_port == str(port):
+                    # Our port is local - show as-is (server perspective)
+                    display_local = local
+                    display_remote = remote
+                else:
+                    # Our port is remote - swap to show server perspective
+                    display_local = remote
+                    display_remote = local
+                
+                connections.append({
+                    "proto": proto,
+                    "local_addr": display_local,
+                    "remote_addr": display_remote,
+                    "state": state,
+                    "display": f"{proto.upper()} {display_local} ↔ {display_remote}"
+                })
+    except Exception:
+        pass
+    
+    return connections
+
 def get_connections_info_cached(port, ttl=CONN_TTL):
     """Cached wrapper for get_connections_info; short TTL to avoid frequent ss calls while scrolling."""
     if not port:
@@ -1027,14 +1091,28 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             stdscr.touchwin()
             curses.doupdate()
             return
+        elif ch == 'k':
+            # Open Kill Connections modal
+            draw_kill_connections_modal(stdscr, port, cache)
+            # after modal returns, ensure main UI will be redrawn by caller
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except Exception:
+                pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
         else:
             # For other keys, simple not-implemented message
-            if ch in ('k','l','h','9','p','c','n','r','o','d'):
+            if ch in ('l','h','9','p','c','n','r','o','d'):
                 show_message(stdscr, f"Action '{ch}' not implemented yet.")
                 win = draw_action_center_modal(stdscr)
             else:
                 # ignore other keys
                 pass
+
 
 
 def execute_block_ip(ip, port, cache, stdscr):
@@ -1076,6 +1154,51 @@ def execute_block_ip(ip, port, cache, stdscr):
         show_message(stdscr, "iptables failed (check sudo/iptables).")
     except Exception as e:
         show_message(stdscr, f"Error: {e}")
+
+
+def kill_connection(local_addr, remote_addr, stdscr):
+    """
+    Kill a specific TCP connection using ss command.
+    Uses sudo ss -K to kill the connection.
+    """
+    try:
+        # ss -K requires src and dst specification
+        # Format: ss -K dst REMOTE_ADDR src LOCAL_ADDR
+        result = subprocess.run(
+            ["sudo", "ss", "-K", "dst", remote_addr, "src", local_addr],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0:
+            show_message(stdscr, f"✅ Connection killed: {local_addr} ↔ {remote_addr}")
+            request_full_refresh()
+        else:
+            # Try alternative method using conntrack if ss -K fails
+            try:
+                # Extract IPs and ports
+                local_ip, local_port = local_addr.rsplit(":", 1)
+                remote_ip, remote_port = remote_addr.rsplit(":", 1)
+                
+                subprocess.run(
+                    ["sudo", "conntrack", "-D", "-p", "tcp",
+                     "-s", local_ip, "--sport", local_port,
+                     "-d", remote_ip, "--dport", remote_port],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5
+                )
+                show_message(stdscr, f"✅ Connection killed (via conntrack): {local_addr} ↔ {remote_addr}")
+                request_full_refresh()
+            except Exception:
+                show_message(stdscr, "⚠️ Failed to kill connection. Try sudo or check permissions.")
+    except subprocess.TimeoutExpired:
+        show_message(stdscr, "⚠️ Connection kill timed out.")
+    except Exception as e:
+        show_message(stdscr, f"❌ Error killing connection: {e}")
+
 
 
 def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
@@ -1290,6 +1413,141 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
             continue
 
         # any other key is ignored in non-manual mode
+
+
+def draw_kill_connections_modal(stdscr, port, cache):
+    """
+    Kill Connections modal:
+    - Lists all active ESTABLISHED connections for the port
+    - Allows user to select a connection by number (1-9) to kill it
+    - Shows connection details: protocol, local addr, remote addr
+    """
+    h, w = stdscr.getmaxyx()
+    pad = 2
+    bw = min(w - 4, max(70, int(w * 0.85)))
+    bh = min(20, max(12, h - 6))
+    y = max(0, (h - bh) // 2)
+    x = max(0, (w - bw) // 2)
+
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.timeout(-1)
+    win.erase()
+    win.box()
+    
+    title = f" 💥 Kill Connections — port {port} "
+    try:
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # Get active connections
+    connections = get_connection_list(port)
+    
+    row = 2
+    try:
+        hint = "🔎 Select connection [1-9] to kill  •  [ESC] Cancel"
+        win.addstr(row, pad, hint[:bw - pad*2], curses.A_NORMAL)
+    except curses.error:
+        pass
+    row += 2
+
+    if not connections:
+        try:
+            win.addstr(row, pad, "ℹ️  No active connections found.", curses.A_DIM)
+        except curses.error:
+            pass
+        row += 2
+        try:
+            win.addstr(row, pad, "Press any key to close...", curses.A_DIM)
+        except curses.error:
+            pass
+        win.noutrefresh()
+        curses.doupdate()
+        win.getch()
+        try:
+            win.erase(); win.refresh(); del win
+        except Exception:
+            pass
+        stdscr.touchwin(); curses.doupdate()
+        return
+
+    # Display connections (max 9)
+    try:
+        win.addstr(row, pad, "🔗 Active Connections:", curses.A_BOLD)
+    except curses.error:
+        pass
+    row += 1
+    
+    conn_start_row = row
+    display_connections = connections[:9]  # Limit to 9 for single-key selection
+    
+    for i, conn in enumerate(display_connections, 1):
+        line = f"  [{i}] {conn['display']}"
+        try:
+            win.addstr(row, pad, line[:bw - pad*2])
+        except curses.error:
+            pass
+        row += 1
+
+    if len(connections) > 9:
+        try:
+            win.addstr(row, pad, f"  ... and {len(connections) - 9} more (showing first 9)", curses.A_DIM)
+        except curses.error:
+            pass
+        row += 1
+
+    row += 1
+    try:
+        footer = "⚠️  Warning: This will forcefully terminate the selected connection"
+        win.addstr(row, pad, footer[:bw - pad*2], curses.A_DIM)
+    except curses.error:
+        pass
+
+    win.noutrefresh()
+    curses.doupdate()
+
+    # Wait for user input
+    while True:
+        k = win.getch()
+        
+        # ESC: cancel
+        if k == 27:
+            try:
+                win.erase(); win.refresh(); del win
+            except Exception:
+                pass
+            stdscr.touchwin(); curses.doupdate()
+            return
+
+        # Numeric selection (1-9)
+        if 49 <= k <= 57:  # ASCII codes for '1' to '9'
+            idx = k - 49  # Convert to 0-based index
+            if idx < len(display_connections):
+                conn = display_connections[idx]
+                
+                # Highlight selected connection
+                try:
+                    line_y = conn_start_row + idx
+                    line = f"  [{idx+1}] {conn['display']}"
+                    win.addstr(line_y, pad, line[:bw - pad*2].ljust(bw - pad*2), 
+                              curses.A_REVERSE | curses.A_BOLD)
+                    win.noutrefresh()
+                    curses.doupdate()
+                    time.sleep(0.16)
+                except curses.error:
+                    pass
+
+                # Kill the connection
+                kill_connection(conn['local_addr'], conn['remote_addr'], stdscr)
+                
+                try:
+                    win.erase(); win.refresh(); del win
+                except Exception:
+                    pass
+                stdscr.touchwin(); curses.doupdate()
+                return
+
 
 
 def get_process_parent_chain(pid, max_depth=10):
