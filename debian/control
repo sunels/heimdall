@@ -9,7 +9,7 @@ Homepage: https://github.com/sunels/heimdall
 Package: heimdall
 Architecture: all
 Depends: ${python3:Depends}, ${misc:Depends}, python3 (>= 3.8)
-Recommends: witr, iproute2, procps
+Recommends: witr, iproute2, procps, conntrack-tools
 Description: Heimdall - Interactive curses-based port and process viewer
  Heimdall monitors listening ports, processes, connections, resource usage,
  and warnings using the witr tool.

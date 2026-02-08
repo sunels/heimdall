@@ -36,8 +36,9 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='portwitr-interactive 2.1')
+    parser.add_argument('--version', action='version', version='heimdall 0.2.0')
     return parser.parse_args()
+
 
 # --------------------------------------------------
 # 🌍 Network Scope / Exposure

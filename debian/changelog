@@ -1,3 +1,15 @@
+heimdall (0.2.0-1) unstable; urgency=medium
+
+  * New feature: Kill Connections modal (Action Center → [k])
+    - Lists active ESTABLISHED connections for selected port
+    - Allows terminating connections via sudo ss -K or conntrack
+    - Single-key selection (1-9) with visual feedback
+  * Fixed: Connection deduplication (bidirectional connections now shown once)
+  * Fixed: Connections now displayed from server perspective for clarity
+  * Updated documentation with Kill Connections usage and examples
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 08 Feb 2026 18:15:00 +0200
+
 heimdall (0.1.0-1) unstable; urgency=medium
 
   * Initial release of Heimdall interactive viewer.
