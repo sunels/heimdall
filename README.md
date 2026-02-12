@@ -159,18 +159,18 @@ Download the latest `.deb` from [Releases](https://github.com/sunels/heimdall/re
 # Direct download
 wget https://github.com/sunels/heimdall/releases/download/v0.3.0/heimdall_0.3.0-1_all.deb
 
-    # Installation
-sudo dpkg -i heimdall_0.3.0-1_all.deb
+# Installation
+    sudo dpkg -i heimdall_0.3.0-1_all.deb
 
     #If dependencies are missing (rare):
 
     sudo apt update
     sudo apt install -f
 
-    Run:
+# Run:
     sudo heimdall
     
-    # or just
+# or just
     heimdall
 ```
 ### Option 2 – From source
