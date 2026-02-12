@@ -1,3 +1,13 @@
+heimdall (0.3.0-1) unstable; urgency=medium
+
+  * New feature: Connection Limit modal (Action Center → [l])
+    - View active per-IP connection limits for a port
+    - Quickly enforce 5/10/25/50/100 connection limits per IP (REJECT with tcp-reset)
+    - Remove existing limits with one key [x]
+  * Docs: Updated README with Connection Limit details and screenshots
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Tue, 12 Feb 2026 20:15:00 +0200
+
 heimdall (0.2.0-1) unstable; urgency=medium
 
   * New feature: Kill Connections modal (Action Center → [k])

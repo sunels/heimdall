@@ -80,6 +80,10 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 <img src="pp-4.png" alt="heimdall detail view" width="100%"/>
 
 ---
+### 🧾 Detail View — Connection Limit Modal
+<img src="pp-5.png" alt="heimdall connection limit" width="100%"/>
+
+---
 
 
 ## 🎮 Key Bindings
@@ -152,8 +156,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 Download the latest `.deb` from [Releases](https://github.com/sunels/heimdall/releases):
 
 ```
-    wget https://github.com/sunels/heimdall/releases/download/v0.1.0/heimdall_0.1.0-1_all.deb
-    sudo dpkg -i heimdall_0.1.0-1_all.deb
+# Direct download
+wget https://github.com/sunels/heimdall/releases/download/v0.3.0/heimdall_0.3.0-1_all.deb
+
+    # Installation
+sudo dpkg -i heimdall_0.3.0-1_all.deb
 
     #If dependencies are missing (rare):
 
@@ -249,6 +256,21 @@ Invoked from Action Center via `[k]`:
   - Connection termination is immediate and forceful (similar to TCP RST)
   - Use with caution in production environments
   - If connection count exceeds 9, only the first 9 are shown (consider using Block IP for bulk operations)
+
+## 🚦 Connection Limit — details
+
+Invoked from Action Center via `[l]`:
+
+- **Purpose**: Limit concurrent TCP connections per IP to mitigate DoS attacks or ensure fair resource usage.
+- **View Rules**: Lists existing iptables `connlimit` rules for the selected port.
+- **Add Limit**: Quickly add predefined per-IP limits (5, 10, 25, 50, 100) using shortcut keys `[a-e]`.
+  - Uses `iptables` with `connlimit` module.
+  - Action is `REJECT` with `tcp-reset` (polite refusal).
+- **Remove Limit**: Press `[x]` to remove all existing limit rules for the port.
+- **Safety**:
+  - Limits are enforced immediately via `sudo iptables`.
+  - Non-persistent (cleared on reboot unless saved manually).
+
 
 
 ## UI / Implementation notes

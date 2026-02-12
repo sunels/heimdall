@@ -36,7 +36,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='heimdall 0.2.0')
+    parser.add_argument('--version', action='version', version='heimdall 0.3.0')
     return parser.parse_args()
 
 
@@ -1105,14 +1105,27 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             stdscr.touchwin()
             curses.doupdate()
             return
+        elif ch == 'l':
+            # Open Connection Limit modal
+            draw_connection_limit_modal(stdscr, port)
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except Exception:
+                pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
         else:
             # For other keys, simple not-implemented message
-            if ch in ('l','h','9','p','c','n','r','o','d'):
+            if ch in ('h','9','p','c','n','r','o','d'):
                 show_message(stdscr, f"Action '{ch}' not implemented yet.")
                 win = draw_action_center_modal(stdscr)
             else:
                 # ignore other keys
                 pass
+
 
 
 
@@ -1199,6 +1212,120 @@ def kill_connection(local_addr, remote_addr, stdscr):
         show_message(stdscr, "⚠️ Connection kill timed out.")
     except Exception as e:
         show_message(stdscr, f"❌ Error killing connection: {e}")
+
+
+def get_connection_limits(port):
+    """
+    Get existing connection limit rules for a port from iptables.
+    Returns list of dicts with: limit, action, rule_num
+    """
+    limits = []
+    try:
+        # iptables -L INPUT --line-numbers -n
+        # We need to parse output to find rules related to our port and connlimit
+        result = subprocess.run(
+            ["sudo", "iptables", "-L", "INPUT", "-n", "--line-numbers"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5
+        )
+        
+        # Parse iptables output
+        # Example line:
+        # 1    REJECT     tcp  --  0.0.0.0/0            0.0.0.0/0            tcp dpt:80 #conn src/32 > 10 reject-with tcp-reset
+        for line in result.stdout.splitlines():
+            # Basic filtering: ensure it's about our port and has connlimit marker
+            if f"dpt:{port}" in line and ("connlimit" in line or "#conn" in line):
+                parts = line.split()
+                if len(parts) >= 2:
+                    rule_num = parts[0]
+                    target = parts[1]  # REJECT or DROP
+                    
+                    # Extract limit value
+                    # Implementation detail: different iptables versions format this differently
+                    # We look for something like "#conn ... > X"
+                    limit_val = "?"
+                    try:
+                        # naive parser: look for number after '>'
+                        if ">" in line:
+                            # split by '>' and take the first token of the next part
+                            limit_val = line.split(">")[1].strip().split()[0]
+                    except:
+                        pass
+                    
+                    limits.append({
+                        "rule_num": rule_num,
+                        "limit": limit_val,
+                        "action": target
+                    })
+    except Exception:
+        pass
+    
+    return limits
+
+
+def set_connection_limit(port, limit, stdscr):
+    """
+    Set a per-IP connection limit for a port using iptables connlimit module.
+    iptables -I INPUT -p tcp --dport PORT -m connlimit --connlimit-above LIMIT --connlimit-mask 32 -j REJECT --reject-with tcp-reset
+    """
+    try:
+        cmd = [
+            "sudo", "iptables", "-I", "INPUT", 
+            "-p", "tcp", "--dport", str(port),
+            "-m", "connlimit", "--connlimit-above", str(limit), 
+            "--connlimit-mask", "32", 
+            "-j", "REJECT", "--reject-with", "tcp-reset"
+        ]
+        
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=5
+        )
+        show_message(stdscr, f"✅ Limit set: {limit} conn/IP (port {port})")
+        request_full_refresh()
+        return True
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.strip() if e.stderr else "Unknown error"
+        if "No chain/target/match" in error_msg or "connlimit" in error_msg:
+             show_message(stdscr, "⚠️ 'connlimit' module missing in iptables?")
+        else:
+             show_message(stdscr, f"⚠️ Failed: {error_msg[:40]}...")
+        return False
+    except subprocess.TimeoutExpired:
+        show_message(stdscr, "⚠️ iptables command timed out")
+        return False
+    except Exception as e:
+        show_message(stdscr, f"❌ Error: {e}")
+        return False
+
+
+def remove_connection_limit(rule_num, stdscr):
+    """
+    Remove a connection limit rule by its line number.
+    """
+    try:
+        subprocess.run(
+            ["sudo", "iptables", "-D", "INPUT", str(rule_num)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=5
+        )
+        show_message(stdscr, f"✅ Rule #{rule_num} removed")
+        request_full_refresh()
+        return True
+    except subprocess.CalledProcessError:
+        show_message(stdscr, "⚠️ Failed (rule changed position?)")
+        return False
+    except Exception as e:
+        show_message(stdscr, f"❌ Error: {e}")
+        return False
 
 
 
@@ -1550,8 +1677,155 @@ def draw_kill_connections_modal(stdscr, port, cache):
                 return
 
 
+def draw_connection_limit_modal(stdscr, port):
+    """
+    Connection Limit Modal:
+    - Lists active iptables connlimit rules for the port
+    - Allows adding new Per-IP limits (5, 10, 25, 50, 100)
+    - Allows removing existing rules
+    """
+    h, w = stdscr.getmaxyx()
+    pad = 2
+    bw = min(w - 4, max(66, int(w * 0.80)))
+    bh = min(20, max(14, h - 5))
+    y = max(0, (h - bh) // 2)
+    x = max(0, (w - bw) // 2)
+
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.timeout(-1)
+    win.erase()
+    win.box()
+    
+    title = f" 🚦 Connection Limit — port {port} "
+    try:
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # 1. Get existing limits
+    limits = get_connection_limits(port)
+    
+    current_row = 2
+    
+    # --- Existing Limits Section ---
+    try:
+        if limits:
+            win.addstr(current_row, pad, "📜 Existing Limit Rules:", curses.A_BOLD)
+            current_row += 1
+            for rule in limits:
+                line = f"  [#{rule['rule_num']}] Max {rule['limit']} conn/IP ({rule['action']})"
+                if current_row < bh - 6:
+                    try:
+                        win.addstr(current_row, pad, line[:bw - pad*2])
+                    except: pass
+                    current_row += 1
+        else:
+            win.addstr(current_row, pad, "ℹ️  No limits active.", curses.A_DIM)
+            current_row += 1
+    except: pass
+    
+    # Separator
+    current_row = max(current_row, 5) # Ensure some min height
+    try:
+        win.hline(current_row, 1, curses.ACS_HLINE, bw - 2)
+    except: pass
+    current_row += 1
+    
+    # --- Add Limit Section ---
+    options = [5, 10, 25, 50, 100]
+    option_map = {} # key char -> limit
+    
+    try:
+        win.addstr(current_row, pad, "✨ Set New Per-IP Limit (REJECT):", curses.A_BOLD)
+        current_row += 1
+        
+        chars = 'abcde'
+        for i, opt in enumerate(options):
+            key = chars[i]
+            option_map[key] = opt
+            line = f"  [{key}] Max {opt} connections"
+            if current_row < bh - 3:
+                try:
+                     win.addstr(current_row, pad, line)
+                except: pass
+                current_row += 1
+    except: pass
+
+    # --- Footer / Instructions ---
+    try:
+         footer = "Press [a-e] to set • [x] Remove ALL limits • [ESC] Cancel"
+         win.addstr(bh-2, pad, footer[:bw-pad*2], curses.A_DIM)
+    except: pass
+    
+    win.noutrefresh()
+    curses.doupdate()
+    
+    while True:
+        k = win.getch()
+        
+        if k == 27: # ESC
+            break
+            
+        try:
+            ch = chr(k).lower()
+        except:
+            ch = None
+            
+        # Add Limit [a-e]
+        if ch in option_map:
+            limit = option_map[ch]
+            try:
+                msg = f"⏳ Setting limit {limit}..."
+                win.addstr(bh-2, pad, msg.ljust(bw-pad*2), curses.A_REVERSE | curses.A_BOLD)
+                win.noutrefresh(); curses.doupdate()
+            except: pass
+            
+            set_connection_limit(port, limit, stdscr)
+            break
+            
+        # Remove all limits [x]
+        if ch == 'x':
+            if not limits:
+                # Flash "No limits"
+                try:
+                    win.addstr(bh-2, pad, "⚠️ No limits to remove!".ljust(bw-pad*2), curses.A_REVERSE | curses.A_BOLD)
+                    win.noutrefresh(); curses.doupdate(); time.sleep(0.5)
+                    # Restore footer
+                    win.addstr(bh-2, pad, footer[:bw-pad*2], curses.A_DIM)
+                    win.noutrefresh(); curses.doupdate()
+                except: pass
+                continue
+                
+            try:
+                win.addstr(bh-2, pad, "⏳ Removing all limits...".ljust(bw-pad*2), curses.A_REVERSE | curses.A_BOLD)
+                win.noutrefresh(); curses.doupdate()
+            except: pass
+            
+            # Remove from bottom to top (highest rule num first) to avoid shifting issues
+            # We must re-fetch limits because they might have changed (unlikely here but safe)
+            current_limits = get_connection_limits(port)
+            current_limits.sort(key=lambda x: int(x['rule_num']), reverse=True)
+            
+            count = 0
+            for rule in current_limits:
+               if remove_connection_limit(rule['rule_num'], stdscr):
+                   count += 1
+                   # short pause to let iptables serialize
+                   time.sleep(0.1)
+            
+            show_message(stdscr, f"✅ Removed {count} rules.")
+            break
+            
+    # Cleanup
+    try:
+        win.erase(); win.refresh(); del win
+    except: pass
+    stdscr.touchwin(); curses.doupdate()
+
 
 def get_process_parent_chain(pid, max_depth=10):
+
     """
     Return real parent/supervisor chain like:
     systemd(1) -> sshd(742) -> sshd(3112)
