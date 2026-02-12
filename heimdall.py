@@ -22,6 +22,157 @@ KEY_FIREWALL = ord('f')
 TRIGGER_REFRESH = False
 
 # --------------------------------------------------
+# 🎨 Themes & Colors
+# --------------------------------------------------
+CURRENT_THEME_INDEX = 0
+
+# Curses color pair IDs (1-based because 0 is reserved)
+CP_HEADER = 1   # Headers, Branding, important labels
+CP_ACCENT = 2   # Secondary highlights, key shortcuts
+CP_TEXT = 3     # Normal body text
+CP_WARN = 4     # Warnings, errors, critical items
+CP_BORDER = 5   # Borders, separators
+
+THEMES = [
+    {
+        "name": "🔵 VSCode Dark (Default)",
+        # Standard fallback
+        "colors": {
+            CP_HEADER: (curses.COLOR_BLUE, -1),
+            CP_ACCENT: (curses.COLOR_CYAN, -1),
+            CP_TEXT: (curses.COLOR_WHITE, -1),
+            CP_WARN: (curses.COLOR_YELLOW, -1),
+            CP_BORDER: (curses.COLOR_BLUE, -1)
+        },
+        # Precise 256-color map (FG, BG)
+        "colors_256": {
+            CP_HEADER: (33, 234),    # DodgerBlue1 on DarkGrey
+            CP_ACCENT: (45, 234),    # Turquoise2
+            CP_TEXT: (255, 234),     # White
+            CP_WARN: (226, 234),     # Yellow
+            CP_BORDER: (33, 234)     # Blue border
+        },
+        "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
+    },
+    {
+        "name": "🔸 Gruvbox Dark (Retro)",
+        "colors": {
+            CP_HEADER: (curses.COLOR_YELLOW, -1),
+            CP_ACCENT: (curses.COLOR_RED, -1),
+            CP_TEXT: (curses.COLOR_WHITE, -1),
+            CP_WARN: (curses.COLOR_RED, -1),
+            CP_BORDER: (curses.COLOR_YELLOW, -1)
+        },
+        "colors_256": {
+            CP_HEADER: (214, 235),   # Orange1 on Black/Grey (Gruvbox BG)
+            CP_ACCENT: (167, 235),   # IndianRed
+            CP_TEXT: (223, 235),     # Bisque/Cream
+            CP_WARN: (208, 235),     # OrangeRed
+            CP_BORDER: (246, 235)    # Grey border
+        },
+        "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
+    },
+    {
+        "name": "🌆 Tokyo Night (Neon)",
+        "colors": {
+            CP_HEADER: (curses.COLOR_MAGENTA, -1),
+            CP_ACCENT: (curses.COLOR_CYAN, -1),
+            CP_TEXT: (curses.COLOR_WHITE, -1),
+            CP_WARN: (curses.COLOR_YELLOW, -1),
+            CP_BORDER: (curses.COLOR_BLUE, -1)
+        },
+        "colors_256": {
+            CP_HEADER: (135, 234),   # MediumPurple on DarkBG
+            CP_ACCENT: (45, 234),    # Cyan
+            CP_TEXT: (189, 234),     # Light Grey-Blue
+            CP_WARN: (220, 234),     # Gold
+            CP_BORDER: (63, 234)     # SlateBlue
+        },
+        "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
+    },
+    {
+        "name": "☕ Catppuccin Mocha (Soft)",
+        "colors": {
+            CP_HEADER: (curses.COLOR_BLUE, -1),
+            CP_ACCENT: (curses.COLOR_RED, -1),
+            CP_TEXT: (curses.COLOR_WHITE, -1),
+            CP_WARN: (curses.COLOR_YELLOW, -1),
+            CP_BORDER: (curses.COLOR_CYAN, -1)
+        },
+        "colors_256": {
+            CP_HEADER: (117, 235),   # SkyBlue on DeepDark
+            CP_ACCENT: (210, 235),   # Salmon/Flamingo
+            CP_TEXT: (254, 235),     # White-ish
+            CP_WARN: (228, 235),     # Yellow
+            CP_BORDER: (103, 235)    # SlateGray
+        },
+        "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
+    },
+    {
+        "name": "🌌 One Dark Pro (Atom)",
+        "colors": {
+            CP_HEADER: (curses.COLOR_BLUE, -1),
+            CP_ACCENT: (curses.COLOR_MAGENTA, -1),
+            CP_TEXT: (curses.COLOR_WHITE, -1),
+            CP_WARN: (curses.COLOR_RED, -1),
+            CP_BORDER: (curses.COLOR_WHITE, -1)
+        },
+        "colors_256": {
+            CP_HEADER: (39, 236),    # DeepSkyBlue on DarkGreyBlue
+            CP_ACCENT: (170, 236),   # Orchid
+            CP_TEXT: (253, 236),     # Very Light Grey
+            CP_WARN: (203, 236),     # IndianRed
+            CP_BORDER: (59, 236)     # Grey59
+        },
+        "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
+    }
+]
+
+def apply_current_theme(stdscr=None):
+    """Initializes color pairs based on CURRENT_THEME_INDEX using 256 colors if available."""
+    if not curses.has_colors():
+        return
+    idx = CURRENT_THEME_INDEX % len(THEMES)
+    theme = THEMES[idx]
+    
+    # Check if we support 256 colors
+    use_256 = (curses.COLORS >= 256) and ("colors_256" in theme)
+
+    try:
+        if not use_256:
+           curses.use_default_colors()
+    except:
+        pass
+        
+    color_map = theme["colors_256"] if use_256 else theme["colors"]
+
+    for pair_id, (fg, bg) in color_map.items():
+        try:
+             # In 256 mode, bg is a specific color index. In fallback, it might be -1.
+             curses.init_pair(pair_id, fg, bg)
+        except:
+             pass
+    
+    # Apply background to the window if stdscr is provided
+    # We use CP_TEXT's background which is usually the theme background
+    if stdscr:
+        try:
+            stdscr.bkgd(' ', curses.color_pair(CP_TEXT))
+            stdscr.erase() # ⚡ Force repaint everything with new background
+            stdscr.refresh()
+        except:
+            pass
+
+def get_theme_attr(pair_id):
+    """Get extra attribute (BOLD, DIM) for a specific UI element type in current theme."""
+    idx = CURRENT_THEME_INDEX % len(THEMES)
+    theme = THEMES[idx]
+    base_attr = curses.color_pair(pair_id)
+    extra_attr = theme.get("attrs", {}).get(pair_id, curses.A_NORMAL)
+    return base_attr | extra_attr
+
+
+# --------------------------------------------------
 # Checks
 # --------------------------------------------------
 def check_python_version():
@@ -479,11 +630,12 @@ def request_full_refresh():
 # --------------------------------------------------
 def splash_screen(stdscr, rows, cache):
     if curses.has_colors():
-        curses.start_color()
-        curses.init_pair(1, curses.COLOR_MAGENTA, curses.COLOR_BLACK)   # Mor başlık
-        curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)      # Accent / slogan
-        curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)     # Normal metin
-        curses.init_pair(4, curses.COLOR_YELLOW, curses.COLOR_BLACK)    # Progress vurgu
+        try:
+            curses.start_color()
+        except:
+            pass
+        apply_current_theme(stdscr)
+
 
     h, w = stdscr.getmaxyx()
 
@@ -491,6 +643,10 @@ def splash_screen(stdscr, rows, cache):
     bw = min(99, w - 6)          # Daha geniş (taşma önlemek için yeterli)
     y, x = (h - bh) // 2, (w - bw) // 2
     win = curses.newwin(bh, bw, y, x)
+    # 🎨 Set window background to theme
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
 
     heimdall_art = [
         "  ██╗  ██╗███████╗██╗███╗   ███╗██████╗  █████╗ ██╗     ██╗     ",
@@ -551,7 +707,7 @@ def splash_screen(stdscr, rows, cache):
         )
 
         bar_x = (bw - bar_w) // 2
-        win.addstr(progress_y + 3, bar_x, f"[{bar_with_progress}]", curses.A_BOLD)
+        win.addstr(progress_y + 3, bar_x, f"[{bar_with_progress}]", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
 
         win.refresh()
 
@@ -675,8 +831,11 @@ def confirm_dialog(stdscr, question):
         (h - win_h) // 2,
         (w - win_w) // 2
     )
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     win.box()
-    win.addstr(1, 2, question, curses.A_BOLD)
+    win.addstr(1, 2, question, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     win.addstr(3, 2, "[y] Yes    [n] No")
 
     win.refresh()
@@ -743,10 +902,11 @@ def show_message(stdscr, msg, duration=1.5):
     win_h, win_w = 3, min(80, w - 4)
     win = curses.newwin(win_h, win_w, (h - win_h)//2, (w - win_w)//2)
     try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
         win.box()
         # center message or left-pad a bit if too long
         msg_display = msg if len(msg) <= win_w - 4 else msg[:win_w - 7] + "..."
-        win.addstr(1, 2, msg_display)
+        win.addstr(1, 2, msg_display, curses.color_pair(CP_TEXT))
         win.refresh()
         # sleep without touching stdscr timeout; ensures UI remains visible for duration
         time.sleep(duration)
@@ -790,33 +950,101 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
 
 def draw_table(win, rows, selected, offset, cache, firewall_status):
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     h, w = win.getmaxyx()
+    
+    # Border with theme color
+    try:
+        win.attron(curses.color_pair(CP_BORDER))
+        win.box()
+        win.attroff(curses.color_pair(CP_BORDER))
+    except:
+        pass
+
     # Header
     headers = ["🌐 PORT", "PROTO", "📊 USAGE [Mem/CPU]", "  🧠 PROCESS", "   👤 USER"]
-    widths = [10, 8, 18, 28, w - 68]
+    # Calculate widths dynamically to ensure right side is drawn
+    # Fixed widths for first columns, dynamic for USER
+    widths = [10, 8, 18, 28, max(10, w - 66)]
     x = 1
+    
+    hdr_attr = curses.color_pair(CP_HEADER) | curses.A_BOLD
+    
     for htxt, wd in zip(headers, widths):
-        win.addstr(1, x, htxt.ljust(wd), curses.A_BOLD)
+        if x >= w - 1: 
+            break
+        try:
+            # Ensure we don't write past the window width
+            avail_w = w - x - 1
+            if avail_w <= 0: break
+            
+            print_w = min(wd, avail_w)
+            win.addstr(1, x, htxt[:print_w].ljust(print_w), hdr_attr)
+        except:
+            pass
         x += wd
-    win.hline(2, 1, curses.ACS_HLINE, w - 2)
-
+        
+    try:
+        win.hline(2, 1, curses.ACS_HLINE, w - 2, curses.color_pair(CP_BORDER))
+    except:
+        pass
+ 
+    # Rows
     for i in range(h - 4):
         idx = offset + i
         if idx >= len(rows):
             break
-        attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+            
+        is_selected = (idx == selected)
+        # Apply theme colors to content
+        if is_selected:
+            attr = curses.color_pair(CP_ACCENT) | curses.A_REVERSE
+        else:
+            attr = curses.color_pair(CP_TEXT)
+        
         pre_row_str = get_preformatted_table_row(rows[idx], cache, firewall_status, w)
-        win.addstr(i+3, 1, pre_row_str[:w-2], attr)
-    win.box()
+        
+        try:
+            # Write row content, ensuring it fits within borders
+            # Reduce max_len to w-4 to account for wide characters (emojis) taking up extra visual space
+            max_len = max(1, w - 4)
+            win.addstr(i+3, 1, pre_row_str[:max_len].ljust(max_len), attr)
+            
+            # 🔧 REPAIR BORDERS: Force redraw vertical lines to fix any overflow damage
+            win.addch(i+3, 0, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
+            win.addch(i+3, w-1, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
+        except:
+            pass
+            
     win.noutrefresh()
+
 
 def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+
     h, w = win.getmaxyx()
+    
+    # Border
+    try:
+        win.attron(curses.color_pair(CP_BORDER))
+        win.box()
+        win.attroff(curses.color_pair(CP_BORDER))
+    except:
+        win.box()
+        
     header = f"❓ Why It Exists — {len(wrapped_icon_lines)} lines"
     if h > 1:
-        win.addstr(1, 2, header[:w-4], curses.A_BOLD)
-        win.hline(2, 1, curses.ACS_HLINE, w - 2)
+        win.addstr(1, 2, header[:w-4], curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        try:
+            win.hline(2, 1, curses.ACS_HLINE, w - 2, curses.color_pair(CP_BORDER))
+        except:
+            pass
+
     max_rows = h - 4
 
     # 🔹 Right-side panel
@@ -825,10 +1053,16 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
 
     if conn_info:
         row_y = 3
-        def safe_add(y, x, txt, attr=0):
+        def safe_add(y, x, txt, attr=None):
+            if attr is None:
+                attr = curses.color_pair(CP_TEXT)
+            elif not (attr & curses.A_COLOR):
+                # If no color pair is specified in attr, default to CP_TEXT background/foreground
+                attr |= curses.color_pair(CP_TEXT)
+
             if y < h - 1:
                 try:
-                    win.addstr(y, x, txt[:w - x -1], attr)
+                    win.addstr(y, x, txt[:w - x - 1], attr)
                 except curses.error:
                     pass
 
@@ -910,51 +1144,95 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
             continue
         line = wrapped_icon_lines[idx]
         try:
-            win.addstr(i + 3, 2, line[:conn_panel_x - 3])
+            safe_len = max(1, conn_panel_x - 5)
+            win.addstr(i + 3, 2, line[:safe_len], curses.color_pair(CP_TEXT))
         except curses.error:
             pass
-
-    win.box()
+            
     win.noutrefresh()
 
 def draw_open_files(win, pid, prog, files, scroll=0):
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     h, w = win.getmaxyx()
+    
+    # Border
+    try:
+        win.attron(curses.color_pair(CP_BORDER))
+        win.box()
+        win.attroff(curses.color_pair(CP_BORDER))
+    except:
+        win.box()
+
     header = f"📂 Open Files — PID {pid}/{prog} ({len(files)})"
-    win.addstr(1, 2, header, curses.A_BOLD)
-    win.hline(2, 1, curses.ACS_HLINE, w - 2)
+    try:
+        win.addstr(1, 2, header[:w-4], curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        try:
+            win.hline(2, 1, curses.ACS_HLINE, w - 2, curses.color_pair(CP_BORDER))
+        except: pass
+    except:
+        pass
+        
     max_rows = h - 4
     for i in range(max_rows):
         idx = scroll + i
         if idx >= len(files):
             continue
         fd, path = files[idx]
-        win.addstr(i+3, 2, f"{idx+1:3d}. [{fd}] {path}")
-    win.box()
+        try:
+            # Use normal text color
+            line = f"{idx+1:3d}. [{fd}] {path}"
+            max_len = max(1, w - 4)
+            win.addstr(i+3, 2, line[:max_len], curses.color_pair(CP_TEXT))
+        except:
+            pass
+            
     win.noutrefresh()
+
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
     # include Actions (a) hint for main view; indicate snapshot mode
     base_help = (
-        "  [🧭 ↑/↓ Select]  [↕️ +/- Resize] [⇱⇲ Tab Witr Pane]"
-        " [📂 ←/→ Files Scroll]  [⛔ s Stop Proc/Service]  [🔥 f Toggle Firewall]"
-        "  [🛠 a Actions]  [❌ q Quit]"
-    ) if not show_detail else " 🧭 ↑/↓ Scroll   [Tab] Maximize/Restore Witr Pane   ❌ Quit "
+        " [🎨 Colorize c] "
+        " [🧭 ↑/↓ Select] [↕️ +/- Resize] [⇱⇲ Tab Witr Pane] "
+        " [📂 ←/→ Files Scroll] [⛔ s Stop Proc] [🔥 f Firewall] "
+        " [🛠 a Actions] [❌ q Quit]"
+    ) if not show_detail else " [🎨 Colorize c]   🧭 ↑/↓ Scroll   [Tab] Restore   ❌ Quit "
 
     # snapshot indicator
     snap_label = " [🔄 'r' Refresh] " if SNAPSHOT_MODE else ""
     help_text = (snap_label + base_help) if not show_detail else base_help
 
-    bar_win = curses.newwin(3, w, h-3, 0)
-    bar_win.erase()
-    bar_win.box()
-    x = max(1, (w - len(help_text)) // 2)
     try:
-        bar_win.addstr(1, x, help_text, curses.A_BOLD)
+        bar_win = curses.newwin(3, w, h-3, 0)
+        bar_win.erase()
+        try:
+            bar_win.bkgd(' ', curses.color_pair(CP_TEXT))
+        except: pass
+        
+        # Border
+        try:
+            bar_win.attron(curses.color_pair(CP_BORDER))
+            bar_win.box()
+            bar_win.attroff(curses.color_pair(CP_BORDER))
+        except:
+            bar_win.box()
+            
+        x = max(1, (w - len(help_text)) // 2)
+        try:
+            bar_win.addstr(1, x, help_text, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except:
+            try:
+                # Last resort fallback with theme text color
+                bar_win.addstr(1, x, help_text, curses.color_pair(CP_TEXT) | curses.A_BOLD)
+            except: pass
+            
+        bar_win.noutrefresh()
     except:
-        bar_win.addstr(1, x, help_text)
-    bar_win.noutrefresh()
+        pass
 
 # -------------------------
 # Action Center / Modals
@@ -975,11 +1253,14 @@ def draw_action_center_modal(stdscr, highlight_key=None):
     win = curses.newwin(bh, bw, y, x)
     win.keypad(True)
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     win.box()
 
     title = " 🔧 Action Center "
     try:
-        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     except curses.error:
         pass
 
@@ -1349,10 +1630,13 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
     win.keypad(True)
     win.timeout(-1)
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     win.box()
     title = f" 🚫 Block IP — port {port} "
     try:
-        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     except curses.error:
         pass
 
@@ -1373,7 +1657,7 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
     # Header / instructions with icons
     try:
         hint = "🔎 Select a Top IP [1-8]  •  ✍️  Press 'm' to enter manually  •  ▶ Press 'x' to execute manual"
-        win.addstr(row, pad, hint[:bw - pad*2], curses.A_NORMAL)
+        win.addstr(row, pad, hint[:bw - pad*2], curses.color_pair(CP_TEXT) | curses.A_NORMAL)
     except curses.error:
         pass
     row += 2
@@ -1381,7 +1665,7 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
     top_start_row = None
     if top_ips:
         try:
-            win.addstr(row, pad, "🔥 Top connections (most active):", curses.A_BOLD)
+            win.addstr(row, pad, "🔥 Top connections (most active):", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
         except curses.error:
             pass
         row += 1
@@ -1395,7 +1679,7 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
             row += 1
     else:
         try:
-            win.addstr(row, pad, "ℹ️ No active connections found.", curses.A_DIM)
+            win.addstr(row, pad, "ℹ️ No active connections found.", curses.color_pair(CP_TEXT) | curses.A_DIM)
         except curses.error:
             pass
         row += 1
@@ -1561,11 +1845,14 @@ def draw_kill_connections_modal(stdscr, port, cache):
     win.keypad(True)
     win.timeout(-1)
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     win.box()
     
     title = f" 💥 Kill Connections — port {port} "
     try:
-        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     except curses.error:
         pass
 
@@ -1695,11 +1982,14 @@ def draw_connection_limit_modal(stdscr, port):
     win.keypad(True)
     win.timeout(-1)
     win.erase()
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
     win.box()
     
     title = f" 🚦 Connection Limit — port {port} "
     try:
-        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.A_BOLD)
+        win.addstr(0, max(1, (bw - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     except curses.error:
         pass
 
@@ -1982,7 +2272,11 @@ def main(stdscr):
     # make input non-blocking with short timeout so we can debounce selection and let caches serve during fast scroll
     stdscr.timeout(120)  # ms
 
+    # Initialize theme
+    apply_current_theme(stdscr)
+
     # use cached parse initially to reduce startup churn
+
     rows = parse_ss_cached()
     cache = {}
     firewall_status = {}
@@ -2013,9 +2307,13 @@ def main(stdscr):
 
         if not show_detail and rows:
             table_win = curses.newwin(table_h, w//2, 0, 0)
+            try: table_win.bkgd(' ', curses.color_pair(CP_TEXT))
+            except: pass
             draw_table(table_win, rows, selected, offset, cache, firewall_status)
 
             open_files_win = curses.newwin(table_h, w-w//2, 0, w//2)
+            try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
+            except: pass
             pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
             prog = rows[selected][3] if selected>=0 and selected < len(rows) else "-"
             # use cached open-files to avoid expensive /proc reads on every keypress
@@ -2023,6 +2321,8 @@ def main(stdscr):
             draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll)
 
             detail_win = curses.newwin(h-table_h-3, w, table_h, 0)
+            try: detail_win.bkgd(' ', curses.color_pair(CP_TEXT))
+            except: pass
 
             # debounce heavy detail fetch: only update cached_wrapped_lines / conn_info when selection stable
             now = time.time()
@@ -2153,11 +2453,38 @@ def main(stdscr):
             elif k == KEY_FIREWALL and selected >= 0 and rows:
                 port = rows[selected][0]
                 toggle_firewall(port, stdscr, firewall_status)
+            elif k == ord('c'):
+                # Switch theme (Colorize)
+                global CURRENT_THEME_INDEX
+                CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
+                apply_current_theme(stdscr)
+                # Show feedback
+                t_name = THEMES[CURRENT_THEME_INDEX]['name']
+                try:
+                    h, w = stdscr.getmaxyx()
+                    msg = f" Theme: {t_name} "
+                    stdscr.addstr(h//2, (w-len(msg))//2, msg, curses.A_REVERSE | curses.A_BOLD)
+                    stdscr.refresh()
+                    time.sleep(0.5)
+                except: pass
+                # Force redraw
+                rows = parse_ss_cached()
+                splash_screen(stdscr, rows, cache)
+                continue
+            elif k == 27:  # Potential ALT key (ESC) sequence
+                stdscr.nodelay(True)
+                next_k = stdscr.getch()
+                stdscr.nodelay(False)  # restore loop timeout later
+                stdscr.timeout(120)    # restore explicit timeout
+
+                if next_k == ord('c'):
+                    pass # Handled by direct 'c' key now
 
             if selected >= len(rows):
                 selected = len(rows) - 1
             if selected < 0 and rows:
                 selected = 0
+
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
 
 

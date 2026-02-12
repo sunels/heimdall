@@ -84,6 +84,10 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 <img src="pp-5.png" alt="heimdall connection limit" width="100%"/>
 
 ---
+### 🧾 Color Palette — Happy eyes edition
+<img src="pp-6.png" alt="heimdall color palette" width="100%"/>
+
+---
 
 
 ## 🎮 Key Bindings
