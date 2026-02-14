@@ -1061,7 +1061,7 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
     except:
         win.box()
         
-    header = f"❓ Why It Exists — {len(wrapped_icon_lines)} lines"
+    header = f"❓ Why It Exists"
     if h > 1:
         win.addstr(1, 2, header[:w-4], curses.color_pair(CP_HEADER) | curses.A_BOLD)
         try:
