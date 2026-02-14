@@ -30,14 +30,14 @@ TRIGGER_REFRESH = False
 CONFIG_PATH = os.path.expanduser("~/.config/heimdall/theme")
 
 def load_theme_preference():
-    """Load the theme index from the config file."""
+    """Load the theme index from the config file. Defaults to 1 (Gruvbox Dark)."""
     try:
         if os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, "r") as f:
                 return int(f.read().strip())
     except:
         pass
-    return 0
+    return 1  # Default to Gruvbox Dark (index 1)
 
 def save_theme_preference(index):
     """Save the theme index to the config file."""
