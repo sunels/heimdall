@@ -22,9 +22,14 @@
 - 🛑 Stop a **process or systemd service** directly from the UI (with confirmation)
 - 📝 Warnings annotation (e.g., suspicious working directory is flagged but explained)
 - 🛠️ **Action Center (Modal)** — quick operational panel for ports & processes (see below)
-- 💥 **Kill Connections** operation implemented (Action Center → Kill Connections): list and kill established connections for a port (sudo may be required)
-- 🚫 **Block IP** operation (Action Center → Block IP): block a source IP for a port via iptables (sudo required)
-- 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights, single‑key selection, ESC to close each modal
+- 💥 **Kill Connections** operation: list and kill established connections for a port.
+- 🚫 **Block IP** operation: block a source IP for a port via iptables.
+- 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
+- ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
+- ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
+- ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
+- 🐞 **Internal Debug Logging**: Trace complex process behaviors in `~/.config/heimdall/debug.log`.
+- 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights.
 
 ---
 
@@ -161,10 +166,10 @@ Download the latest `.deb` from [Releases](https://github.com/sunels/heimdall/re
 
 ```
 # Direct download
-wget https://github.com/sunels/heimdall/releases/download/v0.3.0/heimdall_0.3.0-1_all.deb
+wget https://github.com/sunels/heimdall/releases/download/v0.4.0/heimdall_0.4.0-1_all.deb
 
 # Installation
-    sudo dpkg -i heimdall_0.3.0-1_all.deb
+    sudo dpkg -i heimdall_0.4.0-1_all.deb
 
     #If dependencies are missing (rare):
 
@@ -207,15 +212,16 @@ UI / behavior highlights
 Action Center layout (icons mirror the UI)
 - Left column — 🌐 PORT OPERATIONS
   - 🚫  [b] Block IP
-  - 💥  [k] Kill Connections — lists active ESTABLISHED connections (select 1..9 to kill)
+  - 💥  [k] Kill Connections
   - 🚦  [l] Connection Limit (planned)
 - Right column — 🧠 PROCESS OPERATIONS
   - ⚡  [h] Reload (SIGHUP)
   - 💀  [9] Force Kill (SIGKILL)
-  - ⏸  [p] Pause Process
-  - ▶  [c] Continue Process
-  - 🐢  [n] Renice
+  - 🌳  [t] Force Kill Tree (Nuclear Kill)
+  - ⏸  [p] Pause Process (Tree-Aware)
+  - ▶  [c] Continue Process (Tree-Aware)
   - 🔄  [r] Restart Service
+  - ⚖️  [n] Renice (Priority)
   - ☠  [o] Adjust OOM Score
   - 🐞  [d] Debug Dump
 

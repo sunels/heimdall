@@ -23,6 +23,18 @@ KEY_FIREWALL = ord('f')
 # initialize global refresh trigger used by request_full_refresh()
 TRIGGER_REFRESH = False
 
+# Debug logging
+DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
+
+def debug_log(msg):
+    """Write a timestamped message to the debug log."""
+    try:
+        os.makedirs(os.path.dirname(DEBUG_LOG_PATH), exist_ok=True)
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except:
+        pass
+
 # --------------------------------------------------
 # 🎨 Themes & Colors
 # --------------------------------------------------
@@ -211,7 +223,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='heimdall 0.3.0')
+    parser.add_argument('--version', action='version', version='heimdall 0.4.0')
     return parser.parse_args()
 
 
@@ -846,6 +858,335 @@ def stop_process_or_service(pid, prog, stdscr):
     except Exception as e:
         show_message(stdscr, f"Failed to stop {pid}: {e}")
 
+def reload_process(pid, prog, stdscr):
+    if not pid or not pid.isdigit():
+        show_message(stdscr, "Invalid PID.")
+        return
+
+    # Önce systemd service mi diye bak (reload destekliyor mu?)
+    try:
+        result = subprocess.run(
+            ["systemctl", "status", prog],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        if result.returncode == 0:
+            # systemctl reload genelde SIGHUP gönderir ama servis dosyasında tanımlı olmalıdır
+            subprocess.run(["sudo", "systemctl", "reload", prog])
+            show_message(stdscr, f"Service '{prog}' reloaded.")
+            return
+    except Exception:
+        pass
+
+    # Değilse normal process'e SIGHUP gönder
+    try:
+        subprocess.run(["sudo", "kill", "-HUP", pid])
+        show_message(stdscr, f"Sent SIGHUP to process {pid} ({prog}).")
+    except Exception as e:
+        show_message(stdscr, f"Failed to reload {pid}: {e}")
+
+def force_kill_process(pid, prog, stdscr):
+    if not pid or not pid.isdigit():
+        show_message(stdscr, "Invalid PID.")
+        return
+
+    # Force kill can be dangerous, but requested from Action Center
+    try:
+        # Check if this process has a script ancestor to warn in logs
+        cmd = get_full_cmdline(pid)
+        debug_log(f"F-KILL: Targeted PID {pid} ({prog}). Cmd: {cmd}")
+        
+        res = subprocess.run(["sudo", "kill", "-9", pid], capture_output=True, text=True)
+        debug_log(f"F-KILL: Result - Code {res.returncode}, Out: {res.stdout.strip()}, Err: {res.stderr.strip()}")
+        
+        # If it's a known loop runner (nc, bash), suggest tree kill in logs
+        if "nc" in prog or "bash" in prog or "sh" in prog:
+            debug_log("F-KILL ADVICE: This looks like a script/loop child. If it respawns, use [t] Force Kill Tree instead of [9].")
+            
+        show_message(stdscr, f"Process {pid} ({prog}) force killed (SIGKILL).")
+    except Exception as e:
+        debug_log(f"F-KILL: Exception - {str(e)}")
+        show_message(stdscr, f"Failed to force kill {pid}: {e}")
+
+def kill_process_group(pid, prog, port, stdscr):
+    if not pid or not pid.isdigit():
+        show_message(stdscr, "Invalid PID.")
+        return
+    
+    show_message(stdscr, f"🚀 Precision Tree Strike on port {port}...", duration=1.0)
+    
+    try:
+        debug_log(f"TREE-KILL: Starting precision scan for port {port} (PID {pid})")
+        pids_to_strike = set([pid])
+        scripts_found = set()
+        
+        # 1. ANCESTOR SCAN: Identify the script without killing the login shell
+        curr_p = pid
+        for level in range(12):
+            if not curr_p or curr_p in ("0", "1"): break
+            try:
+                with open(f"/proc/{curr_p}/stat", "r") as f:
+                    content = f.read()
+                match = re.search(r"(\d+) \((.*)\) [A-Z] (\d+)", content)
+                if not match: break
+                
+                name = match.group(2)
+                ppid = match.group(3)
+                cmdline = get_full_cmdline(curr_p)
+                
+                # Check if this is an interactive/login shell we should PROTECT
+                # We skip shells that are likely the user's terminal session
+                is_shell = name in ("bash", "sh", "dash", "zsh", "fish")
+                
+                # If it's a shell, only target it if it's running a specific script file
+                # Otherwise, it might be the user's active terminal. 
+                has_script = any(ext in cmdline for ext in (".sh", ".py", ".pl", ".php", ".js"))
+                
+                if is_shell and not has_script:
+                    debug_log(f"TREE-KILL: Protecting interactive shell parent: {name}({curr_p})")
+                    break # STOP HERE: Do not follow tree into the user's terminal
+                
+                if has_script:
+                    for part in cmdline.split():
+                        if any(part.endswith(ext) for ext in (".sh", ".py", ".pl", ".php", ".js")):
+                            s_name = os.path.basename(part)
+                            scripts_found.add(s_name)
+                            debug_log(f"TREE-KILL: Targeting script process: {s_name}({curr_p})")
+                
+                pids_to_strike.add(curr_p)
+                if name in ("sshd", "login", "tmux", "screen", "systemd", "init"): break
+                curr_p = ppid
+            except: break
+
+        # 2. BROADCAST CLUSTER: Find all children of identified scripts
+        for script in scripts_found:
+            try:
+                res = subprocess.run(["pgrep", "-f", script], capture_output=True, text=True)
+                for p in res.stdout.split():
+                    pids_to_strike.add(p)
+            except: pass
+
+        # 3. ATOMIC STRIKE: Kill only the target cluster
+        if pids_to_strike:
+            debug_log(f"TREE-KILL: Striking PIDs {pids_to_strike}")
+            # Individual PIDs
+            subprocess.run(["sudo", "kill", "-9"] + list(pids_to_strike), capture_output=True)
+            
+            # 4. PGID cleanup (only for the cluster PIDs, not general)
+            for p in pids_to_strike:
+                try:
+                    res = subprocess.run(["ps", "-o", "pgid=", "-p", p], capture_output=True, text=True)
+                    pg = res.stdout.strip()
+                    if pg and pg != "0":
+                         # Only kill the group if the leader is one of our targets
+                         subprocess.run(["sudo", "kill", "-9", f"-{pg}"], capture_output=True)
+                except: pass
+            
+            # Final fuser backup constrained to port only
+            subprocess.run(["sudo", "fuser", "-k", "-9", "-n", "tcp", str(port)], capture_output=True)
+            
+            time.sleep(0.5) 
+            show_message(stdscr, f"✅ Clean Kill: Tree sonlandirildi (Terminal korundu).")
+        else:
+            show_message(stdscr, "No process found.")
+            
+    except Exception as e:
+        debug_log(f"TREE-KILL: Precision Exception - {str(e)}")
+        show_message(stdscr, f"Strike failed: {e}")
+
+def pause_process(pid, prog, stdscr):
+    try:
+        pids = {pid}
+        # Deep scan to find script parents that might be printing to terminal
+        curr_p = pid
+        for _ in range(10):
+            if not curr_p or curr_p in ("0", "1"): break
+            try:
+                with open(f"/proc/{curr_p}/stat", "r") as f:
+                    content = f.read()
+                match = re.search(r"(\d+) \((.*)\) [A-Z] (\d+)", content)
+                if not match: break
+                name, ppid = match.group(2), match.group(3)
+                cmdline = get_full_cmdline(curr_p)
+                
+                # Protect interactive shells
+                if name in ("bash", "sh", "zsh", "fish") and not any(ext in cmdline for ext in (".sh", ".py", ".pl", ".js")):
+                    break
+                
+                pids.add(curr_p)
+                if name in ("sshd", "login", "tmux", "screen", "systemd"): break
+                curr_p = ppid
+            except: break
+
+        for p in pids:
+            subprocess.run(["sudo", "kill", "-STOP", p], capture_output=True)
+        
+        show_message(stdscr, f"Tree Paused: {prog} and script parents ({len(pids)} PIDs).")
+        debug_log(f"PAUSE: Sent STOP to {pids}")
+    except Exception as e:
+        show_message(stdscr, f"Failed to pause: {e}")
+
+def continue_process(pid, prog, stdscr):
+    try:
+        pids = {pid}
+        curr_p = pid
+        for _ in range(10):
+            if not curr_p or curr_p in ("0", "1"): break
+            try:
+                with open(f"/proc/{curr_p}/stat", "r") as f:
+                    content = f.read()
+                match = re.search(r"(\d+) \((.*)\) [A-Z] (\d+)", content)
+                if not match: break
+                name, ppid = match.group(2), match.group(3)
+                cmdline = get_full_cmdline(curr_p)
+                if name in ("bash", "sh", "zsh", "fish") and not any(ext in cmdline for ext in (".sh", ".py", ".pl", ".js")):
+                    break
+                pids.add(curr_p)
+                curr_p = ppid
+            except: break
+
+        for p in pids:
+            subprocess.run(["sudo", "kill", "-CONT", p], capture_output=True)
+            
+        show_message(stdscr, f"Tree Continued: {prog} and parents resumed.")
+        debug_log(f"CONTINUE: Sent CONT to {pids}")
+    except Exception as e:
+        show_message(stdscr, f"Failed to continue: {e}")
+
+def restart_service(prog, stdscr):
+    try:
+        debug_log(f"RESTART: Attempting restart for '{prog}'")
+        
+        # 1. Check if it's actually a systemd service
+        check = subprocess.run(["systemctl", "list-unit-files", f"{prog}.service"], capture_output=True, text=True)
+        is_service = prog in check.stdout or (subprocess.run(["systemctl", "status", prog], capture_output=True).returncode < 4)
+
+        if not is_service:
+            msg = f"Error: '{prog}' is not a systemd service. Restarting scripts via 'r' is not supported (use 't' then run manually)."
+            debug_log(f"RESTART: FAILED - {msg}")
+            show_message(stdscr, msg, duration=3.0)
+            return
+
+        # 2. Execute restart
+        res = subprocess.run(["sudo", "systemctl", "restart", prog], capture_output=True, text=True)
+        
+        if res.returncode == 0:
+            msg = f"Service '{prog}' restarted successfully."
+            debug_log(f"RESTART: SUCCESS - {prog}")
+            show_message(stdscr, msg)
+        else:
+            msg = f"Failed to restart {prog}: {res.stderr.strip()}"
+            debug_log(f"RESTART: ERROR - {msg}")
+            show_message(stdscr, msg, duration=3.0)
+            
+    except Exception as e:
+        debug_log(f"RESTART: Exception - {str(e)}")
+        show_message(stdscr, f"Restart error: {e}")
+
+def renice_process(pid, prog, nice_val, stdscr):
+    try:
+        debug_log(f"RENICE: Changing PID {pid} ({prog}) priority to {nice_val}")
+        res = subprocess.run(["sudo", "renice", str(nice_val), "-p", pid], capture_output=True, text=True)
+        if res.returncode == 0:
+            show_message(stdscr, f"Priority of {prog} set to {nice_val}.")
+            debug_log(f"RENICE: Success")
+        else:
+            show_message(stdscr, f"Renice failed: {res.stderr.strip()}")
+            debug_log(f"RENICE: Error - {res.stderr.strip()}")
+    except Exception as e:
+        debug_log(f"RENICE: Exception - {str(e)}")
+        show_message(stdscr, f"Renice error: {e}")
+
+def draw_renice_modal(stdscr, pid, prog):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 10, 50
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try:
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+    
+    title = f" ⚖️ Renice: {prog} ({pid}) "
+    win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    
+    options = [
+        ("[1] High Priority (-10)", -10),
+        ("[2] Normal (0)", 0),
+        ("[3] Low Priority (10)", 10),
+        ("[4] Very Low / BG (19)", 19),
+        ("[ESC] Cancel", None)
+    ]
+    
+    for i, (txt, val) in enumerate(options):
+        win.addstr(2 + i, 4, txt)
+    
+    win.refresh()
+    while True:
+        k = win.getch()
+        if k == 27: break # ESC
+        if ord('1') <= k <= ord('4'):
+            val = options[k - ord('1')][1]
+            renice_process(pid, prog, val, stdscr)
+            break
+    
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def adjust_oom_score(pid, prog, score, stdscr):
+    try:
+        debug_log(f"OOM: Changing PID {pid} ({prog}) OOM Score Adj to {score}")
+        # Use shell with sudo to write to /proc
+        cmd = f"echo {score} | sudo tee /proc/{pid}/oom_score_adj"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if res.returncode == 0:
+            show_message(stdscr, f"OOM Score of {prog} set to {score}.")
+            debug_log("OOM: Success")
+        else:
+            show_message(stdscr, f"OOM adjust failed: {res.stderr.strip()}")
+            debug_log(f"OOM: Error - {res.stderr.strip()}")
+    except Exception as e:
+        debug_log(f"OOM: Exception - {str(e)}")
+        show_message(stdscr, f"OOM adjust error: {e}")
+
+def draw_oom_modal(stdscr, pid, prog):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 12, 54
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+    
+    title = f" ☠️ OOM Score: {prog} ({pid}) "
+    win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    
+    options = [
+        ("[1] Protected (-1000) - Never Kill", -1000),
+        ("[2] Important (-500)", -500),
+        ("[3] Normal (0)", 0),
+        ("[4] Sacrificial (500)", 500),
+        ("[5] Kill Me First (1000)", 1000),
+        ("[ESC] Cancel", None)
+    ]
+    
+    for i, (txt, val) in enumerate(options):
+        win.addstr(2 + i, 4, txt)
+    
+    win.refresh()
+    while True:
+        k = win.getch()
+        if k == 27: break
+        if ord('1') <= k <= ord('5'):
+            val = options[k - ord('1')][1]
+            adjust_oom_score(pid, prog, val, stdscr)
+            break
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
 def confirm_dialog(stdscr, question):
     h, w = stdscr.getmaxyx()
     win_h, win_w = 5, min(60, w - 4)
@@ -949,6 +1290,42 @@ def show_message(stdscr, msg, duration=1.5):
 # --------------------------------------------------
 # UI Draw
 # --------------------------------------------------
+def get_process_state(pid):
+    """Check if process is stopped (T) or running."""
+    if not pid or not pid.isdigit(): return "RUNNING"
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            content = f.read()
+            match = re.search(r"\) ([A-Zrt]) ", content)
+            if match:
+                state = match.group(1)
+                # T: Stopped by job control signal, t: Stopped by debugger during tracing
+                if state in ("T", "t"):
+                    return "PAUSED"
+    except:
+        pass
+    return "RUNNING"
+
+def get_process_nice(pid):
+    """Get the nice value from /proc/pid/stat (19th field)."""
+    if not pid or not pid.isdigit(): return "0"
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            fields = f.read().split()
+            # 19th field (index 18) is the nice value
+            return fields[18]
+    except:
+        return "0"
+
+def get_oom_score_adj(pid):
+    """Get OOM score adjustment from /proc/pid/oom_score_adj."""
+    if not pid or not pid.isdigit(): return "0"
+    try:
+        with open(f"/proc/{pid}/oom_score_adj", "r") as f:
+            return f.read().strip()
+    except:
+        return "0"
+
 def get_preformatted_table_row(row, cache, firewall_status, w):
     port, proto, pidprog, prog, pid = row
     user = cache.get(port, {}).get("user", "-")
@@ -963,9 +1340,14 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
     usage = get_process_usage_cached(pid)
     fw_icon = "⚡" if firewall_status.get(port, True) else "⛔"
     proc_icon = "👑" if user == "root" else "🧑"
+    
+    # Process status check for visual feedback
+    is_paused = (get_process_state(pid) == "PAUSED")
+    status_tag = "⏸ [PAUSED] " if is_paused else ""
+    
     # Preformat with widths (adjust to table widths)
     widths = [10, 8, 18, 28, w - 68]  # same as headers
-    data = [f"{fw_icon} {port}", proto.upper(), usage, f"{proc_icon} {prog}", f"👤 {user}"]
+    data = [f"{fw_icon} {port}", proto.upper(), usage, f"{status_tag}{proc_icon} {prog}", f"👤 {user}"]
     row_str = ""
     for val, wd in zip(data, widths):
         row_str += val.ljust(wd)
@@ -1110,9 +1492,33 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
         if row_y < h - 1:
             safe_add(row_y, conn_panel_x, "🔥 Process Reality Check (DEBUG)", curses.A_BOLD | curses.A_UNDERLINE)
             row_y += 1
-
+        
         pid = conn_info.get("pid")
         if pid and pid.isdigit():
+            # Show process priority (nice value)
+            nice_val = get_process_nice(pid)
+            nice_text = f"{nice_val} (Normal)" if nice_val == "0" else (f"{nice_val} (High)" if int(nice_val) < 0 else f"{nice_val} (Low)")
+            safe_add(row_y, conn_panel_x, f"Priority (Nice)    : {nice_text}")
+            row_y += 1
+
+            # Show OOM Score
+            oom_val = get_oom_score_adj(pid)
+            oom_text = f"{oom_val} (Neutral)" if oom_val == "0" else (f"{oom_val} (Protected)" if int(oom_val) < 0 else f"{oom_val} (Vulnerable)")
+            safe_add(row_y, conn_panel_x, f"OOM Score Adj      : {oom_text}")
+            row_y += 1
+            
+            # Show full command line
+            cmdline = get_full_cmdline(pid)
+            safe_add(row_y, conn_panel_x, "📜 Command Line:")
+            row_y += 1
+            # Wrap cmdline if it's too long
+            wrapped_cmd = textwrap.wrap(cmdline, conn_panel_w - 4)
+            for l in wrapped_cmd[:3]: # Limit to 3 lines
+                if row_y >= h - 1: break
+                safe_add(row_y, conn_panel_x, f"  {l}")
+                row_y += 1
+            row_y += 1
+
             # use cached wrappers to avoid running heavy /proc ops during scroll
             chain = get_process_parent_chain_cached(pid)
             tree = format_process_tree(chain)
@@ -1305,10 +1711,11 @@ def draw_action_center_modal(stdscr, highlight_key=None):
         ("🧠 PROCESS OPERATIONS", None),
         ("  ⚡  [h] Reload (SIGHUP)", 'h'),
         ("  💀  [9] Force Kill (SIGKILL)", '9'),
+        ("  🌳  [t] Force Kill Tree", 't'),
         ("  ⏸   [p] Pause Process", 'p'),
         ("  ▶   [c] Continue Process", 'c'),
-        ("  🐢  [n] Renice", 'n'),
-        ("  🔄  [r] Restart Service", 'r'),
+        ("  🔄  [r] Restart Service", "r"),
+        ("  ⚖️   [n] Renice", "n"),
         ("  ☠   [o] Adjust OOM Score", 'o'),
         ("  🐞  [d] Debug Dump", 'd'),
     ]
@@ -1422,9 +1829,89 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             stdscr.touchwin()
             curses.doupdate()
             return
+        elif ch == 'h':
+            # Reload (SIGHUP)
+            port, proto, pidprog, prog, pid = rows[selected]
+            reload_process(pid, prog, stdscr)
+            request_full_refresh() # refresh main UI
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except Exception:
+                pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == '9':
+            # Force Kill (SIGKILL)
+            port, proto, pidprog, prog, pid = rows[selected]
+            force_kill_process(pid, prog, stdscr)
+            request_full_refresh() # refresh main UI
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except Exception:
+                pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == 't':
+            # Kill Process Group
+            port, proto, pidprog, prog, pid = rows[selected]
+            kill_process_group(pid, prog, port, stdscr)
+            request_full_refresh()
+            # Since we cleared everything, we should probably exit modal back to main screen
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except: pass
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == 'p':
+            # Pause
+            port, proto, pidprog, prog, pid = rows[selected]
+            pause_process(pid, prog, stdscr)
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == 'c':
+            # Continue
+            port, proto, pidprog, prog, pid = rows[selected]
+            continue_process(pid, prog, stdscr)
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == 'r':
+            # Restart Service
+            port, proto, pidprog, prog, pid = rows[selected]
+            restart_service(prog, stdscr)
+            request_full_refresh()
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == 'n':
+            # Renice
+            port, proto, pidprog, prog, pid = rows[selected]
+            draw_renice_modal(stdscr, pid, prog)
+            request_full_refresh()
+            stdscr.touchwin()
+            curses.doupdate()
+            return
+        elif ch == 'o':
+            # Adjust OOM Score
+            port, proto, pidprog, prog, pid = rows[selected]
+            draw_oom_modal(stdscr, pid, prog)
+            request_full_refresh()
+            stdscr.touchwin()
+            curses.doupdate()
+            return
         else:
             # For other keys, simple not-implemented message
-            if ch in ('h','9','p','c','n','r','o','d'):
+            if ch in ('d',):
                 show_message(stdscr, f"Action '{ch}' not implemented yet.")
                 win = draw_action_center_modal(stdscr)
             else:
@@ -2139,10 +2626,9 @@ def draw_connection_limit_modal(stdscr, port):
 
 
 def get_process_parent_chain(pid, max_depth=10):
-
     """
     Return real parent/supervisor chain like:
-    systemd(1) -> sshd(742) -> sshd(3112)
+    systemd(1) -> bash datePrinter.sh(742) -> nc(3112)
     """
     chain = []
     seen = set()
@@ -2151,13 +2637,33 @@ def get_process_parent_chain(pid, max_depth=10):
         seen.add(pid)
         try:
             with open(f"/proc/{pid}/stat", "r") as f:
-                stat = f.read().split()
-                ppid = stat[3]
+                stat_content = f.read()
+            
+            # Use regex to find everything after the last ')' to safely get ppid (stat[3] equivalent)
+            # stat format: pid (comm) state ppid ...
+            match = re.search(r"(\d+) \((.*)\) [A-Z] (\d+)", stat_content)
+            if not match: break
+            
+            comm_name = match.group(2)
+            ppid = match.group(3)
 
-            with open(f"/proc/{pid}/comm", "r") as f:
-                name = f.read().strip()
+            display_name = comm_name
+            # Try to enrich with script name if it's a known interpreter
+            try:
+                with open(f"/proc/{pid}/cmdline", "r") as f:
+                    cmd = f.read().replace("\0", " ").strip()
+                    parts = cmd.split()
+                    if parts:
+                        exe = os.path.basename(parts[0])
+                        if exe in ("bash", "sh", "python", "python3", "php", "node"):
+                            # If second part looks like a script/file, include it
+                            if len(parts) > 1 and not parts[1].startswith("-"):
+                                script_name = os.path.basename(parts[1])
+                                display_name = f"{exe} {script_name}"
+            except:
+                pass
 
-            chain.append(f"{name}({pid})")
+            chain.append(f"{display_name}({pid})")
 
             if ppid == "0" or ppid == pid:
                 break
@@ -2181,6 +2687,17 @@ def format_process_tree(chain):
         prefix = "   " * i + ("└─ " if i else "")
         lines.append(f"{prefix}{node}")
     return lines
+
+def get_full_cmdline(pid):
+    """Return full cmdline from /proc, with nulls replaced by spaces."""
+    if not pid or not pid.isdigit():
+        return "-"
+    try:
+        with open(f"/proc/{pid}/cmdline", "r") as f:
+            cmdline = f.read().replace("\0", " ").strip()
+            return cmdline if cmdline else "-"
+    except:
+        return "-"
 
 def get_fd_pressure(pid):
     """
@@ -2403,18 +2920,31 @@ def main(stdscr):
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
         if TRIGGER_REFRESH:
             TRIGGER_REFRESH = False
-            rows = parse_ss()  # force real parse
-            # clear caches to avoid stale data after global changes
-            _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
+            # IMPORTANT: Disable snapshot mode temporarily to allow fresh scan
+            global SNAPSHOT_MODE
+            old_mode = SNAPSHOT_MODE
+            SNAPSHOT_MODE = False
+            
+            # Clear ALL internal caches including the heavy SS parser cache
+            _parse_cache.clear()
+            _witr_cache.clear()
+            _conn_cache.clear()
             _table_row_cache.clear()
             cache.clear()
+            
+            # Force a real, non-cached parse
+            rows = parse_ss() 
             splash_screen(stdscr, rows, cache)
+            
+            SNAPSHOT_MODE = old_mode
+            
             if selected >= len(rows):
                 selected = len(rows) - 1
             if selected < 0 and rows:
                 selected = 0
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
-            # after refresh, immediately redraw (continue to top of loop)
+            # update last interaction to avoid immediate fetch churn
+            last_selected_change_time = time.time()
             continue
 
         k = stdscr.getch()

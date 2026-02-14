@@ -1,3 +1,19 @@
+heimdall (0.4.0-1) unstable; urgency=medium
+
+  * New feature: Precision Kill Tree (Action Center → [t])
+    - Nuclear termination for background script loops
+    - Protects interactive terminal sessions from being killed
+  * New feature: Process Priority Management (Action Center → [n])
+    - Interactive renice modal with real-time feedback
+  * New feature: OOM Score Adjustment (Action Center → [o])
+    - Control process sacrificial status during RAM exhaustion
+  * Improved: Tree-aware Pause/Continue mechanism
+  * Added: Internal debug logging to ~/.config/heimdall/debug.log
+  * UI: New visual indicators for [PAUSED] processes
+  * Fixed: /proc/stat parsing for process names with spaces
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 14 Feb 2026 17:40:32 +0200
+
 heimdall (0.3.0-1) unstable; urgency=medium
 
   * New feature: Connection Limit modal (Action Center → [l])
