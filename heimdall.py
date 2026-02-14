@@ -7,11 +7,13 @@ import textwrap
 import os
 import time
 import argparse
-from shutil import which
+from shutil import which, get_terminal_size
 from collections import Counter
 import ipaddress
 import functools
 import threading
+import sys
+import os
 
 KEY_SEP_UP = ord('+')
 KEY_SEP_DOWN = ord('-')
@@ -24,7 +26,29 @@ TRIGGER_REFRESH = False
 # --------------------------------------------------
 # 🎨 Themes & Colors
 # --------------------------------------------------
-CURRENT_THEME_INDEX = 0
+# Config path for persistence
+CONFIG_PATH = os.path.expanduser("~/.config/heimdall/theme")
+
+def load_theme_preference():
+    """Load the theme index from the config file."""
+    try:
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r") as f:
+                return int(f.read().strip())
+    except:
+        pass
+    return 0
+
+def save_theme_preference(index):
+    """Save the theme index to the config file."""
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w") as f:
+            f.write(str(index))
+    except:
+        pass
+
+CURRENT_THEME_INDEX = load_theme_preference()
 
 # Curses color pair IDs (1-based because 0 is reserved)
 CP_HEADER = 1   # Headers, Branding, important labels
@@ -2457,6 +2481,7 @@ def main(stdscr):
                 # Switch theme (Colorize)
                 global CURRENT_THEME_INDEX
                 CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
+                save_theme_preference(CURRENT_THEME_INDEX)
                 apply_current_theme(stdscr)
                 # Show feedback
                 t_name = THEMES[CURRENT_THEME_INDEX]['name']
@@ -2488,8 +2513,39 @@ def main(stdscr):
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
 
 
+def check_and_show_terminal_size_then_exit():
+    try:
+        # os.get_terminal_size() is most reliable and doesn't require curses initialized
+        size = os.get_terminal_size()
+        cols = size.columns
+        rows = size.lines
+
+        # Minimum required dimensions
+        MIN_COLS = 100
+        MIN_ROWS = 24
+        
+        if cols < MIN_COLS or rows < MIN_ROWS:
+            print("┌────────────────────────────────────────────────────────────┐")
+            print("│                  TERMINAL SIZE TOO SMALL                   │")
+            print("├────────────────────────────────────────────────────────────┤")
+            print(f"│  Current size:    {cols:4d} cols × {rows:3d} lines                    │")
+            print("│                                                            │")
+            print("│  Minimum required:                                         │")
+            print(f"│     → At least {MIN_COLS} cols × {MIN_ROWS} lines                         │")
+            print("│     → 140+ cols recommended for best experience            │")
+            print("└────────────────────────────────────────────────────────────┘")
+            print("\nPlease resize your terminal and try again.\n")
+            sys.exit(1)
+        
+    except OSError:
+        # If not a TTY, we might still want to try running or just exit.
+        # For now, let's just let it pass or show a warning.
+        pass
+
+
 def cli_entry():
     """terminal command 'heimdall' entry point"""
+    check_and_show_terminal_size_then_exit()
     check_python_version()
     check_witr_exists()
     parse_args()
