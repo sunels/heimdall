@@ -7,13 +7,32 @@ import textwrap
 import os
 import time
 import argparse
+import json
+from datetime import datetime
+try:
+    import psutil
+except ImportError:
+    psutil = None
 from shutil import which, get_terminal_size
 from collections import Counter
 import ipaddress
 import functools
 import threading
-import sys
-import os
+
+SERVICES_DB = {}
+def load_services_db():
+    global SERVICES_DB
+    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "services.json")
+    try:
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                SERVICES_DB = json.load(f)
+        else:
+            debug_log(f"SERVICES: services.json not found at {json_path}")
+    except Exception as e:
+        debug_log(f"SERVICES: Error loading JSON: {e}")
+
+load_services_db()
 
 KEY_SEP_UP = ord('+')
 KEY_SEP_DOWN = ord('-')
@@ -1187,6 +1206,254 @@ def draw_oom_modal(stdscr, pid, prog):
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
 
+def get_service_info(process_name, port=None):
+    key = process_name.lower()
+    if key in SERVICES_DB:
+        return SERVICES_DB[key]
+    # fallback to port
+    if port:
+        try:
+            p_int = int(port)
+            for svc, info in SERVICES_DB.items():
+                if p_int in info.get('ports', []):
+                    return info
+        except: pass
+    return {
+        "name": "Unknown",
+        "description": "This process does not match any known service in the local database.",
+        "risk": "Unknown",
+        "recommendation": "Investigate the process and port usage manually."
+    }
+
+def get_runtime_classification(pid, prog):
+    if not pid or not pid.isdigit(): return "Unknown"
+    try:
+        if os.path.exists(f"/etc/systemd/system/{prog}.service") or \
+           os.path.exists(f"/lib/systemd/system/{prog}.service") or \
+           subprocess.run(["systemctl", "status", prog], capture_output=True).returncode == 0:
+            return "systemd Service"
+        
+        with open(f"/proc/{pid}/cmdline", "r") as f:
+            cmd = f.read().replace('\0', ' ')
+            if any(ext in cmd for ext in [".sh", ".py", ".pl", ".php", ".js"]):
+                return "Interpreter / Script"
+        return "Binary Executable"
+    except:
+        return "Generic Process"
+
+def build_inspect_content(pid, port, prog, username):
+    lines = []
+    lines.append(("                🔍 SYSTEM INSPECTION REPORT", CP_HEADER))
+    lines.append(("" * 60, CP_BORDER))
+
+    # 1. Service Knowledge (MOVED TO TOP)
+    lines.append(("📚 SERVICE KNOWLEDGE", CP_ACCENT))
+    svc_info = get_service_info(prog, port)
+    lines.append((f"  Identity    : {svc_info.get('name')}", CP_TEXT))
+    lines.append(("  Scope       :", CP_TEXT))
+    desc_wrapped = textwrap.wrap(svc_info.get('description', ''), 70)
+    for d_line in desc_wrapped:
+        lines.append((f"    {d_line}", CP_TEXT))
+    
+    risk_lvl = svc_info.get('risk', 'Unknown')
+    lines.append((f"  🚩 Risk Level: {risk_lvl}", CP_WARN if any(x in risk_lvl for x in ["High", "Danger", "Medium"]) else CP_TEXT))
+    lines.append((f"  💡 Recommendation:", CP_ACCENT))
+    rec_wrapped = textwrap.wrap(svc_info.get('recommendation', ''), 70)
+    for r_line in rec_wrapped:
+        lines.append((f"    {r_line}", CP_TEXT))
+
+    lines.append(("", CP_TEXT))
+
+    # 2. Security Audit (MOVED TO TOP)
+    lines.append(("⚠️ SECURITY AUDIT", CP_ACCENT))
+    risks = []
+    if username == "root":
+        risks.append(("[!] PRIVILEGE: Running as ROOT", CP_WARN))
+    if psutil and pid.isdigit():
+        try:
+            p = psutil.Process(int(pid))
+            if "(deleted)" in p.exe():
+                risks.append(("[!!!] DANGER: Executable deleted/malware suspect", CP_WARN))
+            cwd = p.cwd()
+            if any(pat in cwd for pat in ["/tmp", "/dev/shm"]):
+                risks.append(("[!] SUSPICIOUS: Working in world-writable DIR", CP_WARN))
+            conns = p.connections(kind='inet')
+            for c in conns:
+                if c.status == 'LISTEN' and c.laddr.ip in ['0.0.0.0', '::']:
+                    risks.append(("[!] EXPOSURE: Listening on PUBLIC interface", CP_WARN))
+                    break
+        except: pass
+        
+    if not risks:
+        lines.append(("  ✅ No critical security indicators detected.", CP_TEXT))
+    else:
+        for r_txt, r_cp in risks:
+            lines.append((f"  {r_txt}", r_cp))
+
+    lines.append(("", CP_TEXT))
+
+    # 3. Runtime Classification
+    lines.append(("🏷️ CLASSIFICATION", CP_ACCENT))
+    classification = get_runtime_classification(pid, prog)
+    lines.append((f"  Type        : {classification}", CP_TEXT))
+    lines.append(("", CP_TEXT))
+    
+    # 4. Basic Process Info
+    lines.append(("🧠 PROCESS DETAILS", CP_ACCENT))
+    lines.append((f"  Name        : {prog}", CP_TEXT))
+    lines.append((f"  PID         : {pid}", CP_TEXT))
+    lines.append((f"  User        : {username}", CP_TEXT))
+    
+    if psutil and pid.isdigit():
+        try:
+            p = psutil.Process(int(pid))
+            lines.append((f"  Status      : {p.status().upper()}", CP_TEXT))
+            lines.append((f"  Started     : {datetime.fromtimestamp(p.create_time()).strftime('%Y-%m-%d %H:%M:%S')}", CP_TEXT))
+            lines.append((f"  CWD         : {p.cwd()}", CP_TEXT))
+            lines.append((f"  Exec Path   : {p.exe()}", CP_TEXT))
+            
+            cmdline = " ".join(p.cmdline())
+            lines.append(("  Command Line:", CP_TEXT))
+            wrapped_cmd = textwrap.wrap(cmdline, 70)
+            for w_line in wrapped_cmd:
+                lines.append((f"    {w_line}", CP_TEXT))
+        except Exception as e:
+            lines.append((f"  [!] psutil meta error: {e}", CP_WARN))
+
+    lines.append(("", CP_TEXT))
+
+    # 5. Resource Pressure
+    lines.append(("📊 RESOURCE PRESSURE", CP_ACCENT))
+    usage = get_process_usage_cached(pid)
+    lines.append((f"  System Load : {usage} (Mem/CPU)", CP_TEXT))
+    if pid.isdigit():
+        try:
+            p = psutil.Process(int(pid))
+            mem = p.memory_info().rss / (1024 * 1024)
+            lines.append((f"  Resident Set: {mem:.2f} MB", CP_TEXT))
+            lines.append((f"  Threads     : {p.num_threads()}", CP_TEXT))
+        except: pass
+
+    lines.append(("", CP_TEXT))
+
+    # 6. Process Tree
+    lines.append(("🌳 PROCESS TREE (Ancestry)", CP_ACCENT))
+    tree = get_process_parent_chain(pid)
+    for i, t_node in enumerate(tree):
+        prefix = "  └─ " if i > 0 else "  "
+        lines.append((f"{prefix}{t_node}", CP_TEXT))
+
+    lines.append(("", CP_TEXT))
+
+    # 7. Process Reality Check
+    lines.append(("🔥 PROCESS REALITY CHECK", CP_ACCENT))
+    nice_val = get_process_nice(pid)
+    oom_val = get_oom_score_adj(pid)
+    lines.append((f"  Priority (Nice) : {nice_val}", CP_TEXT))
+    lines.append((f"  OOM Score Adj   : {oom_val}", CP_TEXT))
+    lines.append(("", CP_TEXT))
+
+    # 8. Connection Visibility
+    lines.append(("🌐 CONNECTION VISIBILITY", CP_ACCENT))
+    c_info = get_connections_info_cached(port)
+    lines.append((f"  Active Conn     : {c_info.get('active_connections', 0)}", CP_TEXT))
+    lines.append((f"  Top Talker IP   : {c_info.get('top_ip', '-')}", CP_TEXT))
+    lines.append(("  Recent IPs      :", CP_TEXT))
+    for ip, cnt in c_info.get("all_ips", Counter()).most_common(5):
+        lines.append((f"    {ip} ({cnt} connections)", CP_TEXT))
+
+    lines.append(("", CP_TEXT))
+
+    # 9. Why It Exists
+    lines.append(("❓ WHY IT EXISTS (witr output)", CP_ACCENT))
+    w_lines = get_witr_output_cached(port)
+    if not w_lines or w_lines == ["No data"]:
+        lines.append(("  No detailed witr analysis available.", CP_TEXT))
+    else:
+        for w_line in w_lines:
+            for wrapped_w in textwrap.wrap(w_line, 70):
+                lines.append((f"  {wrapped_w}", CP_TEXT))
+
+    lines.append(("", CP_TEXT))
+
+    # 10. Open Files
+    lines.append(("📂 OPEN FILES", CP_ACCENT))
+    f_list = get_open_files_cached(pid)
+    if not f_list:
+        lines.append(("  Access denied or no files open.", CP_TEXT))
+    else:
+        lines.append((f"  Count: {len(f_list)} items", CP_TEXT))
+        for f_item in f_list[:20]:
+            lines.append((f"    {f_item}", CP_TEXT))
+        if len(f_list) > 20:
+            lines.append((f"    ... and {len(f_list)-20} more (see main view)", CP_TEXT))
+
+    lines.append(("", CP_TEXT))
+
+    return lines
+
+def show_inspect_modal(stdscr, port, prog, pid, username):
+    lines = build_inspect_content(pid, port, prog, username)
+    h, w = stdscr.getmaxyx()
+    bh, bw = h - 6, min(80, w - 8)
+    y, x = (h - bh) // 2, (w - bw) // 2
+    
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.scrollok(True)
+    
+    scroll_pos = 0
+    total_lines = len(lines)
+    max_visible = bh - 4
+    
+    while True:
+        win.erase()
+        try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+        except: pass
+        win.box()
+        
+        title = f" 🔍 Inspect: Port {port} - {prog} "
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        # Draw visible lines
+        for i in range(max_visible):
+            idx = scroll_pos + i
+            if idx < total_lines:
+                txt, color = lines[idx]
+                try:
+                    win.addstr(2 + i, 2, txt[:bw-4], curses.color_pair(color))
+                except: pass
+        
+        footer = " ↑↓ Scroll | [e] Export | [q/ESC] Close "
+        win.addstr(bh-1, (bw - len(footer)) // 2, footer, curses.color_pair(CP_ACCENT))
+        
+        win.refresh()
+        k = win.getch()
+        
+        if k in (ord('q'), 27):
+            break
+        elif k == curses.KEY_UP and scroll_pos > 0:
+            scroll_pos -= 1
+        elif k == curses.KEY_DOWN and scroll_pos < total_lines - max_visible:
+            scroll_pos += 1
+        elif k == ord('e'):
+            # Export to file
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = os.path.expanduser(f"~/heimdall-inspect-{port}-{timestamp}.txt")
+            try:
+                with open(filename, 'w') as f:
+                    f.write(f"Heimdall Inspection Report - {datetime.now()}\n")
+                    f.write("="*60 + "\n")
+                    for txt, _ in lines:
+                        f.write(txt + "\n")
+                show_message(stdscr, f"Exported to {filename}")
+            except Exception as e:
+                show_message(stdscr, f"Export failed: {e}")
+            break
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
 def confirm_dialog(stdscr, question):
     h, w = stdscr.getmaxyx()
     win_h, win_w = 5, min(60, w - 4)
@@ -1624,17 +1891,17 @@ def draw_open_files(win, pid, prog, files, scroll=0):
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
-    # include Actions (a) hint for main view; indicate snapshot mode
+    # Ordered shortcuts: i Inspect -> Refresh (if snap) -> Colorize -> ... -> q Quit
+    snap_label = " [🔄 r Refresh] " if SNAPSHOT_MODE else ""
+    
     base_help = (
-        " [🎨 Colorize c] "
-        " [🧭 ↑/↓ Select] [↕️ +/- Resize] [⇱⇲ Tab Witr Pane] "
-        " [📂 ←/→ Files Scroll] [⛔ s Stop Proc] [🔥 f Firewall] "
+        f" [🔍 i Inspect]{snap_label} [🎨 Colorize c]"
+        " [🧭 ↑/↓ Select] [↕️ +/- Resize] [⇱⇲ Tab Witr Pane]"
+        " [📂 ←/→ Files Scroll] [⛔ s Stop] [🔥 f Firewall]"
         " [🛠 a Actions] [❌ q Quit]"
     ) if not show_detail else " [🎨 Colorize c]   🧭 ↑/↓ Scroll   [Tab] Restore   ❌ Quit "
 
-    # snapshot indicator
-    snap_label = " [🔄 'r' Refresh] " if SNAPSHOT_MODE else ""
-    help_text = (snap_label + base_help) if not show_detail else base_help
+    help_text = base_help
 
     try:
         bar_win = curses.newwin(3, w, h-3, 0)
@@ -3004,6 +3271,12 @@ def main(stdscr):
             elif k == ord('a'):
                 # open Action Center modal
                 handle_action_center_input(stdscr, rows, selected, cache, firewall_status)
+            elif k == ord('i') and selected >= 0 and rows:
+                # Open Inspection/Information modal
+                port, proto, pidprog, prog, pid = rows[selected]
+                # get username from cache if available
+                user = cache.get(port, {}).get("user", "unknown")
+                show_inspect_modal(stdscr, port, prog, pid, user)
             elif k == KEY_FIREWALL and selected >= 0 and rows:
                 port = rows[selected][0]
                 toggle_firewall(port, stdscr, firewall_status)

@@ -24,6 +24,7 @@
 - 🛠️ **Action Center (Modal)** — quick operational panel for ports & processes (see below)
 - 💥 **Kill Connections** operation: list and kill established connections for a port.
 - 🚫 **Block IP** operation: block a source IP for a port via iptables.
+- 🔍 **Deep Inspect / Info (i)**: Comprehensive process analysis including risk assessment, service descriptions from an offline database, and connection tracking.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
@@ -94,6 +95,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 🔍 Deep Inspection — Static Service Analysis & Risk Audit
+<img src="pp-7.png" alt="heimdall deep inspection" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -109,6 +115,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | s | Stop selected process / service |
 | f | Toggle firewall for selected port |
 | a | Actions (open Action Center modal) |
+| i | Inspect / Deep Information modal |
 | q | Quit |
 
 ### 📜 Detail View (witr output)
