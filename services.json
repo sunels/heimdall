@@ -1,0 +1,272 @@
+{
+    "sshd": {
+        "name": "OpenSSH Server",
+        "description": "Standard service for secure remote access (SSH). Provides encrypted communications over insecure networks.",
+        "ports": [
+            22
+        ],
+        "typical_user": "root",
+        "risk": "Medium - Open to brute-force if weak passwords are used.",
+        "recommendation": "Use key-based auth, change default port, disable password login."
+    },
+    "nginx": {
+        "name": "Nginx Web Server",
+        "description": "High-performance HTTP server, reverse proxy, and load balancer.",
+        "ports": [
+            80,
+            443
+        ],
+        "typical_user": "www-data, nginx",
+        "risk": "Low - Generally secure but misconfiguration can expose data.",
+        "recommendation": "Keep updated, use HTTPS, follow hardening guides."
+    },
+    "apache2": {
+        "name": "Apache HTTP Server",
+        "description": "Widely used web server software. Flexible and modular.",
+        "ports": [
+            80,
+            443
+        ],
+        "typical_user": "www-data",
+        "risk": "Low - Secure by default but modularity can increase attack surface.",
+        "recommendation": "Disable unnecessary modules, use SSL/TLS."
+    },
+    "mysqld": {
+        "name": "MySQL / MariaDB Server",
+        "description": "Popular relational database management system.",
+        "ports": [
+            3306
+        ],
+        "typical_user": "mysql",
+        "risk": "Medium - Risk of SQL injection in apps and brute-force if public.",
+        "recommendation": "Never expose to public internet. Bind to localhost."
+    },
+    "postgresql": {
+        "name": "PostgreSQL Database",
+        "description": "Advanced, enterprise-class open-source relational database.",
+        "ports": [
+            5432
+        ],
+        "typical_user": "postgres",
+        "risk": "Medium - Public ports are targets for brute-force.",
+        "recommendation": "Bind to localhost/VPN. Use strong pg_hba.conf auth."
+    },
+    "redis-server": {
+        "name": "Redis In-Memory Data Store",
+        "description": "In-memory key-value store used as database/cache.",
+        "ports": [
+            6379
+        ],
+        "typical_user": "redis",
+        "risk": "High - Often exposed without password by default.",
+        "recommendation": "Use strong passwords, bind to specific internal interfaces."
+    },
+    "docker": {
+        "name": "Docker Daemon",
+        "description": "Engine for managing containers.",
+        "ports": [
+            2375,
+            2376
+        ],
+        "typical_user": "root",
+        "risk": "High - Access to Docker socket/port equals root access.",
+        "recommendation": "Never expose the Docker API to the network without TLS."
+    },
+    "vsftpd": {
+        "name": "Very Secure FTP Daemon",
+        "description": "FTP server for Linux. FTP is an older, unencrypted protocol.",
+        "ports": [
+            20,
+            21
+        ],
+        "typical_user": "ftp, vsftpd",
+        "risk": "High - FTP sends passwords in cleartext. Brute-force magnet.",
+        "recommendation": "Use SFTP (over SSH) instead. If using FTP, use FTPS."
+    },
+    "postfix": {
+        "name": "Postfix MTA",
+        "description": "Mail Transfer Agent for routing and delivering e-mail.",
+        "ports": [
+            25,
+            465,
+            587
+        ],
+        "typical_user": "postfix",
+        "risk": "Medium - Can be used as an open relay for spam if misconfigured.",
+        "recommendation": "Disable open relaying, keep updated."
+    },
+    "dovecot": {
+        "name": "Dovecot IMAP/POP3 Server",
+        "description": "Open-source IMAP and POP3 email server.",
+        "ports": [
+            110,
+            143,
+            993,
+            995
+        ],
+        "typical_user": "dovecot",
+        "risk": "Medium - Target for e-mail account brute-force.",
+        "recommendation": "Enforce SSL/TLS for all connections."
+    },
+    "smbd": {
+        "name": "Samba SMB Server",
+        "description": "File and print services for Windows clients.",
+        "ports": [
+            139,
+            445
+        ],
+        "typical_user": "root",
+        "risk": "High - History of RCE exploits (e.g. EternalBlue).",
+        "recommendation": "Keep patched, never expose to public internet."
+    },
+    "memcached": {
+        "name": "Memcached Store",
+        "description": "In-memory caching system. No authentication by default.",
+        "ports": [
+            11211
+        ],
+        "typical_user": "memcache",
+        "risk": "High - Can be abused for DDoS amplification and data theft.",
+        "recommendation": "Bind to localhost (127.0.0.1) ONLY."
+    },
+    "cupsd": {
+        "name": "CUPS Printing Service",
+        "description": "Common Unix Printing System for managing printers.",
+        "ports": [
+            631
+        ],
+        "typical_user": "root, lp",
+        "risk": "Low - Can expose info about printers and system.",
+        "recommendation": "Disable if not printing. Restrict to localhost."
+    },
+    "bind9": {
+        "name": "BIND DNS Server",
+        "description": "Widely used Domain Name System (DNS) software.",
+        "ports": [
+            53
+        ],
+        "typical_user": "bind",
+        "risk": "Medium - Subject to DNS amplification and cache poisoning.",
+        "recommendation": "Disable open recursion if not needed."
+    },
+    "mongod": {
+        "name": "MongoDB Database",
+        "description": "NoSQL database using JSON-like documents.",
+        "ports": [
+            27017
+        ],
+        "typical_user": "mongodb",
+        "risk": "High - Historical 'no-password' default issues.",
+        "recommendation": "Enable authentication, bind to internal IP only."
+    },
+    "chronyd": {
+        "name": "Chrony NTP Service",
+        "description": "Implementation of Network Time Protocol (NTP).",
+        "ports": [
+            123
+        ],
+        "typical_user": "chrony",
+        "risk": "Low - Standard time synchronization.",
+        "recommendation": "Keep updated."
+    },
+    "nfsd": {
+        "name": "NFS Server",
+        "description": "Network File System for sharing directories.",
+        "ports": [
+            2049
+        ],
+        "typical_user": "root",
+        "risk": "High - Trust-based protocol, easily spoofed.",
+        "recommendation": "Only use on trusted internal networks with firewall."
+    },
+    "snmpd": {
+        "name": "SNMP Agent",
+        "description": "Used for monitoring system health and performance.",
+        "ports": [
+            161,
+            162
+        ],
+        "typical_user": "snmp",
+        "risk": "Medium - Community strings (passwords) sent in cleartext (v1/v2c).",
+        "recommendation": "Use SNMPv3 with encryption or restrict to specific IPs."
+    },
+    "rpcbind": {
+        "name": "RPCbind / Portmapper",
+        "description": "Maps RPC service numbers to network ports (required for NFS).",
+        "ports": [
+            111
+        ],
+        "typical_user": "rpc",
+        "risk": "Medium - DDoS amplification vector.",
+        "recommendation": "Restrict via firewall to trusted clients only."
+    },
+    "avahi-daemon": {
+        "name": "Avahi mDNS",
+        "description": "Service discovery (Zeroconf) for local networks.",
+        "ports": [
+            5353
+        ],
+        "typical_user": "avahi",
+        "risk": "Low - Broadcasts info to local network.",
+        "recommendation": "Disable if local discovery is not needed."
+    },
+    "rsyslogd": {
+        "name": "Rsyslog Service",
+        "description": "Standard system logging service.",
+        "ports": [
+            514
+        ],
+        "typical_user": "root, syslog",
+        "risk": "Low - Standard system logging.",
+        "recommendation": "Use TLS for remote logging if active."
+    },
+    "dnsmasq": {
+        "name": "Dnsmasq DNS/DHCP",
+        "description": "Lightweight DNS forwarder and DHCP server.",
+        "ports": [
+            53,
+            67
+        ],
+        "typical_user": "dnsmasq",
+        "risk": "Low - Can be abused if listening on public interfaces.",
+        "recommendation": "Bind to specific internal interfaces."
+    },
+    "systemd-resolved": {
+        "name": "systemd Resolved",
+        "description": "Name resolution service for local applications.",
+        "ports": [
+            53
+        ],
+        "typical_user": "systemd-resolve",
+        "risk": "Very Low - Standard system component.",
+        "recommendation": "None (Core system component)."
+    },
+    "beam": {
+        "name": "Erlang VM / RabbitMQ",
+        "description": "Message broker or Erlang applications.",
+        "ports": [
+            5672,
+            15672,
+            25672
+        ],
+        "typical_user": "rabbitmq",
+        "risk": "Medium - Ensure management UI is protected.",
+        "recommendation": "Use strong passwords for message queues."
+    },
+    "python": {
+        "name": "Python Application",
+        "description": "Custom application or script written in Python.",
+        "ports": [],
+        "typical_user": "varies",
+        "risk": "Varies - Depends on the application logic.",
+        "recommendation": "Follow secure coding practices."
+    },
+    "node": {
+        "name": "Node.js Application",
+        "description": "JavaScript runtime application.",
+        "ports": [],
+        "typical_user": "varies",
+        "risk": "Varies - Security depends on app code and dependencies.",
+        "recommendation": "Check for NPM vulnerabilities regularly."
+    }
+}
