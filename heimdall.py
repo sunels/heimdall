@@ -36,13 +36,15 @@ def debug_log(msg):
 SERVICES_DB = {}
 CONFIG = {
     "auto_update_services": True,
-    "update_interval_minutes": 30
+    "update_interval_minutes": 30,
+    "auto_scan_interval": 3.0
 }
 CONFIG_LOCK = threading.Lock()
 UPDATING_SERVICES_EVENT = threading.Event()
 UPDATE_STATUS_MSG = ""
 ACTION_STATUS_MSG = ""
 ACTION_STATUS_EXP = 0.0
+SCANNING_STATUS_EXP = 0.0
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
 SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.json"
 SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.sha256"
@@ -1626,6 +1628,10 @@ def draw_status_indicator(stdscr):
         icon = "🔄" if "Loading" in UPDATE_STATUS_MSG else "📡"
         msg = f" {icon} {UPDATE_STATUS_MSG} "
         color = curses.color_pair(CP_WARN) | curses.A_BOLD
+    # Priority 3: Auto-Scan Heartbeat
+    elif now < SCANNING_STATUS_EXP:
+        msg = " 📡 Scanning... "
+        color = curses.color_pair(CP_ACCENT) | curses.A_BOLD
         
     if msg:
         try:
@@ -1744,7 +1750,8 @@ def draw_settings_modal(stdscr):
         win.erase(); win.box()
         win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
         
-        win.addstr(2, 4, "[s] Auto Update Settings", curses.color_pair(CP_TEXT))
+        win.addstr(2, 4, "[s] Auto Update Settings (Services)", curses.color_pair(CP_TEXT))
+        win.addstr(3, 4, "[r] Background Scan Interval (UI)", curses.color_pair(CP_TEXT))
         
         footer = " [q/ESC] Close "
         win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_TEXT))
@@ -1754,6 +1761,63 @@ def draw_settings_modal(stdscr):
         if k == ord('q') or k == 27: break
         elif k == ord('s'):
             draw_auto_update_settings_modal(stdscr)
+        elif k == ord('r'):
+            draw_auto_scan_settings_modal(stdscr)
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_auto_scan_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 12, 55
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    options = [
+        (0.0, "Off (Manual Only)"),
+        (1.0, "1 Second (Very Fast)"),
+        (2.0, "2 Seconds (Fast)"),
+        (3.0, "3 Seconds (Standard)"),
+        (5.0, "5 Seconds (Balanced)"),
+        (10.0, "10 Seconds (Relaxed)"),
+        (30.0, "30 Seconds (Slower)")
+    ]
+    
+    idx = 0
+    curr = CONFIG.get("auto_scan_interval", 3.0)
+    for i, opt in enumerate(options):
+        if opt[0] == curr:
+            idx = i
+            break
+            
+    title = " 📡 UI Auto-Scan Settings "
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        win.addstr(2, 4, "How often should the port list refresh by itself?", curses.A_DIM)
+        
+        for i, (val, label) in enumerate(options):
+            display = f" {label} "
+            if i == idx:
+                win.addstr(4 + i, (bw - len(display)) // 2, display, curses.A_REVERSE | curses.A_BOLD)
+            else:
+                win.addstr(4 + i, (bw - len(display)) // 2, display, curses.color_pair(CP_TEXT))
+                
+        win.refresh()
+        k = win.getch()
+        if k == 27 or k == ord('q'): break
+        elif k == curses.KEY_UP: idx = (idx - 1) % len(options)
+        elif k == curses.KEY_DOWN: idx = (idx + 1) % len(options)
+        elif k in (curses.KEY_ENTER, 10, 13):
+            with CONFIG_LOCK:
+                CONFIG["auto_scan_interval"] = options[idx][0]
+            save_config()
+            show_message(stdscr, f"Auto-Scan set to {options[idx][1]}")
+            break
             
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
@@ -3425,7 +3489,17 @@ def main(stdscr):
     last_selected_change_time = time.time()
 
     global TRIGGER_REFRESH  # we will mutate this inside the loop
+    last_auto_scan_time = time.time()
+    
     while True:
+        # Periodic background refresh (Auto-scan)
+        if not show_detail:
+            auto_interval = CONFIG.get("auto_scan_interval", 3.0)
+            if auto_interval > 0 and time.time() - last_auto_scan_time > auto_interval:
+                global SCANNING_STATUS_EXP
+                SCANNING_STATUS_EXP = time.time() + 1.0
+                request_list_refresh()
+
         h, w = stdscr.getmaxyx()
         visible_rows = table_h-4
 
@@ -3539,6 +3613,7 @@ def main(stdscr):
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
             # update last interaction to avoid immediate fetch churn
             last_selected_change_time = time.time()
+            last_auto_scan_time = time.time()
             continue
 
         k = stdscr.getch()
