@@ -41,6 +41,8 @@ CONFIG = {
 CONFIG_LOCK = threading.Lock()
 UPDATING_SERVICES_EVENT = threading.Event()
 UPDATE_STATUS_MSG = ""
+ACTION_STATUS_MSG = ""
+ACTION_STATUS_EXP = 0.0
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
 SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.json"
 SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.sha256"
@@ -403,7 +405,7 @@ def analyze_network_scope(port):
     except:
         pass
 
-    # Interface eşleştir
+    # Match Interface
     try:
         ip_out = subprocess.run(
             ["ip", "-o", "addr"],
@@ -683,7 +685,7 @@ def detect_runtime_type_cached(pid):
 def get_connections_info(port):
     """Return dict with active connections and top IPs"""
     try:
-        # ESTABLISHED bağlantıları al
+        # Get ESTABLISHED connections
         result = subprocess.run(
             ["ss", "-ntu", "state", "established", f"( dport = :{port} or sport = :{port} )"],
             stdout=subprocess.PIPE,
@@ -692,14 +694,14 @@ def get_connections_info(port):
         )
         lines = result.stdout.strip().splitlines()[1:]  # skip header
 
-        unique_connections = set()  # IP:PORT bazlı tekil bağlantı
+        unique_connections = set()  # Unique connection based on IP:PORT
         ips = []
 
         for l in lines:
             parts = l.split()
             if len(parts) >= 5:
                 raddr = parts[4]
-                # Tekil bağlantı
+                # Unique connection
                 if raddr not in unique_connections:
                     unique_connections.add(raddr)
                     ip = raddr.rsplit(":", 1)[0]
@@ -805,10 +807,25 @@ def get_connections_info_cached(port, ttl=CONN_TTL):
     _conn_cache[str(port)] = (val, now)
     return val
 
+# initialize global refresh triggers
+TRIGGER_REFRESH = False
+TRIGGER_LIST_ONLY = False
+
 def request_full_refresh():
-    """Signal main loop to perform full refresh (same as pressing 'r')."""
+    """Signal main loop to perform full refresh (clears ALL caches including heavy witr info)."""
     global TRIGGER_REFRESH
     TRIGGER_REFRESH = True
+
+def request_list_refresh():
+    """Signal main loop to refresh only the port list (preserves heavy witr/conn caches)."""
+    global TRIGGER_LIST_ONLY
+    TRIGGER_LIST_ONLY = True
+
+def invalidate_port_cache(port):
+    """Specifically invalidate cached UI row for a single port."""
+    key = str(port)
+    if key in _table_row_cache:
+        del _table_row_cache[key]
 
 # --------------------------------------------------
 # Splash Screen with Preloading
@@ -824,8 +841,8 @@ def splash_screen(stdscr, rows, cache):
 
     h, w = stdscr.getmaxyx()
 
-    bh = min(18, h - 6)          # Daha yüksek pencere
-    bw = min(99, w - 6)          # Daha geniş (taşma önlemek için yeterli)
+    bh = min(18, h - 6)          # Higher window
+    bw = min(99, w - 6)          # Wider (enough to prevent overflow)
     y, x = (h - bh) // 2, (w - bw) // 2
     win = curses.newwin(bh, bw, y, x)
     # 🎨 Set window background to theme
@@ -849,8 +866,8 @@ def splash_screen(stdscr, rows, cache):
     total = len(rows)
     progress_y = slogan_y + 3
 
-    # Bar genişliğini biraz daha güvenli ve kontrollü yapalım
-    bar_w = max(40, bw - 20)   # min 40 karakter garanti, taşma olmaz
+    # Make bar width a bit more secure and controlled
+    bar_w = max(40, bw - 20)   # min 40 characters guaranteed, no overflow
 
     for i, row in enumerate(rows, 1):
         port = row[0]
@@ -858,7 +875,7 @@ def splash_screen(stdscr, rows, cache):
         win.erase()
         win.box()
 
-        # HEIMDALL yazısı (mor)
+        # HEIMDALL text (purple)
         for idx, line in enumerate(heimdall_art):
             line_x = max(0, (bw - len(line)) // 2)
             win.addstr(2 + idx, line_x, line[:bw-4],
@@ -869,11 +886,11 @@ def splash_screen(stdscr, rows, cache):
         win.addstr(slogan_y + 2, slogan_x, slogan,
                    curses.color_pair(2) | curses.A_ITALIC)
 
-        # Alt kısım: Collecting data + port
+        # Bottom part: Collecting data + port
         win.addstr(progress_y, 4, "Collecting system intelligence...", curses.color_pair(3))
         win.addstr(progress_y + 1, 4, f"Scanning port: {port}", curses.color_pair(4))
 
-        # Progress bar + adım sayısı BAR'IN İÇİNDE (taşma imkansız)
+        # Progress bar + step count INSIDE BAR (overflow impossible)
         filled = int(bar_w * i / total)
         bar = "█" * filled + "░" * (bar_w - filled)
 
@@ -881,7 +898,7 @@ def splash_screen(stdscr, rows, cache):
         mid = bar_w // 2
         start_pos = mid - len(progress_str) // 2
 
-        # Eğer bar çok kısa ise başa yasla (güvenlik)
+        # If bar is too short, align to start (security)
         if start_pos < 0:
             start_pos = 0
         if start_pos + len(progress_str) > bar_w:
@@ -933,7 +950,7 @@ def splash_screen(stdscr, rows, cache):
 
         cache[port]["preloaded"] = True
 
-    # Bitiş ekranı
+    # Final screen
     win.erase()
     win.box()
 
@@ -974,7 +991,7 @@ def prepare_witr_content(lines, width):
         "Process": "🧠"
     }
     for line in lines:
-        # icon replacement sadece bir kere yapılacak
+        # Icon replacement is only performed once
         for key, icon in icons.items():
             if key in line and not line.strip().startswith(icon):
                 line = line.replace(key, f"{icon} {key}", 1)
@@ -986,7 +1003,7 @@ def stop_process_or_service(pid, prog, stdscr):
         show_message(stdscr, "Invalid PID.")
         return
 
-    # Önce systemd service mi diye bak
+    # First check if it's a systemd service
     try:
         result = subprocess.run(
             ["systemctl", "status", prog],
@@ -1000,7 +1017,7 @@ def stop_process_or_service(pid, prog, stdscr):
     except Exception:
         pass
 
-    # Değilse normal process öldür
+    # Otherwise kill normal process
     try:
         subprocess.run(["sudo", "kill", "-TERM", pid])
         show_message(stdscr, f"Process {pid} stopped.")
@@ -1012,7 +1029,7 @@ def reload_process(pid, prog, stdscr):
         show_message(stdscr, "Invalid PID.")
         return
 
-    # Önce systemd service mi diye bak (reload destekliyor mu?)
+    # First check if it's a systemd service (does it support reload?)
     try:
         result = subprocess.run(
             ["systemctl", "status", prog],
@@ -1020,14 +1037,14 @@ def reload_process(pid, prog, stdscr):
             stderr=subprocess.DEVNULL
         )
         if result.returncode == 0:
-            # systemctl reload genelde SIGHUP gönderir ama servis dosyasında tanımlı olmalıdır
+            # systemctl reload usually sends SIGHUP but must be defined in service file
             subprocess.run(["sudo", "systemctl", "reload", prog])
             show_message(stdscr, f"Service '{prog}' reloaded.")
             return
     except Exception:
         pass
 
-    # Değilse normal process'e SIGHUP gönder
+    # Otherwise send SIGHUP to normal process
     try:
         subprocess.run(["sudo", "kill", "-HUP", pid])
         show_message(stdscr, f"Sent SIGHUP to process {pid} ({prog}).")
@@ -1135,7 +1152,7 @@ def kill_process_group(pid, prog, port, stdscr):
             subprocess.run(["sudo", "fuser", "-k", "-9", "-n", "tcp", str(port)], capture_output=True)
             
             time.sleep(0.5) 
-            show_message(stdscr, f"✅ Clean Kill: Tree sonlandirildi (Terminal korundu).")
+            show_message(stdscr, f"✅ Clean Kill: Tree terminated (Terminal protected).")
         else:
             show_message(stdscr, "No process found.")
             
@@ -1585,16 +1602,35 @@ def show_inspect_modal(stdscr, port, prog, pid, username):
     stdscr.touchwin()
 
 def draw_status_indicator(stdscr):
-    if not UPDATE_STATUS_MSG:
-        return
+    """
+    Heimdall 'System Tray': Displays background update status and action feedback
+    at the top-right corner.
+    """
+    global ACTION_STATUS_MSG, ACTION_STATUS_EXP
     h, w = stdscr.getmaxyx()
-    # Add appropriate icon based on message
-    icon = "🔄" if "Loading" in UPDATE_STATUS_MSG else "📡"
-    msg = f" {icon} {UPDATE_STATUS_MSG} "
-    try:
+    now = time.time()
+    
+    msg = ""
+    color = curses.color_pair(CP_WARN) | curses.A_BOLD
+    
+    # Priority 1: Action Feedback (Killed, Blocked, etc.)
+    if ACTION_STATUS_MSG and now < ACTION_STATUS_EXP:
+        is_error = any(kw in ACTION_STATUS_MSG.lower() for kw in ["failed", "error", "invalid", "danger", "strike failed"])
+        msg = f" ⚡ {ACTION_STATUS_MSG} "
+        if is_error:
+            color = curses.color_pair(CP_WARN) | curses.A_REVERSE | curses.A_BOLD
+        else:
+            color = curses.color_pair(CP_ACCENT) | curses.A_REVERSE | curses.A_BOLD
+    # Priority 2: Background Service Updates
+    elif UPDATE_STATUS_MSG:
+        icon = "🔄" if "Loading" in UPDATE_STATUS_MSG else "📡"
+        msg = f" {icon} {UPDATE_STATUS_MSG} "
         color = curses.color_pair(CP_WARN) | curses.A_BOLD
-        stdscr.addstr(0, max(0, w - len(msg) - 2), msg, color)
-    except: pass
+        
+    if msg:
+        try:
+            stdscr.addstr(0, max(0, w - len(msg) - 2), msg, color)
+        except: pass
 
 def draw_period_modal(stdscr):
     h, w = stdscr.getmaxyx()
@@ -1793,10 +1829,19 @@ def toggle_firewall(port, stdscr, firewall_status):
         msg = f"Port {port} traffic ALLOWED."
     show_message(stdscr, msg)
 
-def show_message(stdscr, msg, duration=1.5):
+def show_message(stdscr, msg, duration=3.0):
     """
-    Display a small centered message for `duration` seconds without altering stdscr timeout.
-    Uses sleep + refresh so it does not interfere with main input loop.
+    Post a non-blocking notification to the 'System Tray' (top-right).
+    Does not halt execution; the message persists for `duration` seconds.
+    """
+    global ACTION_STATUS_MSG, ACTION_STATUS_EXP
+    ACTION_STATUS_MSG = msg.strip()
+    ACTION_STATUS_EXP = time.time() + duration
+    debug_log(f"NOTIFY: {msg}")
+
+def show_modal_message(stdscr, msg, duration=1.5):
+    """
+    Traditional blocking modal message for critical errors that require immediate attention.
     """
     h, w = stdscr.getmaxyx()
     win_h, win_w = 3, min(80, w - 4)
@@ -1804,23 +1849,16 @@ def show_message(stdscr, msg, duration=1.5):
     try:
         win.bkgd(' ', curses.color_pair(CP_TEXT))
         win.box()
-        # center message or left-pad a bit if too long
         msg_display = msg if len(msg) <= win_w - 4 else msg[:win_w - 7] + "..."
         win.addstr(1, 2, msg_display, curses.color_pair(CP_TEXT))
         win.refresh()
-        # sleep without touching stdscr timeout; ensures UI remains visible for duration
         time.sleep(duration)
-    except Exception:
-        pass
+    except Exception: pass
     finally:
         try:
-            win.erase()
-            win.refresh()
-            del win
-        except Exception:
-            pass
-        stdscr.touchwin()
-        curses.doupdate()
+            win.erase(); win.refresh(); del win
+        except: pass
+        stdscr.touchwin(); curses.doupdate()
 
 # --------------------------------------------------
 # UI Draw
@@ -2165,11 +2203,11 @@ def draw_help_bar(stdscr, show_detail):
     if not show_detail:
         help_text = (
             f" [🔍 i Inspect]{snap} [🎨 c Color] [⚙️ p Settings]"
-            " [🧭 Select ↑↓] [↕️ Resize +/-] [⇱⇲ Tab Pane]"
+            " [🧭 ↑↓ Select] [↕️ +/- Resize] [⇱⇲ Tab Pane]"
             " [📂 ←→ Files] [⛔ s Stop] [🔥 f Firewall] [🛠 a Actions] [❌ q Quit]"
         )
     else:
-        help_text = " [🎨 c Color] [⚙️ p Settings]  🧭 ↑↓ Scroll  [Tab] Restore  ❌ Quit "
+        help_text = " 🧭 ↑↓ Scroll  [Tab] Restore  ❌ Quit "
 
     try:
         bar_win = curses.newwin(3, w, h-3, 0)
@@ -2188,10 +2226,13 @@ def draw_help_bar(stdscr, show_detail):
             
         # If terminal is too narrow, use the compact version as fallback
         if len(help_text) > w - 2:
-            help_text = (
-                f" [🔍i]{snap}[🎨c][⚙️p] [↑↓][+/-][Tab]"
-                " [📂←→][⛔s][🔥f][🛠a][❌q]"
-            )
+            if not show_detail:
+                help_text = (
+                    f" [🔍i]{snap}[🎨c][⚙️p] [↑↓][+/-][Tab]"
+                    " [📂←→][⛔s][🔥f][🛠a][❌q]"
+                )
+            else:
+                help_text = " 🧭 ↑↓ [Tab]⇲ ❌q "
 
         x = max(1, (w - len(help_text)) // 2)
         try:
@@ -2374,7 +2415,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Reload (SIGHUP)
             port, proto, pidprog, prog, pid = rows[selected]
             reload_process(pid, prog, stdscr)
-            request_full_refresh() # refresh main UI
+            request_list_refresh() 
             try:
                 win.erase()
                 win.refresh()
@@ -2388,7 +2429,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Force Kill (SIGKILL)
             port, proto, pidprog, prog, pid = rows[selected]
             force_kill_process(pid, prog, stdscr)
-            request_full_refresh() # refresh main UI
+            request_list_refresh()
             try:
                 win.erase()
                 win.refresh()
@@ -2402,7 +2443,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Kill Process Group
             port, proto, pidprog, prog, pid = rows[selected]
             kill_process_group(pid, prog, port, stdscr)
-            request_full_refresh()
+            request_list_refresh()
             # Since we cleared everything, we should probably exit modal back to main screen
             try:
                 win.erase()
@@ -2416,6 +2457,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Pause
             port, proto, pidprog, prog, pid = rows[selected]
             pause_process(pid, prog, stdscr)
+            invalidate_port_cache(port) # ensure [PAUSED] tag shows up immediately
             stdscr.touchwin()
             curses.doupdate()
             return
@@ -2423,6 +2465,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Continue
             port, proto, pidprog, prog, pid = rows[selected]
             continue_process(pid, prog, stdscr)
+            invalidate_port_cache(port)
             stdscr.touchwin()
             curses.doupdate()
             return
@@ -2430,7 +2473,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Restart Service
             port, proto, pidprog, prog, pid = rows[selected]
             restart_service(prog, stdscr)
-            request_full_refresh()
+            request_list_refresh()
             stdscr.touchwin()
             curses.doupdate()
             return
@@ -2438,7 +2481,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Renice
             port, proto, pidprog, prog, pid = rows[selected]
             draw_renice_modal(stdscr, pid, prog)
-            request_full_refresh()
+            invalidate_port_cache(port)
             stdscr.touchwin()
             curses.doupdate()
             return
@@ -2446,7 +2489,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             # Adjust OOM Score
             port, proto, pidprog, prog, pid = rows[selected]
             draw_oom_modal(stdscr, pid, prog)
-            request_full_refresh()
+            invalidate_port_cache(port)
             stdscr.touchwin()
             curses.doupdate()
             return
@@ -2495,8 +2538,7 @@ def execute_block_ip(ip, port, cache, stdscr):
         blocked = cache[port].setdefault("blocked_ips", set())
         blocked.add(ip)
         show_message(stdscr, f"Blocked {ip} → port {port}")
-        # request main loop to refresh the whole UI (same behavior as pressing 'r')
-        request_full_refresh()
+        request_list_refresh()
     except subprocess.CalledProcessError:
         show_message(stdscr, "iptables failed (check sudo/iptables).")
     except Exception as e:
@@ -3273,7 +3315,7 @@ def get_fd_pressure(pid):
 
     if isinstance(open_count, int) and isinstance(limit, int) and limit > 0:
         usage = int(open_count / limit * 100)
-        risk = "⚠️ FD exhaustion prod’da sık patlar." if usage > 80 else "✔ Normal"
+        risk = "⚠️ FD exhaustion often crashes in prod." if usage > 80 else "✔ Normal"
     else:
         usage = "-"
         risk = "-"
@@ -3463,23 +3505,30 @@ def main(stdscr):
         curses.doupdate()
 
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
-        if TRIGGER_REFRESH:
+        global TRIGGER_LIST_ONLY
+        if TRIGGER_REFRESH or TRIGGER_LIST_ONLY:
+            is_full = TRIGGER_REFRESH
             TRIGGER_REFRESH = False
+            TRIGGER_LIST_ONLY = False
+            
             # IMPORTANT: Disable snapshot mode temporarily to allow fresh scan
             global SNAPSHOT_MODE
             old_mode = SNAPSHOT_MODE
             SNAPSHOT_MODE = False
             
-            # Clear ALL internal caches including the heavy SS parser cache
+            # For list-only, we skip clearing service metadata caches (witr, conn)
+            if is_full:
+                _witr_cache.clear()
+                _conn_cache.clear()
+                cache.clear()
+            
             _parse_cache.clear()
-            _witr_cache.clear()
-            _conn_cache.clear()
             _table_row_cache.clear()
-            cache.clear()
             
             # Force a real, non-cached parse
             rows = parse_ss() 
-            splash_screen(stdscr, rows, cache)
+            if is_full:
+                splash_screen(stdscr, rows, cache)
             
             SNAPSHOT_MODE = old_mode
             
@@ -3539,13 +3588,7 @@ def main(stdscr):
                 confirm = confirm_dialog(stdscr, f"{pidprog} ({port}) stop?")
                 if confirm:
                     stop_process_or_service(pid, prog, stdscr)
-                    rows = parse_ss()
-                    _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
-                    _table_row_cache.clear()
-                    cache.clear()
-                    splash_screen(stdscr, rows, cache)
-                    if selected >= len(rows):
-                        selected = len(rows) - 1
+                    request_list_refresh()
             elif k == ord('a'):
                 # open Action Center modal
                 handle_action_center_input(stdscr, rows, selected, cache, firewall_status)
