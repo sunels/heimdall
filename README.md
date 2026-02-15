@@ -25,6 +25,8 @@
 - 💥 **Kill Connections** operation: list and kill established connections for a port.
 - 🚫 **Block IP** operation: block a source IP for a port via iptables.
 - 🔍 **Deep Inspect / Info (i)**: Real-time ancestry tracking, resource pressure, and security audit.
+- 🎬 **Service Activity History**: Extract historical logins, IP events, and session logs from system journals.
+- 📡 **Live Auto-Scan**: Periodic background refresh of the port list (adjustable speed).
 - 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
 - ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
@@ -99,6 +101,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ### 🔍 Deep Inspection — Static Service Analysis & Risk Audit
 <img src="pp-7.png" alt="heimdall deep inspection" width="100%"/>
+
+---
+
+### 🔍 Deep Activity History — Historical Log Intelligence
+<img src="pp-8.png" alt="heimdall activity history" width="100%"/>
 
 ---
 

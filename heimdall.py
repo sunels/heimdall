@@ -375,7 +375,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='heimdall 0.5.0')
+    parser.add_argument('--version', action='version', version='heimdall 0.6.0')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     return parser.parse_args()
 
@@ -1508,12 +1508,25 @@ def build_inspect_content(pid, port, prog, username):
     lines.append((f"  Active Conn     : {c_info.get('active_connections', 0)}", CP_TEXT))
     lines.append((f"  Top Talker IP   : {c_info.get('top_ip', '-')}", CP_TEXT))
     lines.append(("  Recent IPs      :", CP_TEXT))
-    for ip, cnt in c_info.get("all_ips", Counter()).most_common(5):
-        lines.append((f"    {ip} ({cnt} connections)", CP_TEXT))
+    for ip, cnt in c_info.get('all_ips', Counter()).most_common(5):
+        lines.append((f"    {ip:<20} | {cnt} sessions", CP_TEXT))
 
     lines.append(("", CP_TEXT))
 
-    # 9. Why It Exists
+    # 9. Service Activity History (NEW)
+    lines.append(("🎬 SERVICE ACTIVITY HISTORY (Recent Events)", CP_ACCENT))
+    history = get_service_activity_history(prog, pid, port)
+    if not history:
+        lines.append(("  ℹ️ No recent historical activity found in system logs.", CP_TEXT))
+    else:
+        for entry in history:
+             # Entry format: (Timestamp, Message, Color)
+             ts, msg, color = entry
+             lines.append((f"  [{ts}] {msg}", color))
+
+    lines.append(("", CP_TEXT))
+
+    # 10. Why It Exists
     lines.append(("❓ WHY IT EXISTS (witr output)", CP_ACCENT))
     w_lines = get_witr_output_cached(port)
     if not w_lines or w_lines == ["No data"]:
@@ -1525,7 +1538,7 @@ def build_inspect_content(pid, port, prog, username):
 
     lines.append(("", CP_TEXT))
 
-    # 10. Open Files
+    # 11. Open Files
     lines.append(("📂 OPEN FILES", CP_ACCENT))
     f_list = get_open_files_cached(pid)
     if not f_list:
@@ -1538,8 +1551,83 @@ def build_inspect_content(pid, port, prog, username):
             lines.append((f"    ... and {len(f_list)-20} more (see main view)", CP_TEXT))
 
     lines.append(("", CP_TEXT))
-
     return lines
+
+def get_service_activity_history(prog, pid, port, max_entries=10):
+    """
+    Attempt to extract historical intelligence from journalctl.
+    Looks for: Logins, IP addresses, session events, and critical errors.
+    """
+    events = []
+    try:
+        # Search strategy: filter by PID or unit name if available
+        # We use -o short-iso for consistent parsing
+        cmd = ["journalctl", "-n", "100", "--output=short-iso", "--no-pager"]
+        
+        # Optimize by looking for specific triggers
+        if pid and pid.isdigit():
+            cmd.extend(["_PID=" + pid])
+        elif prog:
+            # Check if it's a known unit
+            cmd.extend(["-u", f"{prog}.service"])
+            
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)
+        # If no logs found for PID or Service, try searching by binary name
+        if (not (res.stdout and res.stdout.strip())) and prog:
+             res = subprocess.run(["journalctl", "-n", "100", "--output=short-iso", f"_COMM={prog}"], capture_output=True, text=True, timeout=1.5)
+
+        raw_lines = res.stdout.strip().splitlines()
+        
+        # Regex patterns for intelligence extraction
+        ssh_login = re.compile(r"Accepted \w+ for (.*) from ([\d\.\:a-f]+) port (\d+)")
+        ip_detect = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+        session_end = re.compile(r"session closed|Disconnected|Connection closed|closed by")
+        error_detect = re.compile(r"failed|error|denied|Refused|Invalid", re.IGNORECASE)
+
+        for line in reversed(raw_lines): # Most recent first
+            if len(events) >= max_entries: break
+            
+            parts = line.split(maxsplit=2)
+            if len(parts) < 3: continue
+            
+            ts_iso = parts[0]
+            try: 
+                dt = datetime.fromisoformat(ts_iso)
+                ts = dt.strftime("%m-%d %H:%M")
+            except: ts = ts_iso[:16]
+            
+            content = parts[2]
+            color = CP_TEXT
+            display_msg = content
+            
+            # Intelligent Parsing
+            m_login = ssh_login.search(content)
+            if m_login:
+                user, ip, p = m_login.groups()
+                display_msg = f"🔑 LOGIN: {user}@{ip} (p:{p})"
+                color = CP_ACCENT
+            elif session_end.search(content):
+                display_msg = f"🚪 LOGOUT: {content.split(':')[-1].strip()}"
+                color = CP_TEXT
+            elif error_detect.search(content):
+                display_msg = f"⚠️ ALERT: {content.split(':')[-1].strip()}"
+                color = CP_WARN
+            elif ip_detect.search(content):
+                display_msg = content.split(':')[-1].strip()
+                color = CP_TEXT
+            else:
+                # Filter noise
+                if any(x in content for x in ["pam_unix", "systemd", "Reached target"]):
+                    continue
+                display_msg = content.split(':')[-1].strip()
+
+            if display_msg:
+                events.append((ts, display_msg[:70], color))
+
+    except Exception as e:
+        debug_log(f"HISTORY ERROR: {e}")
+        
+    return events
 
 def show_inspect_modal(stdscr, port, prog, pid, username):
     lines = build_inspect_content(pid, port, prog, username)
