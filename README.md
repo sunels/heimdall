@@ -24,7 +24,9 @@
 - 🛠️ **Action Center (Modal)** — quick operational panel for ports & processes (see below)
 - 💥 **Kill Connections** operation: list and kill established connections for a port.
 - 🚫 **Block IP** operation: block a source IP for a port via iptables.
-- 🔍 **Deep Inspect / Info (i)**: Comprehensive process analysis including risk assessment, service descriptions from an offline database, and connection tracking.
+- 🔍 **Deep Inspect / Info (i)**: Real-time ancestry tracking, resource pressure, and security audit.
+- 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
+- ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
@@ -116,6 +118,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | f | Toggle firewall for selected port |
 | a | Actions (open Action Center modal) |
 | i | Inspect / Deep Information modal |
+| p | Settings (Auto-update, etc.) |
 | q | Quit |
 
 ### 📜 Detail View (witr output)
@@ -173,10 +176,10 @@ Download the latest `.deb` from [Releases](https://github.com/sunels/heimdall/re
 
 ```
 # Direct download
-wget https://github.com/sunels/heimdall/releases/download/v0.4.0/heimdall_0.4.0-1_all.deb
+wget https://github.com/sunels/heimdall/releases/download/v0.5.0/heimdall_0.5.0-1_all.deb
 
 # Installation
-    sudo dpkg -i heimdall_0.4.0-1_all.deb
+    sudo dpkg -i heimdall_0.5.0-1_all.deb
 
     #If dependencies are missing (rare):
 

@@ -371,7 +371,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='heimdall 0.4.0')
+    parser.add_argument('--version', action='version', version='heimdall 0.5.0')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     return parser.parse_args()
 

@@ -1,3 +1,24 @@
+heimdall (0.5.0-1) unstable; urgency=medium
+
+  * New Feature: Deep System Inspection (Inspect → [i])
+    - Real-time ancestry tracking (Process Tree)
+    - Resource pressure analysis (CPU/Mem/RSS)
+    - Connection visibility & Top Talker IP tracking
+    - Security audit (Privilege, public exposure, deleted binaries)
+  * New Feature: Background Service Updates
+    - Periodic auto-check for services.json updates from GitHub
+    - SHA256 integrity verification
+    - New Settings Modal (p) for update management
+  * UI/UX:
+    - New status-indicator (top-right) for background updates
+    - Redesigned help bar (compact mode for small terminals)
+    - Color-themed Settings/Interval selection dialogs
+  * Misc:
+    - Added --no-update CLI flag
+    - Fixed debug logging NameError during startup
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sun, 15 Feb 2026 23:15:00 +0200
+
 heimdall (0.4.0-1) unstable; urgency=medium
 
   * New feature: Precision Kill Tree (Action Center → [t])
