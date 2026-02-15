@@ -18,29 +18,8 @@ from collections import Counter
 import ipaddress
 import functools
 import threading
-
-SERVICES_DB = {}
-def load_services_db():
-    global SERVICES_DB
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "services.json")
-    try:
-        if os.path.exists(json_path):
-            with open(json_path, 'r') as f:
-                SERVICES_DB = json.load(f)
-        else:
-            debug_log(f"SERVICES: services.json not found at {json_path}")
-    except Exception as e:
-        debug_log(f"SERVICES: Error loading JSON: {e}")
-
-load_services_db()
-
-KEY_SEP_UP = ord('+')
-KEY_SEP_DOWN = ord('-')
-KEY_TAB = 9
-KEY_FIREWALL = ord('f')
-
-# initialize global refresh trigger used by request_full_refresh()
-TRIGGER_REFRESH = False
+import hashlib
+import urllib.request
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -53,6 +32,156 @@ def debug_log(msg):
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
     except:
         pass
+
+SERVICES_DB = {}
+CONFIG = {
+    "auto_update_services": True,
+    "update_interval_minutes": 30
+}
+CONFIG_LOCK = threading.Lock()
+UPDATING_SERVICES_EVENT = threading.Event()
+UPDATE_STATUS_MSG = ""
+CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
+SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.json"
+SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.sha256"
+
+def init_config():
+    global CONFIG
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+    config_path = os.path.join(CONFIG_DIR, "config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                saved = json.load(f)
+                CONFIG.update(saved)
+        except Exception as e:
+            debug_log(f"CONFIG: Error loading: {e}")
+    else:
+        save_config()
+
+def save_config():
+    config_path = os.path.join(CONFIG_DIR, "config.json")
+    try:
+        with open(config_path, 'w') as f:
+            json.dump(CONFIG, f, indent=2)
+    except Exception as e:
+        debug_log(f"CONFIG: Error saving: {e}")
+
+def get_hash(data):
+    return hashlib.sha256(data).hexdigest()
+
+def update_services_bg():
+    global SERVICES_DB, UPDATE_STATUS_MSG
+    # Initial wait to avoid startup lag
+    time.sleep(10)
+    
+    while True:
+        with CONFIG_LOCK:
+            auto_enabled = CONFIG.get("auto_update_services")
+            interval_mins = CONFIG.get("update_interval_minutes", 30)
+            
+        if not auto_enabled:
+            UPDATE_STATUS_MSG = "Updates disabled"
+            time.sleep(60)
+            continue
+            
+        UPDATING_SERVICES_EVENT.set()
+        UPDATE_STATUS_MSG = "Loading latest services.json..."
+        debug_log("UPDATER: Starting check...")
+        start_time = time.time()
+        
+        try:
+            debug_log(f"UPDATER: Checking {SHA_URL} for updates...")
+            # Fetch remote SHA first
+            with urllib.request.urlopen(SHA_URL, timeout=10) as response:
+                remote_sha = response.read().decode('utf-8').strip().split()[0]
+            
+            local_json_path = os.path.join(CONFIG_DIR, "services.json")
+            local_sha_path = os.path.join(CONFIG_DIR, "services.sha256")
+            
+            do_update = True
+            if os.path.exists(local_sha_path):
+                with open(local_sha_path, 'r') as f:
+                    local_sha = f.read().strip()
+                
+                debug_log(f"UPDATER: Remote SHA: {remote_sha}")
+                debug_log(f"UPDATER: Local SHA:  {local_sha} (at {local_sha_path})")
+                
+                if local_sha == remote_sha:
+                    do_update = False
+                    debug_log("UPDATER: Match found. No update needed.")
+            else:
+                debug_log(f"UPDATER: No local SHA found at {local_sha_path}. First-time update forced.")
+            
+            if do_update:
+                UPDATE_STATUS_MSG = "Downloading new services.json..."
+                debug_log("UPDATER: New version detected. Downloading from GitHub...")
+                with urllib.request.urlopen(SERVICES_URL, timeout=10) as response:
+                    raw_data = response.read()
+                    computed_sha = get_hash(raw_data)
+                    
+                    if computed_sha == remote_sha:
+                        data = json.loads(raw_data.decode('utf-8'))
+                        if isinstance(data, dict) and "sshd" in data: # simple schema check
+                            with open(local_json_path, 'wb') as f:
+                                f.write(raw_data)
+                            with open(local_sha_path, 'w') as f:
+                                f.write(remote_sha)
+                            SERVICES_DB = data
+                            debug_log(f"UPDATER: Download complete. Applied {len(data)} service definitions.")
+                            UPDATE_STATUS_MSG = "Update successful! ✅"
+                        else:
+                            debug_log("UPDATER: ERROR - Remote JSON schema invalid.")
+                    else:
+                        debug_log("UPDATER: ERROR - SHA256 mismatch from remote.")
+        except Exception as e:
+            debug_log(f"UPDATER: Error during update: {e}")
+            
+        # Ensure the message is visible for at least 4 seconds
+        elapsed = time.time() - start_time
+        if elapsed < 4.0:
+            time.sleep(4.0 - elapsed)
+            
+        UPDATING_SERVICES_EVENT.clear()
+        UPDATE_STATUS_MSG = ""
+        
+        sleep_interval = max(1, interval_mins) # Keep min 1m for flexibility
+        time.sleep(sleep_interval * 60)
+
+def start_services_updater():
+    t = threading.Thread(target=update_services_bg, daemon=True)
+    t.start()
+    return t
+
+def load_services_db():
+    global SERVICES_DB
+    # Priority: ~/.config/heimdall/services.json > local services.json
+    paths = [
+        os.path.join(CONFIG_DIR, "services.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "services.json")
+    ]
+    for json_path in paths:
+        try:
+            if os.path.exists(json_path):
+                with open(json_path, 'r') as f:
+                    SERVICES_DB = json.load(f)
+                debug_log(f"SERVICES: Loaded from {json_path}")
+                return
+        except Exception as e:
+            debug_log(f"SERVICES: Error loading {json_path}: {e}")
+
+init_config()
+load_services_db()
+# Updater starts in main()
+
+KEY_SEP_UP = ord('+')
+KEY_SEP_DOWN = ord('-')
+KEY_TAB = 9
+KEY_FIREWALL = ord('f')
+
+# initialize global refresh trigger used by request_full_refresh()
+TRIGGER_REFRESH = False
 
 # --------------------------------------------------
 # 🎨 Themes & Colors
@@ -243,6 +372,7 @@ def check_witr_exists():
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--version', action='version', version='heimdall 0.4.0')
+    parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     return parser.parse_args()
 
 
@@ -1454,6 +1584,144 @@ def show_inspect_modal(stdscr, port, prog, pid, username):
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
 
+def draw_status_indicator(stdscr):
+    if not UPDATE_STATUS_MSG:
+        return
+    h, w = stdscr.getmaxyx()
+    # Add appropriate icon based on message
+    icon = "🔄" if "Loading" in UPDATE_STATUS_MSG else "📡"
+    msg = f" {icon} {UPDATE_STATUS_MSG} "
+    try:
+        color = curses.color_pair(CP_WARN) | curses.A_BOLD
+        stdscr.addstr(0, max(0, w - len(msg) - 2), msg, color)
+    except: pass
+
+def draw_period_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    # Expanded intervals: (minutes, label)
+    options = [
+        (1, "1 Minute"),
+        (5, "5 Minutes"),
+        (15, "15 Minutes"),
+        (30, "30 Minutes"),
+        (60, "1 Hour"),
+        (120, "2 Hours"),
+        (1440, "1 Day")
+    ]
+    bh, bw = len(options) + 4, 40
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+    
+    title = " ⏱️ Update Interval "
+    
+    idx = 0
+    curr = CONFIG.get("update_interval_minutes", 30)
+    for i, opt in enumerate(options):
+        if opt[0] == curr:
+            idx = i
+            break
+
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        for i, (mins, label) in enumerate(options):
+            display = f" {label} "
+            if i == idx:
+                win.addstr(2 + i, (bw - len(display)) // 2, display, curses.A_REVERSE | curses.A_BOLD)
+            else:
+                win.addstr(2 + i, (bw - len(display)) // 2, display, curses.color_pair(CP_TEXT))
+        
+        win.refresh()
+        k = win.getch()
+        if k == 27 or k == ord('q'): break
+        elif k == curses.KEY_UP: idx = (idx - 1) % len(options)
+        elif k == curses.KEY_DOWN: idx = (idx + 1) % len(options)
+        elif k in (curses.KEY_ENTER, 10, 13):
+            with CONFIG_LOCK:
+                CONFIG["update_interval_minutes"] = options[idx][0]
+            save_config()
+            show_message(stdscr, f"Interval set to {options[idx][1]}")
+            break
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_auto_update_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 10, 50
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    while True:
+        win.erase(); win.box()
+        title = " 🔄 Auto Update Settings "
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        auto_on = CONFIG.get("auto_update_services", True)
+        interval = CONFIG.get("update_interval_minutes", 30)
+        
+        status_str = "[ENABLED]" if auto_on else "[DISABLED]"
+        win.addstr(2, 4, f"Status: ", curses.color_pair(CP_TEXT))
+        win.addstr(2, 12, status_str, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+        
+        win.addstr(4, 4, f"Interval: {interval} minutes", curses.color_pair(CP_TEXT))
+        
+        win.addstr(6, 4, "[t] Toggle On/Off", curses.color_pair(CP_TEXT))
+        win.addstr(7, 4, "[p] Change Period", curses.color_pair(CP_TEXT))
+        
+        footer = " [q/ESC] Back "
+        win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_TEXT))
+        
+        win.refresh()
+        k = win.getch()
+        if k == ord('q') or k == 27: break
+        elif k == ord('t'):
+            with CONFIG_LOCK:
+                CONFIG["auto_update_services"] = not CONFIG["auto_update_services"]
+            save_config()
+        elif k == ord('p'):
+            draw_period_modal(stdscr)
+
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 8, 45
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    title = " ⚙️ Global Settings "
+    
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        win.addstr(2, 4, "[s] Auto Update Settings", curses.color_pair(CP_TEXT))
+        
+        footer = " [q/ESC] Close "
+        win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_TEXT))
+        
+        win.refresh()
+        k = win.getch()
+        if k == ord('q') or k == 27: break
+        elif k == ord('s'):
+            draw_auto_update_settings_modal(stdscr)
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
 def confirm_dialog(stdscr, question):
     h, w = stdscr.getmaxyx()
     win_h, win_w = 5, min(60, w - 4)
@@ -1891,17 +2159,17 @@ def draw_open_files(win, pid, prog, files, scroll=0):
 
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
-    # Ordered shortcuts: i Inspect -> Refresh (if snap) -> Colorize -> ... -> q Quit
-    snap_label = " [🔄 r Refresh] " if SNAPSHOT_MODE else ""
+    # Descriptive labels restored with optimal spacing
+    snap = " [🔄 r Refresh]" if SNAPSHOT_MODE else ""
     
-    base_help = (
-        f" [🔍 i Inspect]{snap_label} [🎨 Colorize c]"
-        " [🧭 ↑/↓ Select] [↕️ +/- Resize] [⇱⇲ Tab Witr Pane]"
-        " [📂 ←/→ Files Scroll] [⛔ s Stop] [🔥 f Firewall]"
-        " [🛠 a Actions] [❌ q Quit]"
-    ) if not show_detail else " [🎨 Colorize c]   🧭 ↑/↓ Scroll   [Tab] Restore   ❌ Quit "
-
-    help_text = base_help
+    if not show_detail:
+        help_text = (
+            f" [🔍 i Inspect]{snap} [🎨 c Color] [⚙️ p Settings]"
+            " [🧭 Select ↑↓] [↕️ Resize +/-] [⇱⇲ Tab Pane]"
+            " [📂 ←→ Files] [⛔ s Stop] [🔥 f Firewall] [🛠 a Actions] [❌ q Quit]"
+        )
+    else:
+        help_text = " [🎨 c Color] [⚙️ p Settings]  🧭 ↑↓ Scroll  [Tab] Restore  ❌ Quit "
 
     try:
         bar_win = curses.newwin(3, w, h-3, 0)
@@ -1918,12 +2186,18 @@ def draw_help_bar(stdscr, show_detail):
         except:
             bar_win.box()
             
+        # If terminal is too narrow, use the compact version as fallback
+        if len(help_text) > w - 2:
+            help_text = (
+                f" [🔍i]{snap}[🎨c][⚙️p] [↑↓][+/-][Tab]"
+                " [📂←→][⛔s][🔥f][🛠a][❌q]"
+            )
+
         x = max(1, (w - len(help_text)) // 2)
         try:
             bar_win.addstr(1, x, help_text, curses.color_pair(CP_HEADER) | curses.A_BOLD)
         except:
             try:
-                # Last resort fallback with theme text color
                 bar_win.addstr(1, x, help_text, curses.color_pair(CP_TEXT) | curses.A_BOLD)
             except: pass
             
@@ -3083,6 +3357,9 @@ def main(stdscr):
     # Initialize theme
     apply_current_theme(stdscr)
 
+    # Start the background services updater
+    start_services_updater()
+
     # use cached parse initially to reduce startup churn
 
     rows = parse_ss_cached()
@@ -3182,6 +3459,7 @@ def main(stdscr):
             draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             draw_help_bar(stdscr, show_detail)
 
+        draw_status_indicator(stdscr)
         curses.doupdate()
 
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
@@ -3277,6 +3555,9 @@ def main(stdscr):
                 # get username from cache if available
                 user = cache.get(port, {}).get("user", "unknown")
                 show_inspect_modal(stdscr, port, prog, pid, user)
+            elif k == ord('p'):
+                # Settings modal (changed from 'S' to 'p')
+                draw_settings_modal(stdscr)
             elif k == KEY_FIREWALL and selected >= 0 and rows:
                 port = rows[selected][0]
                 toggle_firewall(port, stdscr, firewall_status)
@@ -3351,7 +3632,9 @@ def cli_entry():
     check_and_show_terminal_size_then_exit()
     check_python_version()
     check_witr_exists()
-    parse_args()
+    args = parse_args()
+    if args.no_update:
+        CONFIG["auto_update_services"] = False
     curses.wrapper(main)
 
 

@@ -1,6 +1,6 @@
 {
     "sshd": {
-        "name": "OpenSSH Server",
+        "name": "OpenSSH Server.....",
         "description": "Standard service for secure remote access (SSH). Provides encrypted communications over insecure networks.",
         "ports": [
             22
