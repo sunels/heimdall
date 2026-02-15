@@ -1,6 +1,6 @@
 {
     "sshd": {
-        "name": "OpenSSH Server.....",
+        "name": "OpenSSH Server",
         "description": "Standard service for secure remote access (SSH). Provides encrypted communications over insecure networks.",
         "ports": [
             22
@@ -31,6 +31,17 @@
         "risk": "Low - Secure by default but modularity can increase attack surface.",
         "recommendation": "Disable unnecessary modules, use SSL/TLS."
     },
+    "httpd": {
+        "name": "Apache HTTP Server (RHEL/CentOS)",
+        "description": "Red Hat variant of the Apache HTTP server. Same engine, different package name.",
+        "ports": [
+            80,
+            443
+        ],
+        "typical_user": "apache",
+        "risk": "Low - Secure by default but modularity can increase attack surface.",
+        "recommendation": "Disable unnecessary modules, use SSL/TLS."
+    },
     "mysqld": {
         "name": "MySQL / MariaDB Server",
         "description": "Popular relational database management system.",
@@ -40,6 +51,16 @@
         "typical_user": "mysql",
         "risk": "Medium - Risk of SQL injection in apps and brute-force if public.",
         "recommendation": "Never expose to public internet. Bind to localhost."
+    },
+    "mariadbd": {
+        "name": "MariaDB Database Server",
+        "description": "Community-developed fork of MySQL. Drop-in replacement with additional features.",
+        "ports": [
+            3306
+        ],
+        "typical_user": "mysql",
+        "risk": "Medium - Same attack surface as MySQL.",
+        "recommendation": "Bind to localhost. Use strong passwords and TLS."
     },
     "postgresql": {
         "name": "PostgreSQL Database",
@@ -72,6 +93,25 @@
         "risk": "High - Access to Docker socket/port equals root access.",
         "recommendation": "Never expose the Docker API to the network without TLS."
     },
+    "dockerd": {
+        "name": "Docker Engine Daemon",
+        "description": "Background service that manages Docker containers, images, and networks.",
+        "ports": [
+            2375,
+            2376
+        ],
+        "typical_user": "root",
+        "risk": "High - Full host access through the Docker API.",
+        "recommendation": "Use TLS mutual auth. Never bind to 0.0.0.0."
+    },
+    "containerd": {
+        "name": "containerd Runtime",
+        "description": "Industry-standard container runtime. Used by Docker and Kubernetes.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Not directly network-exposed, but container escapes are possible.",
+        "recommendation": "Keep updated. Use gVisor or Kata for additional isolation."
+    },
     "vsftpd": {
         "name": "Very Secure FTP Daemon",
         "description": "FTP server for Linux. FTP is an older, unencrypted protocol.",
@@ -82,6 +122,28 @@
         "typical_user": "ftp, vsftpd",
         "risk": "High - FTP sends passwords in cleartext. Brute-force magnet.",
         "recommendation": "Use SFTP (over SSH) instead. If using FTP, use FTPS."
+    },
+    "proftpd": {
+        "name": "ProFTPD Server",
+        "description": "Feature-rich FTP server with modular design.",
+        "ports": [
+            20,
+            21
+        ],
+        "typical_user": "proftpd",
+        "risk": "High - FTP cleartext credentials. History of vulnerabilities.",
+        "recommendation": "Migrate to SFTP. If FTP is required, enforce TLS."
+    },
+    "pure-ftpd": {
+        "name": "Pure-FTPd Server",
+        "description": "Lightweight, security-focused FTP server.",
+        "ports": [
+            20,
+            21
+        ],
+        "typical_user": "ftp",
+        "risk": "High - FTP inherently insecure due to cleartext auth.",
+        "recommendation": "Enforce TLS. Prefer SFTP where possible."
     },
     "postfix": {
         "name": "Postfix MTA",
@@ -94,6 +156,30 @@
         "typical_user": "postfix",
         "risk": "Medium - Can be used as an open relay for spam if misconfigured.",
         "recommendation": "Disable open relaying, keep updated."
+    },
+    "exim4": {
+        "name": "Exim Mail Transfer Agent",
+        "description": "Highly configurable MTA used on Debian-based systems.",
+        "ports": [
+            25,
+            465,
+            587
+        ],
+        "typical_user": "Debian-exim",
+        "risk": "Medium - Complex configuration can lead to open relay.",
+        "recommendation": "Restrict relaying, use TLS."
+    },
+    "sendmail": {
+        "name": "Sendmail MTA",
+        "description": "One of the oldest mail transfer agents. Complex but powerful.",
+        "ports": [
+            25,
+            465,
+            587
+        ],
+        "typical_user": "root, smmsp",
+        "risk": "Medium - Long history of security vulnerabilities.",
+        "recommendation": "Consider migrating to Postfix. Keep patched."
     },
     "dovecot": {
         "name": "Dovecot IMAP/POP3 Server",
@@ -110,7 +196,7 @@
     },
     "smbd": {
         "name": "Samba SMB Server",
-        "description": "File and print services for Windows clients.",
+        "description": "File and print services for Windows clients using SMB/CIFS protocol.",
         "ports": [
             139,
             445
@@ -118,6 +204,17 @@
         "typical_user": "root",
         "risk": "High - History of RCE exploits (e.g. EternalBlue).",
         "recommendation": "Keep patched, never expose to public internet."
+    },
+    "nmbd": {
+        "name": "Samba NetBIOS Name Service",
+        "description": "Provides NetBIOS name resolution for Samba. Companion to smbd.",
+        "ports": [
+            137,
+            138
+        ],
+        "typical_user": "root",
+        "risk": "Medium - Leaks hostname/workgroup information on the network.",
+        "recommendation": "Disable if not sharing with Windows. Firewall from WAN."
     },
     "memcached": {
         "name": "Memcached Store",
@@ -149,6 +246,17 @@
         "risk": "Medium - Subject to DNS amplification and cache poisoning.",
         "recommendation": "Disable open recursion if not needed."
     },
+    "named": {
+        "name": "BIND DNS Server (named)",
+        "description": "The 'named' daemon is the BIND DNS resolver/server process.",
+        "ports": [
+            53,
+            953
+        ],
+        "typical_user": "bind, named",
+        "risk": "Medium - DNS amplification and zone transfer risks.",
+        "recommendation": "Restrict zone transfers. Disable recursion for external queries."
+    },
     "mongod": {
         "name": "MongoDB Database",
         "description": "NoSQL database using JSON-like documents.",
@@ -159,19 +267,49 @@
         "risk": "High - Historical 'no-password' default issues.",
         "recommendation": "Enable authentication, bind to internal IP only."
     },
+    "mongos": {
+        "name": "MongoDB Shard Router",
+        "description": "Routes queries to the appropriate MongoDB shard in a sharded cluster.",
+        "ports": [
+            27017,
+            27018,
+            27019
+        ],
+        "typical_user": "mongodb",
+        "risk": "High - Same auth concerns as mongod.",
+        "recommendation": "Enable authentication, use internal network only."
+    },
     "chronyd": {
         "name": "Chrony NTP Service",
         "description": "Implementation of Network Time Protocol (NTP).",
         "ports": [
             123
         ],
-        "typical_user": "chrony",
+        "typical_user": "chrony, _chrony",
         "risk": "Low - Standard time synchronization.",
         "recommendation": "Keep updated."
     },
+    "ntpd": {
+        "name": "NTP Daemon",
+        "description": "Classic Network Time Protocol daemon for clock synchronization.",
+        "ports": [
+            123
+        ],
+        "typical_user": "ntp",
+        "risk": "Low - Can be used for NTP amplification DDoS if misconfigured.",
+        "recommendation": "Restrict with 'noquery' and 'restrict' directives."
+    },
+    "systemd-timesyncd": {
+        "name": "systemd Timesyncd",
+        "description": "Lightweight SNTP client built into systemd for basic time synchronization.",
+        "ports": [],
+        "typical_user": "systemd-timesync",
+        "risk": "Very Low - Outbound-only NTP client.",
+        "recommendation": "None (Core system component)."
+    },
     "nfsd": {
         "name": "NFS Server",
-        "description": "Network File System for sharing directories.",
+        "description": "Network File System for sharing directories over the network.",
         "ports": [
             2049
         ],
@@ -196,29 +334,41 @@
         "ports": [
             111
         ],
-        "typical_user": "rpc",
+        "typical_user": "rpc, _rpc",
         "risk": "Medium - DDoS amplification vector.",
         "recommendation": "Restrict via firewall to trusted clients only."
     },
     "avahi-daemon": {
-        "name": "Avahi mDNS",
-        "description": "Service discovery (Zeroconf) for local networks.",
+        "name": "Avahi mDNS/DNS-SD",
+        "description": "Zero-configuration networking daemon implementing mDNS and DNS Service Discovery. Enables automatic device and service discovery on local networks (e.g. AirPrint, Chromecast). Uses port 5353 for mDNS plus dynamic high ports (e.g. 60000+) for unicast replies.",
         "ports": [
             5353
         ],
+        "dynamic_ports": true,
         "typical_user": "avahi",
-        "risk": "Low - Broadcasts info to local network.",
-        "recommendation": "Disable if local discovery is not needed."
+        "risk": "Low - Broadcasts service information to the local network. No authentication.",
+        "recommendation": "Disable if local discovery is not needed. Restrict with firewall if required."
     },
     "rsyslogd": {
         "name": "Rsyslog Service",
-        "description": "Standard system logging service.",
+        "description": "Standard system logging service for collecting and forwarding logs.",
         "ports": [
             514
         ],
         "typical_user": "root, syslog",
         "risk": "Low - Standard system logging.",
         "recommendation": "Use TLS for remote logging if active."
+    },
+    "syslog-ng": {
+        "name": "Syslog-ng Log Daemon",
+        "description": "Enhanced system logging daemon with flexible filtering and routing.",
+        "ports": [
+            514,
+            601
+        ],
+        "typical_user": "root, syslog",
+        "risk": "Low - Standard system logging.",
+        "recommendation": "Use TLS for remote log forwarding."
     },
     "dnsmasq": {
         "name": "Dnsmasq DNS/DHCP",
@@ -227,13 +377,13 @@
             53,
             67
         ],
-        "typical_user": "dnsmasq",
+        "typical_user": "dnsmasq, nobody",
         "risk": "Low - Can be abused if listening on public interfaces.",
         "recommendation": "Bind to specific internal interfaces."
     },
     "systemd-resolved": {
         "name": "systemd Resolved",
-        "description": "Name resolution service for local applications.",
+        "description": "Name resolution service for local applications. Provides a local DNS stub listener.",
         "ports": [
             53
         ],
@@ -253,6 +403,19 @@
         "risk": "Medium - Ensure management UI is protected.",
         "recommendation": "Use strong passwords for message queues."
     },
+    "beam.smp": {
+        "name": "Erlang VM (SMP)",
+        "description": "Multi-core Erlang virtual machine. Powers RabbitMQ, CouchDB, and similar applications.",
+        "ports": [
+            5672,
+            15672,
+            25672,
+            4369
+        ],
+        "typical_user": "rabbitmq, couchdb",
+        "risk": "Medium - Management interfaces can be targeted.",
+        "recommendation": "Restrict management ports. Use SSL for AMQP."
+    },
     "python": {
         "name": "Python Application",
         "description": "Custom application or script written in Python.",
@@ -261,6 +424,14 @@
         "risk": "Varies - Depends on the application logic.",
         "recommendation": "Follow secure coding practices."
     },
+    "python3": {
+        "name": "Python 3 Application",
+        "description": "Application running on Python 3 interpreter. Common for web servers (Django, Flask, FastAPI).",
+        "ports": [],
+        "typical_user": "varies",
+        "risk": "Varies - Depends on the application logic and framework.",
+        "recommendation": "Keep dependencies updated (pip audit). Use WSGI/ASGI server in production."
+    },
     "node": {
         "name": "Node.js Application",
         "description": "JavaScript runtime application.",
@@ -268,5 +439,865 @@
         "typical_user": "varies",
         "risk": "Varies - Security depends on app code and dependencies.",
         "recommendation": "Check for NPM vulnerabilities regularly."
+    },
+    "java": {
+        "name": "Java Application",
+        "description": "Application running on the Java Virtual Machine (JVM). Could be Tomcat, Spring Boot, Kafka, or custom app.",
+        "ports": [],
+        "typical_user": "varies",
+        "risk": "Varies - Log4j-class vulnerabilities can be critical.",
+        "recommendation": "Keep JVM and libraries updated. Monitor CVEs."
+    },
+    "openvpn": {
+        "name": "OpenVPN Server",
+        "description": "Open-source VPN server for creating secure point-to-point or site-to-site connections.",
+        "ports": [
+            1194
+        ],
+        "typical_user": "root, openvpn",
+        "risk": "Low - Encrypted tunnel, but server compromise exposes all VPN traffic.",
+        "recommendation": "Use strong certificates. Keep updated."
+    },
+    "wireguard": {
+        "name": "WireGuard VPN",
+        "description": "Modern, lightweight VPN protocol with strong cryptography and minimal attack surface.",
+        "ports": [
+            51820
+        ],
+        "typical_user": "root",
+        "risk": "Very Low - Modern cryptography with minimal codebase.",
+        "recommendation": "Rotate keys periodically. Restrict allowed IPs."
+    },
+    "wg": {
+        "name": "WireGuard VPN Interface",
+        "description": "Kernel-level WireGuard VPN tunnel interface.",
+        "ports": [
+            51820
+        ],
+        "typical_user": "root",
+        "risk": "Very Low - Runs in kernel space with modern crypto.",
+        "recommendation": "Keep kernel updated."
+    },
+    "squid": {
+        "name": "Squid Proxy Server",
+        "description": "Caching and forwarding HTTP web proxy.",
+        "ports": [
+            3128,
+            8080
+        ],
+        "typical_user": "proxy, squid",
+        "risk": "Medium - Can be used as an open proxy if misconfigured.",
+        "recommendation": "Restrict access via ACLs. Do not allow open proxying."
+    },
+    "haproxy": {
+        "name": "HAProxy Load Balancer",
+        "description": "High-performance TCP/HTTP load balancer and reverse proxy.",
+        "ports": [
+            80,
+            443,
+            8404
+        ],
+        "typical_user": "haproxy",
+        "risk": "Low - Well-audited codebase. Stats page can leak info.",
+        "recommendation": "Protect stats endpoint. Use SSL termination."
+    },
+    "traefik": {
+        "name": "Traefik Reverse Proxy",
+        "description": "Modern cloud-native reverse proxy and load balancer with auto-discovery.",
+        "ports": [
+            80,
+            443,
+            8080
+        ],
+        "typical_user": "root",
+        "risk": "Low - Dashboard can expose configuration if unprotected.",
+        "recommendation": "Protect dashboard with authentication. Use TLS."
+    },
+    "caddy": {
+        "name": "Caddy Web Server",
+        "description": "Modern web server with automatic HTTPS via Let's Encrypt.",
+        "ports": [
+            80,
+            443,
+            2019
+        ],
+        "typical_user": "caddy",
+        "risk": "Very Low - Automatic HTTPS and secure defaults.",
+        "recommendation": "Keep updated. Review Caddyfile for misconfigurations."
+    },
+    "lighttpd": {
+        "name": "Lighttpd Web Server",
+        "description": "Lightweight, high-performance web server optimized for speed-critical environments.",
+        "ports": [
+            80,
+            443
+        ],
+        "typical_user": "www-data",
+        "risk": "Low - Smaller attack surface than Apache.",
+        "recommendation": "Keep updated. Disable unnecessary modules."
+    },
+    "elasticsearch": {
+        "name": "Elasticsearch",
+        "description": "Distributed search and analytics engine. Part of the ELK stack.",
+        "ports": [
+            9200,
+            9300
+        ],
+        "typical_user": "elasticsearch",
+        "risk": "High - No authentication by default in older versions. Data exfiltration risk.",
+        "recommendation": "Enable X-Pack security. Never expose to public internet."
+    },
+    "kibana": {
+        "name": "Kibana Dashboard",
+        "description": "Data visualization and exploration tool for Elasticsearch.",
+        "ports": [
+            5601
+        ],
+        "typical_user": "kibana",
+        "risk": "Medium - Can expose sensitive log data.",
+        "recommendation": "Protect with authentication. Restrict network access."
+    },
+    "logstash": {
+        "name": "Logstash Pipeline",
+        "description": "Server-side data processing pipeline that ingests, transforms, and sends data.",
+        "ports": [
+            5044,
+            9600
+        ],
+        "typical_user": "logstash",
+        "risk": "Low - Input plugins can be vectors if exposed.",
+        "recommendation": "Restrict input ports to trusted sources."
+    },
+    "grafana": {
+        "name": "Grafana Dashboard",
+        "description": "Open-source analytics and monitoring platform with rich visualization.",
+        "ports": [
+            3000
+        ],
+        "typical_user": "grafana",
+        "risk": "Medium - Default admin/admin credentials. Plugin vulnerabilities.",
+        "recommendation": "Change default password. Keep updated. Restrict access."
+    },
+    "prometheus": {
+        "name": "Prometheus Monitoring",
+        "description": "Open-source systems monitoring and alerting toolkit.",
+        "ports": [
+            9090,
+            9093,
+            9094
+        ],
+        "typical_user": "prometheus",
+        "risk": "Medium - Metrics endpoint can leak sensitive infrastructure info.",
+        "recommendation": "Restrict access. Use authentication proxy."
+    },
+    "influxd": {
+        "name": "InfluxDB Time-Series Database",
+        "description": "Purpose-built time-series database for metrics and events.",
+        "ports": [
+            8086,
+            8088
+        ],
+        "typical_user": "influxdb",
+        "risk": "Medium - API access without auth in older versions.",
+        "recommendation": "Enable authentication. Bind to internal interfaces."
+    },
+    "consul": {
+        "name": "HashiCorp Consul",
+        "description": "Service mesh and service discovery tool with KV store.",
+        "ports": [
+            8300,
+            8301,
+            8302,
+            8500,
+            8600
+        ],
+        "typical_user": "consul",
+        "risk": "Medium - Can expose service topology and secrets.",
+        "recommendation": "Enable ACLs. Use TLS for all communication."
+    },
+    "vault": {
+        "name": "HashiCorp Vault",
+        "description": "Secrets management and data protection platform.",
+        "ports": [
+            8200
+        ],
+        "typical_user": "vault",
+        "risk": "High - Stores all secrets. Compromise is catastrophic.",
+        "recommendation": "Use auto-unseal. Enable audit logging. Restrict access."
+    },
+    "etcd": {
+        "name": "etcd Key-Value Store",
+        "description": "Distributed key-value store used by Kubernetes for cluster state.",
+        "ports": [
+            2379,
+            2380
+        ],
+        "typical_user": "etcd",
+        "risk": "Critical - Contains all Kubernetes secrets and config.",
+        "recommendation": "Enable TLS mutual auth. Restrict to cluster nodes only."
+    },
+    "kubelet": {
+        "name": "Kubernetes Kubelet",
+        "description": "Primary node agent that manages pods and containers on each Kubernetes node.",
+        "ports": [
+            10250,
+            10255
+        ],
+        "typical_user": "root",
+        "risk": "High - Unauthenticated API can allow container exec.",
+        "recommendation": "Enable webhook authentication. Restrict port 10250."
+    },
+    "kube-apiserver": {
+        "name": "Kubernetes API Server",
+        "description": "Central management component of a Kubernetes cluster.",
+        "ports": [
+            6443,
+            8443
+        ],
+        "typical_user": "root",
+        "risk": "Critical - Full cluster control.",
+        "recommendation": "Use RBAC. Enable audit logging. Restrict network access."
+    },
+    "kube-proxy": {
+        "name": "Kubernetes Proxy",
+        "description": "Network proxy that maintains network rules for pod communication.",
+        "ports": [
+            10256
+        ],
+        "typical_user": "root",
+        "risk": "Low - Internal component.",
+        "recommendation": "Restrict metrics endpoint."
+    },
+    "coredns": {
+        "name": "CoreDNS",
+        "description": "Flexible, plugin-based DNS server. Default DNS in Kubernetes clusters.",
+        "ports": [
+            53,
+            9153
+        ],
+        "typical_user": "root",
+        "risk": "Low - Internal DNS resolution.",
+        "recommendation": "Restrict to cluster network."
+    },
+    "cockpit-ws": {
+        "name": "Cockpit Web Console",
+        "description": "Web-based server management interface for Linux.",
+        "ports": [
+            9090
+        ],
+        "typical_user": "root",
+        "risk": "Medium - Full system management via web UI.",
+        "recommendation": "Restrict to trusted networks. Use strong passwords."
+    },
+    "cockpit-tls": {
+        "name": "Cockpit TLS Proxy",
+        "description": "TLS termination proxy for Cockpit web console.",
+        "ports": [
+            9090
+        ],
+        "typical_user": "root",
+        "risk": "Medium - Gateway to full system management.",
+        "recommendation": "Use certificate-based auth where possible."
+    },
+    "zabbix_server": {
+        "name": "Zabbix Monitoring Server",
+        "description": "Enterprise-class open-source monitoring solution.",
+        "ports": [
+            10051
+        ],
+        "typical_user": "zabbix",
+        "risk": "Medium - Can execute remote commands on agents.",
+        "recommendation": "Use TLS for agent communication. Restrict access."
+    },
+    "zabbix_agentd": {
+        "name": "Zabbix Monitoring Agent",
+        "description": "Agent that collects system metrics and sends them to Zabbix server.",
+        "ports": [
+            10050
+        ],
+        "typical_user": "zabbix",
+        "risk": "Low - Passive data collector.",
+        "recommendation": "Restrict connections to Zabbix server IP only."
+    },
+    "gitea": {
+        "name": "Gitea Git Service",
+        "description": "Lightweight, self-hosted Git service. Community fork of Gogs.",
+        "ports": [
+            3000,
+            22
+        ],
+        "typical_user": "git, gitea",
+        "risk": "Medium - Contains source code. Can be targeted.",
+        "recommendation": "Use HTTPS. Enable 2FA. Keep updated."
+    },
+    "gitlab-workhorse": {
+        "name": "GitLab Workhorse",
+        "description": "Reverse proxy for GitLab that handles large file uploads and Git operations.",
+        "ports": [
+            8181
+        ],
+        "typical_user": "git",
+        "risk": "Low - Internal GitLab component.",
+        "recommendation": "Keep GitLab updated as a whole."
+    },
+    "jenkins": {
+        "name": "Jenkins CI/CD Server",
+        "description": "Automation server for continuous integration and delivery.",
+        "ports": [
+            8080,
+            50000
+        ],
+        "typical_user": "jenkins",
+        "risk": "High - Script console allows arbitrary code execution.",
+        "recommendation": "Restrict access. Disable script console. Use HTTPS."
+    },
+    "samba": {
+        "name": "Samba File Server (Generic)",
+        "description": "File/print services using SMB/CIFS protocol for cross-platform sharing.",
+        "ports": [
+            137,
+            138,
+            139,
+            445
+        ],
+        "typical_user": "root",
+        "risk": "High - Wide attack surface. History of critical CVEs.",
+        "recommendation": "Keep patched. Restrict to internal network."
+    },
+    "sshfs": {
+        "name": "SSHFS Mount",
+        "description": "Filesystem client based on SSH File Transfer Protocol (SFTP).",
+        "ports": [
+            22
+        ],
+        "typical_user": "varies",
+        "risk": "Low - Uses SSH encryption.",
+        "recommendation": "Use key-based auth."
+    },
+    "xinetd": {
+        "name": "xinetd Super Server",
+        "description": "Extended Internet services daemon. Manages multiple network services on demand.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Medium - Manages legacy services that may be insecure.",
+        "recommendation": "Replace with systemd socket activation. Disable unused services."
+    },
+    "dhcpd": {
+        "name": "ISC DHCP Server",
+        "description": "Dynamic Host Configuration Protocol server for assigning IP addresses.",
+        "ports": [
+            67,
+            68
+        ],
+        "typical_user": "dhcpd, root",
+        "risk": "Medium - Rogue DHCP can redirect traffic.",
+        "recommendation": "Restrict to trusted interface. Enable DHCP snooping on switches."
+    },
+    "dhclient": {
+        "name": "ISC DHCP Client",
+        "description": "DHCP client daemon that requests IP configuration from a DHCP server.",
+        "ports": [
+            68
+        ],
+        "typical_user": "root",
+        "risk": "Very Low - Standard network configuration.",
+        "recommendation": "None (Standard system component)."
+    },
+    "tftpd": {
+        "name": "TFTP Server",
+        "description": "Trivial File Transfer Protocol server. No authentication or encryption.",
+        "ports": [
+            69
+        ],
+        "typical_user": "root, tftp",
+        "risk": "High - No authentication whatsoever. Anyone can read/write files.",
+        "recommendation": "Restrict to internal PXE boot network only."
+    },
+    "in.tftpd": {
+        "name": "TFTP Server (inetd)",
+        "description": "TFTP server launched via inetd/xinetd. Used for PXE boot and firmware updates.",
+        "ports": [
+            69
+        ],
+        "typical_user": "root, tftp",
+        "risk": "High - Unauthenticated file access.",
+        "recommendation": "Isolate on dedicated VLAN for provisioning."
+    },
+    "ntp": {
+        "name": "NTP Service",
+        "description": "Network Time Protocol for clock synchronization across systems.",
+        "ports": [
+            123
+        ],
+        "typical_user": "ntp",
+        "risk": "Low - Can be used for amplification attacks.",
+        "recommendation": "Use restrict directives. Prefer chrony."
+    },
+    "syslogd": {
+        "name": "System Log Daemon",
+        "description": "Traditional Unix system logging daemon.",
+        "ports": [
+            514
+        ],
+        "typical_user": "root",
+        "risk": "Low - Standard system logging.",
+        "recommendation": "Use rsyslog or syslog-ng for better features."
+    },
+    "cron": {
+        "name": "Cron Scheduler",
+        "description": "Time-based job scheduler daemon. Executes commands at scheduled intervals.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Can be abused if crontab is writable by attacker.",
+        "recommendation": "Audit crontab entries regularly."
+    },
+    "atd": {
+        "name": "At Scheduler Daemon",
+        "description": "Runs commands scheduled for one-time execution via the 'at' command.",
+        "ports": [],
+        "typical_user": "daemon",
+        "risk": "Very Low - Local only.",
+        "recommendation": "Restrict access via /etc/at.allow."
+    },
+    "agetty": {
+        "name": "Alternative Getty",
+        "description": "Terminal login prompt manager. Opens login sessions on virtual consoles.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Local console access only.",
+        "recommendation": "None (Core system component)."
+    },
+    "polkitd": {
+        "name": "PolicyKit Daemon",
+        "description": "Authorization framework for controlling system-wide privileges.",
+        "ports": [],
+        "typical_user": "polkitd, root",
+        "risk": "Low - Local privilege escalation vectors exist (CVE-2021-4034).",
+        "recommendation": "Keep updated. Monitor for privilege escalation CVEs."
+    },
+    "NetworkManager": {
+        "name": "NetworkManager",
+        "description": "Dynamic network control and configuration daemon.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Standard system networking.",
+        "recommendation": "None (Core system component)."
+    },
+    "wpa_supplicant": {
+        "name": "WPA Supplicant",
+        "description": "Wi-Fi Protected Access client for wireless network authentication.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Standard wireless client.",
+        "recommendation": "Use WPA3 where possible."
+    },
+    "bluetoothd": {
+        "name": "Bluetooth Daemon",
+        "description": "Linux Bluetooth protocol stack manager.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Bluetooth can be a local attack vector (BlueBorne).",
+        "recommendation": "Disable if not needed. Keep kernel updated."
+    },
+    "pulseaudio": {
+        "name": "PulseAudio Sound Server",
+        "description": "Network-capable sound server for Linux desktop environments.",
+        "ports": [
+            4713
+        ],
+        "typical_user": "user",
+        "risk": "Very Low - Desktop audio service.",
+        "recommendation": "Disable network module if not streaming."
+    },
+    "pipewire": {
+        "name": "PipeWire Multimedia Server",
+        "description": "Modern multimedia processing framework replacing PulseAudio and JACK.",
+        "ports": [],
+        "typical_user": "user",
+        "risk": "Very Low - Desktop multimedia.",
+        "recommendation": "None (Standard desktop component)."
+    },
+    "Xorg": {
+        "name": "X.Org Display Server",
+        "description": "Legacy display server for Linux graphical environments.",
+        "ports": [
+            6000
+        ],
+        "typical_user": "root",
+        "risk": "Medium - X11 forwarding can be intercepted. Keylogging possible.",
+        "recommendation": "Disable TCP listening. Use Wayland if possible."
+    },
+    "samba-ad-dc": {
+        "name": "Samba Active Directory DC",
+        "description": "Samba acting as an Active Directory Domain Controller.",
+        "ports": [
+            88,
+            135,
+            389,
+            445,
+            464,
+            636,
+            3268,
+            3269
+        ],
+        "typical_user": "root",
+        "risk": "High - Domain controller compromise gives full network access.",
+        "recommendation": "Harden like a real AD DC. Keep patched."
+    },
+    "mariadb": {
+        "name": "MariaDB Database",
+        "description": "Community-developed fork of MySQL. Fully compatible replacement.",
+        "ports": [
+            3306
+        ],
+        "typical_user": "mysql",
+        "risk": "Medium - Same attack surface as MySQL.",
+        "recommendation": "Bind to localhost. Use strong passwords."
+    },
+    "cockroach": {
+        "name": "CockroachDB",
+        "description": "Distributed SQL database designed for cloud-native applications.",
+        "ports": [
+            26257,
+            8080
+        ],
+        "typical_user": "cockroach",
+        "risk": "Medium - Distributed systems require careful network security.",
+        "recommendation": "Enable TLS. Restrict inter-node and client ports."
+    },
+    "cassandra": {
+        "name": "Apache Cassandra",
+        "description": "Distributed NoSQL database for handling large amounts of data across nodes.",
+        "ports": [
+            7000,
+            7001,
+            7199,
+            9042,
+            9160
+        ],
+        "typical_user": "cassandra",
+        "risk": "Medium - No auth by default in older versions.",
+        "recommendation": "Enable authentication and TLS."
+    },
+    "couchdb": {
+        "name": "Apache CouchDB",
+        "description": "Document-oriented NoSQL database with HTTP API.",
+        "ports": [
+            5984
+        ],
+        "typical_user": "couchdb",
+        "risk": "High - Admin party mode (no auth) in default installs.",
+        "recommendation": "Set admin password immediately. Bind to localhost."
+    },
+    "clickhouse-server": {
+        "name": "ClickHouse Analytics DB",
+        "description": "Column-oriented database management system for online analytical processing (OLAP).",
+        "ports": [
+            8123,
+            9000,
+            9009
+        ],
+        "typical_user": "clickhouse",
+        "risk": "Medium - Default no-password access.",
+        "recommendation": "Enable authentication. Restrict network access."
+    },
+    "kafka": {
+        "name": "Apache Kafka",
+        "description": "Distributed event streaming platform for high-throughput data pipelines.",
+        "ports": [
+            9092,
+            9093
+        ],
+        "typical_user": "kafka, cp-kafka",
+        "risk": "Medium - No auth by default. Can leak sensitive data streams.",
+        "recommendation": "Enable SASL authentication and TLS."
+    },
+    "mosquitto": {
+        "name": "Eclipse Mosquitto MQTT",
+        "description": "Lightweight message broker implementing MQTT protocol for IoT.",
+        "ports": [
+            1883,
+            8883
+        ],
+        "typical_user": "mosquitto",
+        "risk": "Medium - No auth by default. IoT data exposure.",
+        "recommendation": "Enable authentication and TLS (port 8883)."
+    },
+    "nats-server": {
+        "name": "NATS Message Server",
+        "description": "Cloud-native messaging system for microservices and IoT.",
+        "ports": [
+            4222,
+            6222,
+            8222
+        ],
+        "typical_user": "nats",
+        "risk": "Low - Designed for security.",
+        "recommendation": "Enable TLS and authentication."
+    },
+    "minio": {
+        "name": "MinIO Object Storage",
+        "description": "High-performance S3-compatible object storage server.",
+        "ports": [
+            9000,
+            9001
+        ],
+        "typical_user": "minio",
+        "risk": "Medium - Default credentials (minioadmin/minioadmin).",
+        "recommendation": "Change default credentials immediately. Use TLS."
+    },
+    "stunnel": {
+        "name": "Stunnel TLS Wrapper",
+        "description": "Universal TLS/SSL tunneling service for wrapping insecure protocols.",
+        "ports": [],
+        "typical_user": "stunnel4",
+        "risk": "Low - Adds encryption to plaintext services.",
+        "recommendation": "Verify certificate validation is enabled."
+    },
+    "fail2ban-server": {
+        "name": "Fail2Ban Intrusion Prevention",
+        "description": "Scans log files and bans IPs showing malicious signs (brute-force, etc.).",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Security hardening tool.",
+        "recommendation": "Keep rules updated. Monitor ban logs."
+    },
+    "clamd": {
+        "name": "ClamAV Antivirus Daemon",
+        "description": "Open-source antivirus engine for detecting malware, viruses, and trojans.",
+        "ports": [
+            3310
+        ],
+        "typical_user": "clamav",
+        "risk": "Very Low - Security scanning tool.",
+        "recommendation": "Keep virus definitions updated (freshclam)."
+    },
+    "freshclam": {
+        "name": "ClamAV Update Daemon",
+        "description": "Automatic virus database updater for ClamAV.",
+        "ports": [],
+        "typical_user": "clamav",
+        "risk": "Very Low - Downloads virus definitions.",
+        "recommendation": "Ensure it runs regularly."
+    },
+    "unbound": {
+        "name": "Unbound DNS Resolver",
+        "description": "Validating, recursive, and caching DNS resolver with DNSSEC support.",
+        "ports": [
+            53
+        ],
+        "typical_user": "unbound",
+        "risk": "Low - Local caching resolver.",
+        "recommendation": "Enable DNSSEC validation. Restrict to localhost."
+    },
+    "pihole-FTL": {
+        "name": "Pi-hole FTL DNS",
+        "description": "Pi-hole's DNS/DHCP server for network-wide ad blocking.",
+        "ports": [
+            53,
+            67,
+            80,
+            4711
+        ],
+        "typical_user": "pihole",
+        "risk": "Low - DNS-based ad blocker.",
+        "recommendation": "Restrict admin interface access."
+    },
+    "tor": {
+        "name": "Tor Anonymity Network",
+        "description": "Onion routing network for anonymous communication.",
+        "ports": [
+            9050,
+            9051
+        ],
+        "typical_user": "debian-tor, tor",
+        "risk": "Medium - Exit node can be used for malicious traffic.",
+        "recommendation": "Monitor if running as exit node. Use for SOCKS proxy only."
+    },
+    "privoxy": {
+        "name": "Privoxy Privacy Proxy",
+        "description": "Non-caching web proxy with advanced filtering capabilities for privacy.",
+        "ports": [
+            8118
+        ],
+        "typical_user": "privoxy",
+        "risk": "Low - Privacy enhancement tool.",
+        "recommendation": "Bind to localhost only."
+    },
+    "i2pd": {
+        "name": "I2P Router Daemon",
+        "description": "C++ implementation of the I2P anonymous network.",
+        "ports": [
+            7070,
+            4444,
+            4447
+        ],
+        "typical_user": "i2pd",
+        "risk": "Medium - Anonymous networking tool.",
+        "recommendation": "Monitor usage. Restrict console access."
+    },
+    "syncthing": {
+        "name": "Syncthing File Sync",
+        "description": "Continuous file synchronization program. Peer-to-peer, no cloud needed.",
+        "ports": [
+            8384,
+            22000
+        ],
+        "typical_user": "user",
+        "risk": "Low - Encrypted peer-to-peer sync.",
+        "recommendation": "Use device authentication. Restrict GUI access."
+    },
+    "rsyncd": {
+        "name": "Rsync Daemon",
+        "description": "Fast, versatile file copying/synchronization daemon.",
+        "ports": [
+            873
+        ],
+        "typical_user": "root, rsyncd",
+        "risk": "Medium - Can expose filesystem if misconfigured.",
+        "recommendation": "Use SSH-based rsync instead. Require authentication."
+    },
+    "nrpe": {
+        "name": "Nagios NRPE Agent",
+        "description": "Nagios Remote Plugin Executor for running monitoring checks.",
+        "ports": [
+            5666
+        ],
+        "typical_user": "nagios",
+        "risk": "Low - Monitoring agent.",
+        "recommendation": "Restrict to Nagios server IP. Use SSL."
+    },
+    "node_exporter": {
+        "name": "Prometheus Node Exporter",
+        "description": "Exports hardware and OS metrics for Prometheus monitoring.",
+        "ports": [
+            9100
+        ],
+        "typical_user": "node-exp, prometheus",
+        "risk": "Low - Exposes system metrics.",
+        "recommendation": "Restrict access to Prometheus server only."
+    },
+    "blackbox_exporter": {
+        "name": "Prometheus Blackbox Exporter",
+        "description": "Probes endpoints over HTTP, HTTPS, DNS, TCP, and ICMP for Prometheus.",
+        "ports": [
+            9115
+        ],
+        "typical_user": "prometheus",
+        "risk": "Low - Monitoring probe.",
+        "recommendation": "Restrict access to monitoring network."
+    },
+    "alertmanager": {
+        "name": "Prometheus Alertmanager",
+        "description": "Handles alerts sent by Prometheus and routes them to receivers.",
+        "ports": [
+            9093,
+            9094
+        ],
+        "typical_user": "prometheus",
+        "risk": "Low - Alert routing.",
+        "recommendation": "Restrict access. Protect silence/inhibit endpoints."
+    },
+    "ntopng": {
+        "name": "ntopng Network Monitor",
+        "description": "High-speed web-based traffic analysis and flow collection tool.",
+        "ports": [
+            3000
+        ],
+        "typical_user": "ntopng",
+        "risk": "Medium - Exposes detailed network traffic data.",
+        "recommendation": "Restrict access. Use HTTPS."
+    },
+    "lxd": {
+        "name": "LXD Container Manager",
+        "description": "System container and virtual machine manager built on LXC.",
+        "ports": [
+            8443
+        ],
+        "typical_user": "root",
+        "risk": "High - Container management with potential host escape.",
+        "recommendation": "Use TLS certificates. Restrict API access."
+    },
+    "libvirtd": {
+        "name": "Libvirt Virtualization Daemon",
+        "description": "Manages virtual machines (KVM, QEMU, Xen) and virtual networks.",
+        "ports": [
+            16509
+        ],
+        "typical_user": "root",
+        "risk": "High - Full VM management capability.",
+        "recommendation": "Use TLS. Restrict to trusted management hosts."
+    },
+    "qemu-system": {
+        "name": "QEMU Virtual Machine",
+        "description": "Hardware virtualization emulator. Backend for KVM virtual machines.",
+        "ports": [],
+        "typical_user": "libvirt-qemu, root",
+        "risk": "Medium - VM escape vulnerabilities exist.",
+        "recommendation": "Keep QEMU/KVM updated. Use SELinux/AppArmor."
+    },
+    "VBoxHeadless": {
+        "name": "VirtualBox Headless VM",
+        "description": "Oracle VirtualBox running a VM without a GUI.",
+        "ports": [],
+        "typical_user": "vboxuser",
+        "risk": "Low - Desktop virtualization.",
+        "recommendation": "Keep VirtualBox updated."
+    },
+    "udisksd": {
+        "name": "UDisks Disk Manager",
+        "description": "D-Bus service for handling storage devices (mount, unmount, format).",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Local disk management.",
+        "recommendation": "None (Standard desktop component)."
+    },
+    "thermald": {
+        "name": "Intel Thermal Daemon",
+        "description": "Monitors and controls system temperatures to prevent overheating.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Hardware management.",
+        "recommendation": "None (System health component)."
+    },
+    "irqbalance": {
+        "name": "IRQ Balance Daemon",
+        "description": "Distributes hardware interrupts across CPUs for optimal performance.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Performance optimization.",
+        "recommendation": "None (System performance component)."
+    },
+    "accounts-daemon": {
+        "name": "Accounts Service",
+        "description": "D-Bus service for querying and manipulating user account information.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Local account management.",
+        "recommendation": "None (Standard system component)."
+    },
+    "gdm": {
+        "name": "GNOME Display Manager",
+        "description": "Login screen manager for GNOME desktop environment.",
+        "ports": [],
+        "typical_user": "root, gdm",
+        "risk": "Very Low - Desktop login manager.",
+        "recommendation": "None (Standard desktop component)."
+    },
+    "sddm": {
+        "name": "SDDM Display Manager",
+        "description": "Modern display manager for KDE Plasma and LXQt desktops.",
+        "ports": [],
+        "typical_user": "root, sddm",
+        "risk": "Very Low - Desktop login manager.",
+        "recommendation": "None (Standard desktop component)."
+    },
+    "lightdm": {
+        "name": "LightDM Display Manager",
+        "description": "Lightweight, cross-desktop display manager.",
+        "ports": [],
+        "typical_user": "root, lightdm",
+        "risk": "Very Low - Desktop login manager.",
+        "recommendation": "None (Standard desktop component)."
     }
 }

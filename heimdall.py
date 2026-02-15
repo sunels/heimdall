@@ -8,7 +8,7 @@ import os
 import time
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     import psutil
 except ImportError:
@@ -526,6 +526,37 @@ def extract_user_from_witr(lines):
             return m.group(1)
     return "-"
 
+def get_process_user(pid):
+    """Get process owner via psutil first, then /proc fallback. Never returns '-'."""
+    if not pid or not str(pid).isdigit():
+        return "-"
+    # Strategy 1: psutil (most reliable)
+    if psutil:
+        try:
+            return psutil.Process(int(pid)).username()
+        except Exception:
+            pass
+    # Strategy 2: /proc/pid/status
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("Uid:"):
+                    uid = int(line.split()[1])
+                    import pwd
+                    return pwd.getpwuid(uid).pw_name
+    except Exception:
+        pass
+    # Strategy 3: ps command
+    try:
+        res = subprocess.run(["ps", "-o", "user=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=1)
+        user = res.stdout.strip()
+        if user:
+            return user
+    except Exception:
+        pass
+    return "-"
+
 def extract_process_from_witr(lines):
     for l in lines:
         m = re.search(r'Process\s*:\s*(.+)', l, re.I)
@@ -915,14 +946,19 @@ def splash_screen(stdscr, rows, cache):
 
         win.refresh()
 
-        # --- Mevcut preload kodları (hiç değişmiyor) ---
+        # --- Preload data per port ---
+        prog_name = row[3] if len(row) > 3 else "-"
         try:
             lines = get_witr_output(port)
             _witr_cache[str(port)] = (lines, time.time())
             user = extract_user_from_witr(lines)
+            # Fallback: if witr didn't provide user, resolve from PID
+            if user == "-":
+                pid_val = row[4] if len(row) > 4 else "-"
+                user = get_process_user(pid_val)
             process = extract_process_from_witr(lines)
             detail_width = w - 4
-            wrapped_icon_lines = prepare_witr_content(lines, detail_width)
+            wrapped_icon_lines = prepare_witr_content(lines, detail_width, prog=prog_name, port=port)
             cache[port] = {
                 "user": user,
                 "process": process,
@@ -931,7 +967,9 @@ def splash_screen(stdscr, rows, cache):
                 "prewrapped_width": detail_width
             }
         except Exception:
-            cache[port] = {"user": "-", "process": "-", "lines": ["No data"], "wrapped_icon_lines": []}
+            detail_width = w - 4
+            fallback_lines = prepare_witr_content(["No data"], detail_width, prog=prog_name, port=port)
+            cache[port] = {"user": "-", "process": "-", "lines": ["No data"], "wrapped_icon_lines": fallback_lines}
 
         try:
             conn = get_connections_info(port)
@@ -974,7 +1012,11 @@ def splash_screen(stdscr, rows, cache):
     global SNAPSHOT_MODE
     SNAPSHOT_MODE = True
 
-def prepare_witr_content(lines, width):
+def prepare_witr_content(lines, width, prog=None, port=None):
+    # If witr returned nothing useful, generate fallback from services.json
+    if (not lines or lines == ["No data"]) and (prog or port):
+        return _generate_service_fallback(prog, port, width)
+
     lines = annotate_warnings(lines)
     wrapped = []
     icons = {
@@ -999,6 +1041,300 @@ def prepare_witr_content(lines, width):
                 line = line.replace(key, f"{icon} {key}", 1)
         wrapped.extend(textwrap.wrap(line, width=width) or [""])
     return wrapped
+
+def _generate_service_fallback(prog, port, width):
+    """Generate rich detail content when witr has no data.
+    Layer 1: services.json → Layer 2: local package manager intelligence."""
+    wrapped = []
+    svc = get_service_info(prog, port)
+    is_unknown = svc.get("name") == "Unknown"
+
+    # Layer 2: If services.json doesn't know it, ask the OS package manager
+    pkg_info = None
+    if is_unknown and prog:
+        pkg_info = get_local_package_info(prog)
+
+    if pkg_info:
+        # We got real data from the local system!
+        wrapped.append(f"📦 {pkg_info.get('name', prog)}")
+        wrapped.append(f"   Process: {prog}")
+        wrapped.append(f"   Port: {port or '-'}")
+        if pkg_info.get("version"):
+            wrapped.append(f"   Version: {pkg_info['version']}")
+        if pkg_info.get("package"):
+            wrapped.append(f"   Package: {pkg_info['package']}")
+        wrapped.append("")
+
+        wrapped.append("🔍 What is this service?")
+        desc = pkg_info.get("description", "No description available.")
+        for line in textwrap.wrap(f"   {desc}", width=width):
+            wrapped.append(line)
+        wrapped.append("")
+
+        if pkg_info.get("homepage"):
+            wrapped.append(f"🌐 Homepage: {pkg_info['homepage']}")
+            wrapped.append("")
+
+        if pkg_info.get("maintainer"):
+            wrapped.append(f"👤 Maintainer: {pkg_info['maintainer']}")
+        if pkg_info.get("installed_size"):
+            wrapped.append(f"💾 Installed Size: {pkg_info['installed_size']}")
+        wrapped.append("")
+
+        wrapped.append("ℹ️  Source: Local package manager (dpkg/rpm)")
+        wrapped.append("   This information was auto-discovered from your")
+        wrapped.append("   system's installed packages.")
+    else:
+        # Use services.json data (Layer 1) or show unknown
+        name = svc.get("name", prog or "Unknown")
+        desc = svc.get("description", "No description available.")
+        risk = svc.get("risk", "Unknown")
+        rec = svc.get("recommendation", "No specific recommendation.")
+        typical_user = svc.get("typical_user", "-")
+        known_ports = svc.get("ports", [])
+        dynamic = svc.get("dynamic_ports", False)
+
+        wrapped.append(f"📦 Service: {name}")
+        wrapped.append(f"   Process: {prog or '-'}")
+        wrapped.append(f"   Port: {port or '-'}")
+        wrapped.append("")
+
+        wrapped.append("🔍 What is this service?")
+        for line in textwrap.wrap(f"   {desc}", width=width):
+            wrapped.append(line)
+        wrapped.append("")
+
+        wrapped.append(f"👤 Typical User: {typical_user}")
+        port_str = ", ".join(str(p) for p in known_ports) if known_ports else "Dynamic"
+        if dynamic:
+            port_str += " + dynamic high ports"
+        wrapped.append(f"🔌 Known Ports: {port_str}")
+        wrapped.append("")
+
+        wrapped.append("⚠️  Risk Assessment:")
+        for line in textwrap.wrap(f"   {risk}", width=width):
+            wrapped.append(line)
+        wrapped.append("")
+
+        wrapped.append("🛡️ Recommendation:")
+        for line in textwrap.wrap(f"   {rec}", width=width):
+            wrapped.append(line)
+        wrapped.append("")
+
+        if is_unknown:
+            wrapped.append("ℹ️  This process is not in the Heimdall knowledge")
+            wrapped.append("   base and no local package info was found.")
+            wrapped.append("   Consider investigating manually.")
+        else:
+            wrapped.append("ℹ️  Source: Heimdall service knowledge base")
+
+    return wrapped
+
+# ── Layer 2: Local System Intelligence ──────────────────────────────
+_pkg_info_cache = {}
+
+def get_local_package_info(prog):
+    """
+    Query the local package manager (dpkg/rpm) to discover information
+    about a running process. Zero internet, zero API keys required.
+    Results are cached for the session.
+    """
+    if prog in _pkg_info_cache:
+        return _pkg_info_cache[prog]
+
+    info = None
+    # Strategy 1: Direct dpkg query by process name
+    info = _try_dpkg(prog)
+
+    # Strategy 2: Find binary path and reverse-lookup package
+    if not info:
+        binary_path = _find_binary_path(prog)
+        if binary_path:
+            pkg_name = _dpkg_search_file(binary_path)
+            if pkg_name:
+                info = _try_dpkg(pkg_name)
+
+    # Strategy 3: Try rpm (RHEL/Fedora/SUSE)
+    if not info:
+        info = _try_rpm(prog)
+
+    # Strategy 4: Try snap
+    if not info:
+        info = _try_snap(prog)
+
+    # Strategy 5: whatis (man page one-liner) as last resort
+    if not info:
+        info = _try_whatis(prog)
+
+    # Strategy 6: .desktop file search
+    if not info:
+        info = _try_desktop_file(prog)
+
+    _pkg_info_cache[prog] = info
+    return info
+
+def _find_binary_path(prog):
+    """Find the actual binary path of a process via 'which' or /proc."""
+    try:
+        res = subprocess.run(["which", prog], capture_output=True, text=True, timeout=1)
+        path = res.stdout.strip()
+        if path and os.path.exists(path):
+            # Resolve symlinks to find the real package
+            return os.path.realpath(path)
+    except Exception:
+        pass
+    return None
+
+def _dpkg_search_file(filepath):
+    """Reverse-lookup: which package owns this file?"""
+    try:
+        res = subprocess.run(["dpkg", "-S", filepath], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0 and res.stdout.strip():
+            # Output format: "package-name: /path/to/file"
+            return res.stdout.strip().split(":")[0].strip()
+    except Exception:
+        pass
+    return None
+
+def _try_dpkg(pkg_name):
+    """Query dpkg for package metadata (Debian/Ubuntu)."""
+    try:
+        res = subprocess.run(["dpkg", "-s", pkg_name], capture_output=True, text=True, timeout=1.5)
+        if res.returncode != 0:
+            return None
+        info = {"package": pkg_name}
+        lines = res.stdout.splitlines()
+        desc_lines = []
+        in_desc = False
+        for line in lines:
+            if line.startswith("Package:"):
+                info["package"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Version:"):
+                info["version"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Homepage:"):
+                info["homepage"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Maintainer:"):
+                info["maintainer"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Installed-Size:"):
+                size_kb = line.split(":", 1)[1].strip()
+                try:
+                    size_mb = int(size_kb) / 1024
+                    info["installed_size"] = f"{size_mb:.1f} MB" if size_mb >= 1 else f"{size_kb} KB"
+                except:
+                    info["installed_size"] = f"{size_kb} KB"
+            elif line.startswith("Description:"):
+                desc_lines.append(line.split(":", 1)[1].strip())
+                in_desc = True
+            elif in_desc:
+                if line.startswith(" "):
+                    text = line.strip()
+                    if text == ".":
+                        desc_lines.append("")
+                    else:
+                        desc_lines.append(text)
+                else:
+                    in_desc = False
+
+        if desc_lines:
+            # Use package name as display name (capitalize nicely)
+            info["name"] = info.get("package", "").replace("-", " ").title()
+            info["description"] = " ".join(desc_lines).strip()
+            return info
+    except Exception:
+        pass
+    return None
+
+def _try_rpm(pkg_name):
+    """Query rpm for package metadata (RHEL/Fedora/SUSE)."""
+    try:
+        res = subprocess.run(["rpm", "-qi", pkg_name], capture_output=True, text=True, timeout=1.5)
+        if res.returncode != 0:
+            return None
+        info = {"package": pkg_name}
+        for line in res.stdout.splitlines():
+            if line.startswith("Name"):
+                info["name"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Version"):
+                info["version"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Summary"):
+                info["description"] = line.split(":", 1)[1].strip()
+            elif line.startswith("URL"):
+                info["homepage"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Size"):
+                info["installed_size"] = line.split(":", 1)[1].strip()
+        if info.get("description"):
+            return info
+    except Exception:
+        pass
+    return None
+
+def _try_snap(prog):
+    """Query snap for package info."""
+    try:
+        res = subprocess.run(["snap", "info", prog], capture_output=True, text=True, timeout=2)
+        if res.returncode != 0:
+            return None
+        info = {"package": prog}
+        for line in res.stdout.splitlines():
+            if line.startswith("name:"):
+                info["name"] = line.split(":", 1)[1].strip().title()
+            elif line.startswith("summary:"):
+                info["description"] = line.split(":", 1)[1].strip()
+            elif line.startswith("publisher:"):
+                info["maintainer"] = line.split(":", 1)[1].strip()
+            elif line.startswith("store-url:"):
+                info["homepage"] = line.split(":", 1)[1].strip()
+        if info.get("description"):
+            return info
+    except Exception:
+        pass
+    return None
+
+def _try_whatis(prog):
+    """Use whatis to get a one-line description from man pages."""
+    try:
+        res = subprocess.run(["whatis", prog], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0 and res.stdout.strip():
+            # Format: "prog (section) - description"
+            line = res.stdout.strip().splitlines()[0]
+            if " - " in line:
+                desc = line.split(" - ", 1)[1].strip()
+                return {
+                    "name": prog.title(),
+                    "description": desc,
+                    "package": prog
+                }
+    except Exception:
+        pass
+    return None
+
+def _try_desktop_file(prog):
+    """Search .desktop files for application metadata."""
+    try:
+        desktop_dirs = ["/usr/share/applications", "/var/lib/snapd/desktop/applications",
+                        os.path.expanduser("~/.local/share/applications")]
+        for d in desktop_dirs:
+            if not os.path.isdir(d):
+                continue
+            for fname in os.listdir(d):
+                if prog.lower() in fname.lower() and fname.endswith(".desktop"):
+                    filepath = os.path.join(d, fname)
+                    info = {"package": prog}
+                    with open(filepath, 'r', errors='ignore') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("Name=") and "name" not in info:
+                                info["name"] = line.split("=", 1)[1]
+                            elif line.startswith("Comment=") and "description" not in info:
+                                info["description"] = line.split("=", 1)[1]
+                            elif line.startswith("Icon="):
+                                pass  # TUI can't show icons
+                    if info.get("name") or info.get("description"):
+                        return info
+    except Exception:
+        pass
+    return None
+
 
 def stop_process_or_service(pid, prog, stdscr):
     if not pid or not pid.isdigit():
@@ -1553,81 +1889,328 @@ def build_inspect_content(pid, port, prog, username):
     lines.append(("", CP_TEXT))
     return lines
 
-def get_service_activity_history(prog, pid, port, max_entries=10):
+def get_service_activity_history(prog, pid, port, max_entries=15):
     """
-    Attempt to extract historical intelligence from journalctl.
-    Looks for: Logins, IP addresses, session events, and critical errors.
+    Multi-strategy service activity history extraction.
+    Adds process lifecycle info and deduplicates repeated messages.
     """
     events = []
-    try:
-        # Search strategy: filter by PID or unit name if available
-        # We use -o short-iso for consistent parsing
-        cmd = ["journalctl", "-n", "100", "--output=short-iso", "--no-pager"]
-        
-        # Optimize by looking for specific triggers
-        if pid and pid.isdigit():
-            cmd.extend(["_PID=" + pid])
-        elif prog:
-            # Check if it's a known unit
-            cmd.extend(["-u", f"{prog}.service"])
-            
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)
-        # If no logs found for PID or Service, try searching by binary name
-        if (not (res.stdout and res.stdout.strip())) and prog:
-             res = subprocess.run(["journalctl", "-n", "100", "--output=short-iso", f"_COMM={prog}"], capture_output=True, text=True, timeout=1.5)
 
-        raw_lines = res.stdout.strip().splitlines()
-        
-        # Regex patterns for intelligence extraction
-        ssh_login = re.compile(r"Accepted \w+ for (.*) from ([\d\.\:a-f]+) port (\d+)")
-        ip_detect = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
-        session_end = re.compile(r"session closed|Disconnected|Connection closed|closed by")
-        error_detect = re.compile(r"failed|error|denied|Refused|Invalid", re.IGNORECASE)
+    # ── SECTION 1: Process Lifecycle ────────────────────────────
+    lifecycle = _get_process_lifecycle(prog, pid)
+    if lifecycle:
+        for entry in lifecycle:
+            events.append(entry)
+        events.append(("", "─" * 50, CP_TEXT))
 
-        for line in reversed(raw_lines): # Most recent first
-            if len(events) >= max_entries: break
-            
-            parts = line.split(maxsplit=2)
-            if len(parts) < 3: continue
-            
-            ts_iso = parts[0]
-            try: 
-                dt = datetime.fromisoformat(ts_iso)
-                ts = dt.strftime("%m-%d %H:%M")
-            except: ts = ts_iso[:16]
-            
-            content = parts[2]
-            color = CP_TEXT
-            display_msg = content
-            
-            # Intelligent Parsing
-            m_login = ssh_login.search(content)
-            if m_login:
-                user, ip, p = m_login.groups()
-                display_msg = f"🔑 LOGIN: {user}@{ip} (p:{p})"
-                color = CP_ACCENT
-            elif session_end.search(content):
-                display_msg = f"🚪 LOGOUT: {content.split(':')[-1].strip()}"
-                color = CP_TEXT
-            elif error_detect.search(content):
-                display_msg = f"⚠️ ALERT: {content.split(':')[-1].strip()}"
-                color = CP_WARN
-            elif ip_detect.search(content):
-                display_msg = content.split(':')[-1].strip()
-                color = CP_TEXT
-            else:
-                # Filter noise
-                if any(x in content for x in ["pam_unix", "systemd", "Reached target"]):
-                    continue
-                display_msg = content.split(':')[-1].strip()
+    # ── SECTION 2: Log History ──────────────────────────────────
+    raw_lines = []
 
-            if display_msg:
-                events.append((ts, display_msg[:70], color))
+    # Strategy 1: _COMM (most reliable — catches all instances)
+    if prog:
+        raw_lines = _journal_query(["journalctl", "-n", "100", "--output=short-iso",
+                                     "--no-pager", f"_COMM={prog}"])
 
-    except Exception as e:
-        debug_log(f"HISTORY ERROR: {e}")
-        
+    # Strategy 2: systemd unit
+    if not raw_lines and prog:
+        raw_lines = _journal_query(["journalctl", "-n", "100", "--output=short-iso",
+                                     "--no-pager", "-u", f"{prog}.service"])
+
+    # Strategy 3: Current PID
+    if not raw_lines and pid and pid.isdigit():
+        raw_lines = _journal_query(["journalctl", "-n", "100", "--output=short-iso",
+                                     "--no-pager", f"_PID={pid}"])
+
+    # Strategy 4: grep /var/log/syslog
+    if not raw_lines and prog:
+        raw_lines = _syslog_grep(prog)
+
+    # Strategy 5: Application-specific log files
+    app_log_lines = []
+    if prog:
+        app_log_lines = _find_app_logs(prog, pid)
+
+    # Parse and deduplicate log events
+    log_events = _parse_log_events(raw_lines, max_entries * 2)  # Parse more, dedupe reduces
+    log_events = _deduplicate_events(log_events, max_entries - len(events))
+
+    events.extend(log_events)
+
+    # Append app-specific log entries
+    remaining = max_entries - len(events)
+    if remaining > 0 and app_log_lines:
+        deduped_app = _deduplicate_events(app_log_lines, remaining)
+        events.extend(deduped_app)
+
     return events
+
+def _get_process_lifecycle(prog, pid):
+    """Extract process lifecycle: start time, uptime, who started it, restarts."""
+    info = []
+    try:
+        if pid and pid.isdigit():
+            # Start time from /proc
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    stat = f.read().split()
+                    # Field 22 is starttime in clock ticks
+                with open("/proc/uptime") as f:
+                    uptime_secs = float(f.read().split()[0])
+                clock_ticks = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+                start_ticks = int(stat[21])
+                start_secs_ago = uptime_secs - (start_ticks / clock_ticks)
+                start_time = datetime.now() - timedelta(seconds=start_secs_ago)
+                uptime_str = _format_duration(start_secs_ago)
+
+                info.append(("⏰", f"🚀 Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", CP_ACCENT))
+                info.append(("⏰", f"⏱️  Uptime: {uptime_str}", CP_ACCENT))
+            except Exception:
+                pass
+
+            # Who started it (loginuid / parent)
+            try:
+                with open(f"/proc/{pid}/loginuid") as f:
+                    loginuid = f.read().strip()
+                if loginuid and loginuid != "4294967295":  # -1 means no login user
+                    import pwd
+                    username = pwd.getpwuid(int(loginuid)).pw_name
+                    info.append(("👤", f"👤 Started by: {username}", CP_ACCENT))
+            except Exception:
+                pass
+
+            # Current user running it
+            try:
+                with open(f"/proc/{pid}/status") as f:
+                    for line in f:
+                        if line.startswith("Uid:"):
+                            uid = int(line.split()[1])
+                            import pwd
+                            owner = pwd.getpwuid(uid).pw_name
+                            info.append(("👤", f"🏃 Running as: {owner}", CP_TEXT))
+                            break
+            except Exception:
+                pass
+
+        # Systemd service status (start/stop/restarts)
+        if prog:
+            try:
+                res = subprocess.run(["systemctl", "show", f"{prog}.service",
+                                       "--property=ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts,MainPID"],
+                                      capture_output=True, text=True, timeout=1.5)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        if line.startswith("ActiveEnterTimestamp=") and line.split("=", 1)[1].strip():
+                            val = line.split("=", 1)[1].strip()
+                            info.append(("📋", f"📋 Service activated: {val}", CP_TEXT))
+                        elif line.startswith("InactiveEnterTimestamp=") and line.split("=", 1)[1].strip():
+                            val = line.split("=", 1)[1].strip()
+                            info.append(("📋", f"📋 Last stopped: {val}", CP_TEXT))
+                        elif line.startswith("NRestarts="):
+                            val = line.split("=", 1)[1].strip()
+                            if val and val != "0":
+                                info.append(("🔄", f"🔄 Restarts: {val}", CP_WARN))
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+    return info
+
+def _format_duration(seconds):
+    """Format seconds into human-readable duration."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    elif seconds < 86400:
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        return f"{h}h {m}m"
+    else:
+        d = seconds // 86400
+        h = (seconds % 86400) // 3600
+        return f"{d}d {h}h"
+
+def _deduplicate_events(events, max_entries):
+    """Collapse consecutive identical messages into '×N' counts."""
+    if not events:
+        return []
+    deduped = []
+    prev_msg = None
+    repeat_count = 0
+
+    for ts, msg, color in events:
+        # Normalize message for comparison (strip timestamp-specific parts)
+        msg_key = msg.strip()
+        if msg_key == prev_msg:
+            repeat_count += 1
+        else:
+            if repeat_count > 0 and deduped:
+                # Update the last entry with repeat count
+                last_ts, last_msg, last_color = deduped[-1]
+                deduped[-1] = (last_ts, f"{last_msg} (×{repeat_count + 1})", last_color)
+            prev_msg = msg_key
+            repeat_count = 0
+            deduped.append((ts, msg, color))
+        if len(deduped) >= max_entries:
+            break
+
+    # Handle trailing repeats
+    if repeat_count > 0 and deduped:
+        last_ts, last_msg, last_color = deduped[-1]
+        deduped[-1] = (last_ts, f"{last_msg} (×{repeat_count + 1})", last_color)
+
+    return deduped[:max_entries]
+
+
+def _journal_query(cmd):
+    """Run a journalctl command and return non-empty lines."""
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        if res.stdout and res.stdout.strip():
+            lines = res.stdout.strip().splitlines()
+            # Filter out journalctl meta-lines
+            return [l for l in lines if not l.startswith("-- ")]
+    except Exception:
+        pass
+    return []
+
+def _syslog_grep(prog):
+    """Search /var/log/syslog for process mentions."""
+    syslog_paths = ["/var/log/syslog", "/var/log/messages"]
+    for path in syslog_paths:
+        try:
+            if not os.path.exists(path):
+                continue
+            res = subprocess.run(["grep", "-i", prog, path],
+                                 capture_output=True, text=True, timeout=2)
+            if res.stdout and res.stdout.strip():
+                lines = res.stdout.strip().splitlines()
+                return lines[-100:]  # Last 100 lines
+        except Exception:
+            pass
+    return []
+
+def _find_app_logs(prog, pid=None):
+    """Search for application-specific log files and extract recent entries."""
+    events = []
+    search_dirs = [
+        os.path.expanduser(f"~/.config/{prog}"),
+        os.path.expanduser(f"~/.local/share/{prog}"),
+        f"/var/log/{prog}",
+        f"/opt/{prog}",
+        f"/tmp/{prog}",
+    ]
+
+    log_files = []
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        try:
+            for root, dirs, files in os.walk(d):
+                for f in files:
+                    if any(f.endswith(ext) for ext in [".log", ".log.1", ".txt"]) or "log" in f.lower():
+                        fpath = os.path.join(root, f)
+                        try:
+                            mtime = os.path.getmtime(fpath)
+                            log_files.append((mtime, fpath))
+                        except:
+                            pass
+                # Don't recurse too deep
+                if root.count(os.sep) - d.count(os.sep) >= 2:
+                    dirs.clear()
+        except Exception:
+            pass
+
+    # Sort by modification time (newest first) and read recent entries
+    log_files.sort(reverse=True)
+    for mtime, fpath in log_files[:3]:  # Check top 3 most recent log files
+        try:
+            # Read last 20 lines of each log file
+            res = subprocess.run(["tail", "-n", "20", fpath],
+                                 capture_output=True, text=True, timeout=1)
+            if res.stdout:
+                fname = os.path.basename(fpath)
+                for line in res.stdout.strip().splitlines()[-5:]:
+                    line = line.strip()
+                    if line:
+                        events.append(("LOG", f"📄 [{fname}] {line[:60]}", CP_TEXT))
+        except Exception:
+            pass
+
+    return events
+
+def _parse_log_events(raw_lines, max_entries):
+    """Parse raw log lines into structured (timestamp, message, color) events."""
+    events = []
+
+    # Regex patterns for intelligence extraction
+    ssh_login = re.compile(r"Accepted \w+ for (.*) from ([\d\.\:a-f]+) port (\d+)")
+    ip_detect = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+    session_open = re.compile(r"session opened|Connection from|Connected|Accepted", re.IGNORECASE)
+    session_end = re.compile(r"session closed|Disconnected|Connection closed|closed by", re.IGNORECASE)
+    error_detect = re.compile(r"failed|error|denied|Refused|Invalid|Cannot load|cannot", re.IGNORECASE)
+    warning_detect = re.compile(r"warning|timeout|retry|deprecated", re.IGNORECASE)
+    start_detect = re.compile(r"start|launch|listen|bind|init", re.IGNORECASE)
+
+    for line in reversed(raw_lines):  # Most recent first
+        if len(events) >= max_entries:
+            break
+
+        # Parse timestamp
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3:
+            continue
+
+        ts_raw = parts[0]
+        try:
+            dt = datetime.fromisoformat(ts_raw)
+            ts = dt.strftime("%m-%d %H:%M")
+        except:
+            # Try traditional syslog format (Month Day HH:MM:SS)
+            ts = ts_raw[:16] if len(ts_raw) > 16 else ts_raw
+
+        content = parts[2] if len(parts) > 2 else line
+        color = CP_TEXT
+        display_msg = content
+
+        # Intelligent Parsing (priority order)
+        m_login = ssh_login.search(content)
+        if m_login:
+            user, ip, p = m_login.groups()
+            display_msg = f"🔑 LOGIN: {user}@{ip} (p:{p})"
+            color = CP_ACCENT
+        elif session_end.search(content):
+            display_msg = f"🚪 CLOSE: {content.split(':')[-1].strip()}"
+            color = CP_TEXT
+        elif session_open.search(content):
+            display_msg = f"🟢 OPEN: {content.split(':')[-1].strip()}"
+            color = CP_ACCENT
+        elif error_detect.search(content):
+            display_msg = f"⚠️ ALERT: {content.split(':')[-1].strip()}"
+            color = CP_WARN
+        elif warning_detect.search(content):
+            display_msg = f"⚡ WARN: {content.split(':')[-1].strip()}"
+            color = CP_WARN
+        elif start_detect.search(content):
+            display_msg = f"🚀 START: {content.split(':')[-1].strip()}"
+            color = CP_ACCENT
+        elif ip_detect.search(content):
+            display_msg = f"🌐 {content.split(':')[-1].strip()}"
+            color = CP_TEXT
+        else:
+            # Filter common noise
+            if any(x in content for x in ["pam_unix", "Reached target", "Stopping",
+                                           "Started", "systemd[1]"]):
+                continue
+            display_msg = content.split(":")[-1].strip()
+
+        if display_msg:
+            events.append((ts, display_msg[:70], color))
+
+    return events
+
 
 def show_inspect_modal(stdscr, port, prog, pid, username):
     lines = build_inspect_content(pid, port, prog, username)
@@ -3648,9 +4231,11 @@ def main(stdscr):
                 prewrapped_width = port_cache.get("prewrapped_width", 0)
                 if abs(w - prewrapped_width) > 10:  # Threshold for rewrap
                     lines = port_cache.get("lines", [])
-                    cached_wrapped_icon_lines = prepare_witr_content(lines, w - 4)
-                    cache[port]["wrapped_icon_lines"] = cached_wrapped_icon_lines
-                    cache[port]["prewrapped_width"] = w
+                    sel_prog = rows[selected][3] if selected >= 0 and selected < len(rows) else None
+                    cached_wrapped_icon_lines = prepare_witr_content(lines, w - 4, prog=sel_prog, port=port)
+                    if port in cache:
+                        cache[port]["wrapped_icon_lines"] = cached_wrapped_icon_lines
+                        cache[port]["prewrapped_width"] = w
                     cached_total_lines = len(cached_wrapped_icon_lines)
                 draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             else:
