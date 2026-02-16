@@ -27,6 +27,8 @@
 - 🔍 **Deep Inspect / Info (i)**: Real-time ancestry tracking, resource pressure, and security audit.
 - 🎬 **Service Activity History**: Extract historical logins, IP events, and session logs from system journals.
 - 📡 **Live Auto-Scan**: Periodic background refresh of the port list (adjustable speed).
+- 📸 **Full System Dump (d)**: Comprehensive text report of all active services, including logs, process trees, and resource limits.
+- 📦 **Local Package Intelligence**: Automatic fallback to local package managers (dpkg/rpm) for rich service details when other sources fail.
 - 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
 - ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
@@ -109,6 +111,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 💾 Full System Dump — Visual Progress & Archive
+<img src="pp-9.png" alt="heimdall system dump" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -125,6 +132,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | f | Toggle firewall for selected port |
 | a | Actions (open Action Center modal) |
 | i | Inspect / Deep Information modal |
+| d | Full System Dump (Reports to file) |
 | p | Settings (Auto-update, etc.) |
 | q | Quit |
 
@@ -333,9 +341,10 @@ Invoked from Action Center via `[l]`:
 ```bash
 heimdall/
 ├── heimdall.py
+├── services.json
+├── build-deb.sh
 ├── README.md
-├── pp-1.png
-└── pp-2.png
+└── pp-[1-9].png (Screenshots)
 ```
 
 ## 🛣️ Roadmap (Ideas)

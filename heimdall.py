@@ -2936,11 +2936,39 @@ def draw_help_bar(stdscr, show_detail):
     snap = " [🔄 r Refresh]" if SNAPSHOT_MODE else ""
     
     if not show_detail:
-        help_text = (
-            f" [🔍 i Inspect]{snap} [🎨 c Color] [⚙️ p Settings]"
-            " [🧭 ↑↓ Select] [↕️ +/- Resize] [⇱⇲ Tab Pane]"
-            " [📂 ←→ Files] [⛔ s Stop] [🔥 f Firewall] [🛠 a Actions] [❌ q Quit]"
-        )
+        # Priority list of shortcuts. 
+        # We start with the full set, but if width is constrained, we drop intuitive nav keys.
+        
+        # Essential Action Keys (Always keep these if possible)
+        base = f" [🔍 i Inspect] [📝 d Dump]{snap} [🎨 c Color] [⚙️ p Settings]"
+        actions = " [⛔ s Stop] [🔥 f Firewall] [🛠 a Actions] [❌ q Quit]"
+        
+        # Navigation Instructions (Can be dropped or shortened)
+        nav_files = " [📂 ←→ Files]"
+        nav_tab = " [⇱⇲ Tab]"
+        nav_resize = " [↕️ +/- Resize]"
+        nav_select = " [🧭 ↑↓ Select]"
+
+        # Calculate fit
+        # Full Line: base + select + resize + tab + files + actions
+        full_text = f"{base}{nav_select}{nav_resize}{nav_tab}{nav_files}{actions}"
+        
+        if len(full_text) < w - 2:
+            help_text = full_text
+        else:
+            # Plan B: Drop Select and Resize (Intuitive)
+            mid_text = f"{base}{nav_tab}{nav_files}{actions}"
+            if len(mid_text) < w - 2:
+                help_text = mid_text
+            else:
+                # Plan C: Drop Tab instruction, Shorten Files
+                short_files = " [←→ Files]"
+                short_text = f"{base}{short_files}{actions}"
+                if len(short_text) < w - 2:
+                    help_text = short_text
+                else:
+                    # Plan D: Minimalist (Just keys)
+                    help_text = f"{base}{actions}"
     else:
         help_text = " 🧭 ↑↓ Scroll  [Tab] Restore  ❌ Quit "
 
@@ -4118,10 +4146,208 @@ def detect_runtime_type(pid):
             runtime["mode"] = "DB Server"
         elif "go" in cmdline:
             runtime["type"] = "Go"
-            runtime["mode"] = "Server"
+
     except Exception:
         pass
+
+    _runtime_cache[str(pid)] = runtime
     return runtime
+
+
+def generate_full_system_dump(stdscr, rows, cache):
+    """
+    Generate a comprehensive inspection report for ALL active ports/processes.
+    Saves the report to a timestamped file.
+    Includes a progress splash screen to avoid UI blocking.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"heimdall_dump_{timestamp}.txt"
+    
+    h, w = stdscr.getmaxyx()
+    bh = 16
+    bw = min(70, w - 4)
+    win_y = (h - bh) // 2
+    win_x = (w - bw) // 2
+    
+    try:
+        # Create splash window
+        win = curses.newwin(bh, bw, win_y, win_x)
+        win.box()
+        # Set background to match text theme to avoid mismatch
+        try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+        except: pass
+    except:
+        # Fallback if window creation fails (e.g. terminal too small)
+        win = None
+        show_message(stdscr, "⏳ Generating dump... Please wait.")
+        curses.doupdate()
+
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("╔══════════════════════════════════════════════════════════════════════════════╗\n")
+            f.write("║                 HEIMDALL FULL SYSTEM INSPECTION REPORT                       ║\n")
+            f.write(f"║ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                                            ║\n")
+            f.write("╚══════════════════════════════════════════════════════════════════════════════╝\n\n")
+            f.write(f"Total Active Ports/Services: {len(rows)}\n")
+            f.write("=" * 80 + "\n\n")
+
+            total = len(rows)
+            start_time = time.time()
+
+            for idx, row in enumerate(rows):
+                port, proto, pidprog, prog, pid = row
+                
+                # --- UPDATE UI ---
+                if win:
+                    try:
+                        win.erase()
+                        try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+                        except: pass
+                        win.box()
+                        
+                        # Title
+                        title = "💾 SYSTEM DUMP IN PROGRESS"
+                        win.addstr(2, max(1, (bw - len(title))//2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+                        
+                        # Service Info
+                        info = f"Archiving: {prog} ({port}/{proto})"
+                        win.addstr(5, 4, info[:bw-6], curses.color_pair(CP_ACCENT))
+                        
+                        # Progress Bar logic fixed to avoid wrapping
+                        pct = int(((idx + 1) / total) * 100)
+                        pct_str = f" {pct}%"
+                        # Available width for bar: total window width - padding (5 left + 5 right?) 
+                        # We use 5 left padding. Let's use 5 right padding too.
+                        avail_w = bw - 10 
+                        bar_len = avail_w - len(pct_str)
+                        
+                        if bar_len > 0:
+                            filled = int(bar_len * (idx + 1) / total)
+                            bar = "█" * filled + "░" * (bar_len - filled)
+                            
+                            # Draw bar + pct on same line without overflow
+                            win.addstr(8, 5, f"[{bar}]{pct_str}", curses.color_pair(CP_TEXT))
+                        
+                        # Stats
+                        elapsed = time.time() - start_time
+                        win.addstr(10, 5, f"Processed: {idx + 1}/{total} services", curses.A_DIM)
+                        win.addstr(11, 5, f"Time: {elapsed:.1f}s", curses.A_DIM)
+                        
+                        win.refresh()
+                    except:
+                        pass
+                
+                # --- WRITE LOGIC (Same as before) ---
+                
+                # Fetch basic info
+                user = cache.get(port, {}).get("user")
+                if not user or user == "-":
+                    user = get_process_user(pid)
+                
+                f.write(f"🔹 [{idx+1}/{len(rows)}] SERVICE: {prog} (PID: {pid})\n")
+                f.write(f"   Port: {port}/{proto}\n")
+                f.write(f"   User: {user}\n")
+                
+                # ── Service Intelligence (Heimdall & Package) ──
+                svc = get_service_info(prog, port)
+                pkg_info = get_local_package_info(prog) or {}
+                
+                name = pkg_info.get("name", svc.get("name", prog))
+                desc = pkg_info.get("description", svc.get("description", "No description available."))
+                
+                f.write(f"   Name: {name}\n")
+                f.write(f"   Description: {desc[:150]}...\n")
+                if pkg_info:
+                    f.write(f"   Package: {pkg_info.get('package', '-')}\n")
+                    f.write(f"   Version: {pkg_info.get('version', '-')}\n")
+                
+                f.write(f"   Risk: {svc.get('risk', 'Unknown')}\n")
+                f.write(f"   Recommendation: {svc.get('recommendation', '-')}\n\n")
+
+                # ── WITR Deep Analysis ──
+                f.write("   🔍 witr Analysis:\n")
+                try:
+                    witr_lines = get_witr_output(port)
+                    if not witr_lines or witr_lines == ["No data"]:
+                        # If witr failed, show our fallback content in text form
+                        fallback = _generate_service_fallback(prog, port, 80)
+                        for l in fallback:
+                            f.write(f"     {l}\n")
+                    else:
+                        for l in witr_lines:
+                             if l.strip():
+                                 f.write(f"     {l}\n")
+                except:
+                    f.write("     (Analysis unavailable)\n")
+                f.write("\n")
+
+                # ── Process Reality Check ──
+                if pid and pid.isdigit():
+                    f.write("   🔥 Process Reality Check:\n")
+                    # Cmdline
+                    cmd = get_full_cmdline(pid)
+                    f.write(f"     Command: {cmd}\n")
+                    
+                    # Tree
+                    chain = get_process_parent_chain(pid)
+                    tree = format_process_tree(chain)
+                    if tree:
+                        f.write("     Process Tree:\n")
+                        for l in tree:
+                            f.write(f"       {l}\n")
+                    
+                    # Runtime
+                    runtime = detect_runtime_type_cached(pid)
+                    if runtime.get("type") != "Native":
+                         f.write(f"     Runtime: {runtime['type']} ({runtime['mode']})\n")
+
+                    # Resource Pressure
+                    fd_info = get_fd_pressure_cached(pid)
+                    f.write(f"     File Descriptors: {fd_info['open']} / {fd_info['limit']} ({fd_info['usage']})\n")
+                    f.write(f"     OOM Score: {get_oom_score_adj(pid)}\n")
+                    f.write("\n")
+                
+                # ── Activity History ──
+                history = get_service_activity_history(prog, pid, port, max_entries=8)
+                f.write(f"   📜 Recent Activity ({len(history)} events):\n")
+                if history:
+                    for ts, msg, _ in history:
+                        f.write(f"     [{ts}] {msg}\n")
+                else:
+                    f.write("     (No logs found)\n")
+                
+                # ── Connection Stats ──
+                conn = get_connections_info(port)
+                f.write(f"\n   🔴 Network Visibility:\n")
+                f.write(f"     Active Connections: {conn['active_connections']}\n")
+                if conn['top_ip'] != "-":
+                     f.write(f"     Top IP: {conn['top_ip']} ({conn['top_ip_count']})\n")
+
+                # ── Open Files ──
+                files = get_open_files_cached(pid)
+                f.write(f"\n   📂 Open Files ({len(files)}):\n")
+                for i, file_entry in enumerate(files[:8]):
+                    f.write(f"     - {file_entry}\n")
+                if len(files) > 8:
+                    f.write(f"     ... ({len(files)-8} more)\n")
+                
+                f.write("\n" + "=" * 80 + "\n\n")
+
+        # Success Screen
+        if win:
+            win.erase()
+            win.box()
+            win.addstr(bh//2 - 1, (bw - 15)//2, "✅ COMPLETED!", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+            win.addstr(bh//2 + 1, (bw - len(filename) - 10)//2, f"Saved to {filename}", curses.color_pair(CP_TEXT))
+            win.refresh()
+            time.sleep(2)
+        else:
+             show_message(stdscr, f"✅ Full dump saved to: {filename}")
+             time.sleep(1.5)
+
+    except Exception as e:
+        show_message(stdscr, f"❌ Dump failed: {str(e)}")
+        time.sleep(2)
 # --------------------------------------------------
 # Main Loop
 # --------------------------------------------------
@@ -4346,6 +4572,9 @@ def main(stdscr):
                 # get username from cache if available
                 user = cache.get(port, {}).get("user", "unknown")
                 show_inspect_modal(stdscr, port, prog, pid, user)
+            elif k == ord('d'):
+                # Generate Full System Dump
+                generate_full_system_dump(stdscr, rows, cache)
             elif k == ord('p'):
                 # Settings modal (changed from 'S' to 'p')
                 draw_settings_modal(stdscr)
