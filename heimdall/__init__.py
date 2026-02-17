@@ -3048,14 +3048,14 @@ def draw_help_bar(stdscr, show_detail):
         # We start with the full set, but if width is constrained, we drop intuitive nav keys.
         
         # Essential Action Keys (Always keep these if possible)
-        base = f" [🔍 i Inspect] [📝 d Dump]{snap} [🎨 c Color] [⚙️ p Settings]"
-        actions = " [⛔ s Stop] [🔥 f Firewall] [🛠 a Actions] [❌ q Quit]"
+        base = f" [i Inspect🔍][d Dump📝][c Color🎨][p Settings⚙ ️][F Filter🔍]"
+        actions = "[s Stop⛔][f Firewall🔥][a Actions🛠 ][q Quit❌]"
         
         # Navigation Instructions (Can be dropped or shortened)
-        nav_files = " [📂 ←→ Files]"
-        nav_tab = " [⇱⇲ Tab]"
-        nav_resize = " [↕️ +/- Resize]"
-        nav_select = " [🧭 ↑↓ Select]"
+        nav_files = "[←→ Files📂]"
+        nav_tab = "[Tab⇱⇲]"
+        nav_resize = "[+/- Resize↕ ️]"
+        nav_select = "[↑↓ Select🧭]"
 
         # Calculate fit
         # Full Line: base + select + resize + tab + files + actions
@@ -3099,7 +3099,7 @@ def draw_help_bar(stdscr, show_detail):
         if len(help_text) > w - 2:
             if not show_detail:
                 help_text = (
-                    f" [🔍i]{snap}[🎨c][⚙️p] [↑↓][+/-][Tab]"
+                    f" [🔍i]{snap}[🎨c][⚙️p][🔍F] [↑↓][+/-][Tab]"
                     " [📂←→][⛔s][🔥f][🛠a][❌q]"
                 )
             else:
@@ -4459,15 +4459,117 @@ def generate_full_system_dump(stdscr, rows, cache):
 # --------------------------------------------------
 # Main Loop
 # --------------------------------------------------
-def matches_filter(row, args, cache):
+def get_filter_status_str(filters):
+    active = []
+    if filters.get("port"): active.append(f"Port:{filters['port']}")
+    if filters.get("pid"): active.append(f"PID:{filters['pid']}")
+    if filters.get("user"): active.append(f"User:{filters['user']}")
+    return " | ".join(active) if active else ""
+
+def matches_filter(row, filters, cache):
     port, proto, pidprog, prog, pid = row
-    if args.port and str(port) != str(args.port): return False
-    if args.pid and str(pid) != str(args.pid): return False
-    if args.user:
+
+    f_port = filters.get("port") if isinstance(filters, dict) else (filters.port if hasattr(filters, "port") else None)
+    f_pid = filters.get("pid") if isinstance(filters, dict) else (filters.pid if hasattr(filters, "pid") else None)
+    f_user = filters.get("user") if isinstance(filters, dict) else (filters.user if hasattr(filters, "user") else None)
+
+    if f_port and str(port) != str(f_port): return False
+    if f_pid and str(pid) != str(f_pid): return False
+    if f_user:
          user = cache.get(port, {}).get("user") or get_process_user(pid)
          if port not in cache: cache[port] = {}
          cache[port]["user"] = user
-         if user != args.user: return False
+         if str(user) != str(f_user): return False
+    return True
+
+def draw_filter_modal(stdscr, filters):
+    h, w = stdscr.getmaxyx()
+    pad = 2
+    bw = min(w - 4, 60)
+    bh = 12
+    y = (h - bh) // 2
+    x = (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.erase()
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+
+    title = " 🔍 System Filter "
+    try: win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    except: pass
+
+    fields = [
+        ("p", "Port", "port"),
+        ("i", "PID", "pid"),
+        ("u", "User", "user")
+    ]
+
+    editing = None
+    input_buf = ""
+
+    while True:
+        win.erase()
+        win.box()
+        try: win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except: pass
+
+        for idx, (key, label, field) in enumerate(fields):
+            val = filters.get(field) or "(all)"
+            attr = curses.A_REVERSE | curses.A_BOLD if editing == field else curses.A_NORMAL
+            color = curses.color_pair(CP_ACCENT) if editing == field else curses.color_pair(CP_TEXT)
+
+            try:
+                win.addstr(2 + idx*2, pad, f"[{key}] {label}: ", curses.color_pair(CP_TEXT))
+                display_val = input_buf if editing == field else str(val)
+                max_disp = bw - pad*2 - 15
+                display_val = display_val[-max_disp:]
+                win.addstr(2 + idx*2, pad + 12, display_val, color | attr)
+            except: pass
+
+        try:
+            win.addstr(bh - 3, pad, "[c] Clear Filters  [ESC] Apply", curses.color_pair(CP_TEXT) | curses.A_DIM)
+            if editing:
+                win.addstr(bh - 2, pad, "Typing... Press ENTER to save", curses.color_pair(CP_WARN) | curses.A_BOLD)
+        except: pass
+
+        win.refresh()
+        k = win.getch()
+
+        if editing:
+            if k == 27: # ESC cancels edit
+                editing = None
+                input_buf = ""
+            elif k in (10, 13, curses.KEY_ENTER):
+                filters[editing] = input_buf if input_buf else None
+                editing = None
+                input_buf = ""
+            elif k in (8, 127, curses.KEY_BACKSPACE, 263):
+                input_buf = input_buf[:-1]
+            elif 32 <= k <= 126:
+                input_buf += chr(k)
+        else:
+            if k == 27: break
+            try: ch = chr(k).lower()
+            except: ch = None
+            if ch == 'p':
+                editing = "port"
+                input_buf = str(filters.get("port") or "")
+            elif ch == 'i':
+                editing = "pid"
+                input_buf = str(filters.get("pid") or "")
+            elif ch == 'u':
+                editing = "user"
+                input_buf = str(filters.get("user") or "")
+            elif ch == 'c':
+                filters["port"] = None
+                filters["pid"] = None
+                filters["user"] = None
+                show_message(stdscr, "Filters cleared.")
+                break
+
+    del win
     return True
 
 def main(stdscr, args=None):
@@ -4488,8 +4590,14 @@ def main(stdscr, args=None):
     cache = {}
     firewall_status = {}
 
-    if args and (args.port or args.pid or args.user):
-        rows = [r for r in rows if matches_filter(r, args, cache)]
+    runtime_filters = {
+        "port": args.port if args else None,
+        "pid": args.pid if args else None,
+        "user": args.user if args else None
+    }
+
+    if any(runtime_filters.values()):
+        rows = [r for r in rows if matches_filter(r, runtime_filters, cache)]
 
     splash_screen(stdscr, rows, cache)
 
@@ -4525,8 +4633,8 @@ def main(stdscr, args=None):
 
         # refresh rows from cached parser (fast)
         rows = parse_ss_cached()
-        if args and (args.port or args.pid or args.user):
-            rows = [r for r in rows if matches_filter(r, args, cache)]
+        if any(runtime_filters.values()):
+            rows = [r for r in rows if matches_filter(r, runtime_filters, cache)]
 
         if not show_detail and rows:
             table_win = curses.newwin(table_h, w//2, 0, 0)
@@ -4600,6 +4708,13 @@ def main(stdscr, args=None):
             draw_help_bar(stdscr, show_detail)
 
         draw_status_indicator(stdscr)
+
+        # Show active filters if any
+        if any(runtime_filters.values()):
+            f_str = f"🔍 Filter: {get_filter_status_str(runtime_filters)} "
+            try:
+                stdscr.addstr(h-4, 2, f_str, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            except: pass
         curses.doupdate()
 
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
@@ -4698,6 +4813,11 @@ def main(stdscr, args=None):
             elif k == ord('a'):
                 # open Action Center modal
                 handle_action_center_input(stdscr, rows, selected, cache, firewall_status)
+            elif k == ord('F'):
+                # open Filter modal
+                draw_filter_modal(stdscr, runtime_filters)
+                request_list_refresh()
+
             elif k == ord('i') and selected >= 0 and rows:
                 # Open Inspection/Information modal
                 port, proto, pidprog, prog, pid = rows[selected]
