@@ -166,6 +166,9 @@ def load_services_db():
         os.path.join(CONFIG_DIR, "services.json"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "services.json")
     ]
+    # If running as a bundled executable (PyInstaller), check the unpacked temp dir
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        paths.append(os.path.join(sys._MEIPASS, "services.json"))
     for json_path in paths:
         try:
             if os.path.exists(json_path):

@@ -29,6 +29,9 @@
 - 📡 **Live Auto-Scan**: Periodic background refresh of the port list (adjustable speed).
 - 📸 **Full System Dump (d)**: Comprehensive text report of all active services, including logs, process trees, and resource limits.
 - 📦 **Local Package Intelligence**: Automatic fallback to local package managers (dpkg/rpm) for rich service details when other sources fail.
+- 🛡️ **Risk Assessment & Security Audit**:
+  - 🚩 **Risk Level**: Flags known high-risk services (e.g., FTP, Telnet) based on a built-in vulnerability database.
+  - ⚠️ **Security Audit**: Real-time alerts for dangerous configurations (Running as ROOT, Public exposure, Empty passwords, etc.).
 - 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
 - ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
@@ -207,7 +210,18 @@ wget https://github.com/sunels/heimdall/releases/download/v0.5.0/heimdall_0.5.0-
 # or just
     heimdall
 ```
-### Option 2 – From source
+### Option 2 – Standalone Binary (Run on any Linux)
+ 
+Download the executable from [Releases](https://github.com/sunels/heimdall/releases):
+ 
+```bash
+wget https://github.com/sunels/heimdall/releases/latest/download/heimdall
+chmod +x heimdall
+./heimdall
+```
+*No Python or dependencies required.*
+
+### Option 3 – From source
 
 Ensure you have Python 3.6+ and `witr` installed and accessible in your PATH.
 
@@ -324,6 +338,21 @@ Invoked from Action Center via `[l]`:
 
 ---
 
+---
+ 
+## 🛡️ Risk & Security Indicators
+ 
+Heimdall now proactively flags potential security issues directly in the main view:
+
+| Icon | Meaning | Description |
+|------|---------|-------------|
+| 🚩 | **High Risk Service** | The service is inherently risky (e.g., `vsftpd`, `telnet`, `redis` without auth) based on `services.json` definitions. |
+| ⚠️ | **Security Warning** | A runtime security issue was detected during audit. Examples: <br>• Process running as **ROOT** <br>• Listening on **0.0.0.0** (Public) <br>• Executable **deleted** (malware indicator) <br>• Working directory is world-writable (`/tmp`) |
+
+*Example:* `👑 redis-server 🚩 ⚠️` means the service is High Risk AND has a runtime setup warning (likely running as root).
+ 
+---
+ 
 ## 🧩 Design Philosophy
 
 - ❌ No reinvention of system tools
