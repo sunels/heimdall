@@ -1,0 +1,3 @@
+include README.md
+recursive-include heimdall services.json
+recursive-include heimdall services.sha256

@@ -6,7 +6,7 @@ setup(
     description='Interactive curses-based port and process viewer (using witr)',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
-    author='Serkan',
+    author='Serkan Sunel',
     author_email='serkan.sunel@gmail.com',
     url='https://github.com/sunels/heimdall',
     license='MIT',
@@ -23,15 +23,15 @@ setup(
         'Topic :: System :: Systems Administration',
     ],
     python_requires='>=3.8',
-    py_modules=['heimdall'],
+    packages=['heimdall'],
     entry_points={
         'console_scripts': [
-            'heimdall = heimdall:cli_entry',   # ← BURAYI DEĞİŞTİR
+            'heimdall = heimdall:cli_entry',
         ],
     },
-    install_requires=[],
-    # extras_require={
-    #     'dev': ['black', 'flake8'],
-    # },
+    install_requires=[
+        'psutil>=5.8.0',
+    ],
+    package_data={'heimdall': ['services.json', 'services.sha256']},
     include_package_data=True,
 )

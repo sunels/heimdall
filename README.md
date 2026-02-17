@@ -186,54 +186,63 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
-## 🚀 Installation
-
-### Option 1 – From .deb package (recommended for Debian/Ubuntu)
-
-Download the latest `.deb` from [Releases](https://github.com/sunels/heimdall/releases):
-
-```
-# Direct download
-wget https://github.com/sunels/heimdall/releases/download/v0.5.0/heimdall_0.5.0-1_all.deb
-
-# Installation
-    sudo dpkg -i heimdall_0.5.0-1_all.deb
-
-    #If dependencies are missing (rare):
-
-    sudo apt update
-    sudo apt install -f
-
-# Run:
-    sudo heimdall
-    
-# or just
-    heimdall
-```
-### Option 2 – Standalone Binary (Run on any Linux)
+## 🚀 Installation & Quick Start
  
-Download the executable from [Releases](https://github.com/sunels/heimdall/releases):
+Choose the installation method that fits your workflow.
+ 
+### 📦 Option 1: Standalone Binary (Recommended)
+*No dependencies required. Works on any modern Linux.*
+ 
+1. Download the latest `heimdall` binary from [**GitHub Releases**](https://github.com/sunels/heimdall/releases).
+2. Make it executable and run:
  
 ```bash
-wget https://github.com/sunels/heimdall/releases/latest/download/heimdall
 chmod +x heimdall
-./heimdall
+sudo ./heimdall
 ```
-*No Python or dependencies required.*
-
-### Option 3 – From source
-
-Ensure you have Python 3.6+ and `witr` installed and accessible in your PATH.
-
-Then clone the repository and run:
-
-``` 
-    git clone https://github.com/sunels/heimdall.git
-    cd heimdall
-    chmod +x heimdall.py
-    sudo cp heimdall.py /usr/local/bin/heimdall
-    # or create symlink
-    sudo ln -s $(pwd)/heimdall.py /usr/local/bin/heimdall
+ 
+---
+ 
+### 🐧 Option 2: Debian / Ubuntu (.deb)
+*Native system integration.*
+ 
+Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases) layer:
+ 
+```bash
+sudo dpkg -i heimdall_0.6.0-1_all.deb
+# If dependencies are missing:
+sudo apt update && sudo apt install -f
+```
+ 
+---
+ 
+### 🐍 Option 3: Python / Pip
+*For Python users.*
+ 
+Install via pip (ensure `witr` is installed separately):
+ 
+```bash
+pip3 install heimdall
+# Run
+sudo heimdall
+```
+ 
+---
+ 
+### 🛠️ Option 4: Development (Source)
+*For contributors.*
+ 
+Clone the repo and run without installing:
+ 
+```bash
+git clone https://github.com/sunels/heimdall.git
+cd heimdall
+ 
+# Run directly using the wrapper script:
+sudo python3 run.py
+ 
+# Or install in editable mode:
+pip3 install -e .
 ```
 
 ## 🛠 Action Center (Interactive Operations)

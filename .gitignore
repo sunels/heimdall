@@ -39,3 +39,13 @@ debian/heimald/   # yazım hatası olabilir, varsa sil
 *.bak
 *.tmp
 *.log
+heimdall.spec
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# PyInstaller
+*.spec
