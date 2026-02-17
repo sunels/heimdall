@@ -51,7 +51,7 @@ This eliminates the need to jump between multiple tools such as `ss`, `netstat`,
 
 ---
 
-![heimdall logo](logo.png)
+![heimdall logo](screenshots/logo.png)
 
 ---
 
@@ -79,43 +79,43 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 ## 📸 Screenshots
 
 ### 🔍 Main View — Ports, Processes & Open Files
-<img src="pp-1.png" alt="heimdall main view" width="100%"/>
+<img src="screenshots/pp-1.png" alt="heimdall main view" width="100%"/>
 
 ---
 
 ### 🧾 Detail View — Deep Port & Process Inspection
-<img src="pp-2.png" alt="heimdall detail view" width="100%"/>
+<img src="screenshots/pp-2.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Actions Center (Modal)
-<img src="pp-3.png" alt="heimdall detail view" width="100%"/>
+<img src="screenshots/pp-3.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Block IP Modal
-<img src="pp-4.png" alt="heimdall detail view" width="100%"/>
+<img src="screenshots/pp-4.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Connection Limit Modal
-<img src="pp-5.png" alt="heimdall connection limit" width="100%"/>
+<img src="screenshots/pp-5.png" alt="heimdall connection limit" width="100%"/>
 
 ---
 ### 🧾 Color Palette — Happy eyes edition
-<img src="pp-6.png" alt="heimdall color palette" width="100%"/>
+<img src="screenshots/pp-6.png" alt="heimdall color palette" width="100%"/>
 
 ---
 
 ### 🔍 Deep Inspection — Static Service Analysis & Risk Audit
-<img src="pp-7.png" alt="heimdall deep inspection" width="100%"/>
+<img src="screenshots/pp-7.png" alt="heimdall deep inspection" width="100%"/>
 
 ---
 
 ### 🔍 Deep Activity History — Historical Log Intelligence
-<img src="pp-8.png" alt="heimdall activity history" width="100%"/>
+<img src="screenshots/pp-8.png" alt="heimdall activity history" width="100%"/>
 
 ---
 
 ### 💾 Full System Dump — Visual Progress & Archive
-<img src="pp-9.png" alt="heimdall system dump" width="100%"/>
+<img src="screenshots/pp-9.png" alt="heimdall system dump" width="100%"/>
 
 ---
 
@@ -411,6 +411,7 @@ heimdall/
 │   ├── __main__.py      # Entry point (python -m heimdall)
 │   ├── services.json    # Default service definitions database
 │   └── services.sha256  # Integrity verification hash
+├── screenshots/         # 📸 README screenshots & logo
 ├── run.py               # 🚀 Development wrapper script (run without installing)
 ├── release.sh           # 🤖 Automated build & release script
 ├── setup.py             # Python package configuration (pip/build)
