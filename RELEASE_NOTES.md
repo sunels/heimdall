@@ -7,6 +7,9 @@
 *   **Standalone Binary:** Added pre-compiled binary support. Run `heimdall` anywhere, no Python needed!
 *   **PyPI Support:** Ready for `pip install heimdall`.
 
+### 🔍 New Features
+*   **Startup Filtering:** Launch Heimdall focused on specific targets (e.g., `heimdall --port 80 --user root`). Ideal for targeted debugging.
+
 ### 🛡️ Security & Risk Assessment
 Heimdall now actively scans services for known risks:
 *   🚩 **High Risk Service:** Flags inherently dangerous services (Telnet, FTP, etc.).

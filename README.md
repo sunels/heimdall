@@ -248,6 +248,31 @@ pip3 install -e .
 sudo python3 run.py
 ```
 
+## 🚀 Usage
+
+Launch the interactive dashboard:
+
+```bash
+heimdall
+```
+
+### 🔍 Startup Filters
+You can restrict the view to specific targets using command-line arguments:
+
+```bash
+# Filter by Port
+heimdall --port 80
+
+# Filter by PID
+heimdall --pid 1234
+
+# Filter by User
+heimdall --user root
+
+# Combine filters (e.g. root processes on port 443)
+heimdall --port 443 --user root
+```
+
 ## 🛠 Action Center (Interactive Operations)
 
 Press `a` from the main screen to open the Action Center modal — a compact two-column modal grouping common operational actions for ports and processes.

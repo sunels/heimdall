@@ -381,6 +381,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--version', action='version', version='heimdall 0.6.0')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
+    parser.add_argument('--port', type=int, help='Filter view by specific Port')
+    parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
+    parser.add_argument('--user', type=str, help='Filter view by Process Owner (User)')
     return parser.parse_args()
 
 
@@ -4456,7 +4459,18 @@ def generate_full_system_dump(stdscr, rows, cache):
 # --------------------------------------------------
 # Main Loop
 # --------------------------------------------------
-def main(stdscr):
+def matches_filter(row, args, cache):
+    port, proto, pidprog, prog, pid = row
+    if args.port and str(port) != str(args.port): return False
+    if args.pid and str(pid) != str(args.pid): return False
+    if args.user:
+         user = cache.get(port, {}).get("user") or get_process_user(pid)
+         if port not in cache: cache[port] = {}
+         cache[port]["user"] = user
+         if user != args.user: return False
+    return True
+
+def main(stdscr, args=None):
     curses.curs_set(0)
     stdscr.keypad(True)
     # make input non-blocking with short timeout so we can debounce selection and let caches serve during fast scroll
@@ -4473,6 +4487,10 @@ def main(stdscr):
     rows = parse_ss_cached()
     cache = {}
     firewall_status = {}
+
+    if args and (args.port or args.pid or args.user):
+        rows = [r for r in rows if matches_filter(r, args, cache)]
+
     splash_screen(stdscr, rows, cache)
 
     selected = 0 if rows else -1
@@ -4507,6 +4525,8 @@ def main(stdscr):
 
         # refresh rows from cached parser (fast)
         rows = parse_ss_cached()
+        if args and (args.port or args.pid or args.user):
+            rows = [r for r in rows if matches_filter(r, args, cache)]
 
         if not show_detail and rows:
             table_win = curses.newwin(table_h, w//2, 0, 0)
@@ -4761,13 +4781,14 @@ def check_and_show_terminal_size_then_exit():
 
 def cli_entry():
     """terminal command 'heimdall' entry point"""
-    check_and_show_terminal_size_then_exit()
     check_python_version()
-    check_witr_exists()
     args = parse_args()
+    # Check terminal size after args so --help works in small terminals
+    check_and_show_terminal_size_then_exit()
+    check_witr_exists()
     if args.no_update:
         CONFIG["auto_update_services"] = False
-    curses.wrapper(main)
+    curses.wrapper(main, args)
 
 
 if __name__ == "__main__":
