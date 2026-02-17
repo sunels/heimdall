@@ -381,11 +381,17 @@ Heimdall now proactively flags potential security issues directly in the main vi
 ## 📁 Project Structure
 ```bash
 heimdall/
-├── heimdall.py
-├── services.json
-├── build-deb.sh
-├── README.md
-└── pp-[1-9].png (Screenshots)
+├── heimdall/            # 📦 Core Python Package
+│   ├── __init__.py      # Main application logic & UI
+│   ├── __main__.py      # Entry point (python -m heimdall)
+│   ├── services.json    # Default service definitions database
+│   └── services.sha256  # Integrity verification hash
+├── run.py               # 🚀 Development wrapper script (run without installing)
+├── release.sh           # 🤖 Automated build & release script
+├── setup.py             # Python package configuration (pip/build)
+├── MANIFEST.in          # Package file inclusion rules
+├── debian/              # Debian packaging configuration
+└── README.md
 ```
 
 ## 🛣️ Roadmap (Ideas)
