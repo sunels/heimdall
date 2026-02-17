@@ -9,6 +9,7 @@ import time
 import argparse
 import json
 from datetime import datetime, timedelta
+import unicodedata
 try:
     import psutil
 except ImportError:
@@ -627,6 +628,8 @@ _parse_cache = {"rows": None, "ts": 0.0}
 _witr_cache = {}
 _conn_cache = {}
 _table_row_cache = {}  # New: port -> (preformatted_str, ts)
+_risk_level_cache = {}  # port -> risk keyword ("High", "Critical", etc.)
+_security_audit_cache = {}  # port -> bool (has security warnings)
 
 # NEW: snapshot flag and additional caches for fully eager preload
 SNAPSHOT_MODE = False             # when True, parse_ss_cached returns the snapshot and no heavy calls during scroll
@@ -987,6 +990,15 @@ def splash_screen(stdscr, rows, cache):
                 _runtime_cache[pid] = detect_runtime_type(pid)
         except Exception:
             pass
+
+        # Compute risk level from services.json
+        risk_lvl = get_risk_level(prog_name, port)
+        _risk_level_cache[str(port)] = risk_lvl
+
+        # Security audit check (uses cached user from above)
+        cached_user = cache.get(port, {}).get("user", "-")
+        pid_val = row[4] if len(row) > 4 else "-"
+        _security_audit_cache[str(port)] = check_security_audit(pid_val, cached_user)
 
         cache[port]["preloaded"] = True
 
@@ -1709,6 +1721,64 @@ def get_service_info(process_name, port=None):
         "risk": "Unknown",
         "recommendation": "Investigate the process and port usage manually."
     }
+
+def get_risk_level(process_name, port=None):
+    """Extract the risk level keyword from service info (High, Critical, Medium, etc.)."""
+    svc = get_service_info(process_name, port)
+    risk_str = svc.get('risk', 'Unknown')
+    # The risk string starts with the level keyword, e.g. "High - ..."
+    level = risk_str.split(' ')[0].rstrip(' -') if risk_str else 'Unknown'
+    return level
+
+def is_high_risk(risk_level):
+    """Return True if the risk level is considered dangerous (High or Critical)."""
+    return risk_level in ('High', 'Critical')
+
+def check_security_audit(pid, username):
+    """
+    Lightweight security audit check for a process.
+    Returns True if any security warning is detected:
+    - Running as root
+    - Executable deleted (malware suspect)
+    - Working directory in world-writable path (/tmp, /dev/shm)
+    - Listening on public interface (0.0.0.0 / ::)
+    """
+    if username == "root":
+        return True
+    if psutil and pid and pid.isdigit():
+        try:
+            p = psutil.Process(int(pid))
+            if "(deleted)" in p.exe():
+                return True
+            cwd = p.cwd()
+            if any(pat in cwd for pat in ["/tmp", "/dev/shm"]):
+                return True
+            conns = p.connections(kind='inet')
+            for c in conns:
+                if c.status == 'LISTEN' and c.laddr.ip in ['0.0.0.0', '::']:
+                    return True
+        except:
+            pass
+    return False
+
+def compute_risk_for_all_ports(rows, cache=None):
+    """Compute and cache risk levels + security audit for all ports/processes."""
+    global _risk_level_cache, _security_audit_cache
+    _risk_level_cache.clear()
+    _security_audit_cache.clear()
+    for row in rows:
+        port = row[0]
+        prog = row[3] if len(row) > 3 else "-"
+        pid = row[4] if len(row) > 4 else "-"
+        level = get_risk_level(prog, port)
+        _risk_level_cache[str(port)] = level
+        # Security audit: need username
+        username = "-"
+        if cache and port in cache:
+            username = cache[port].get("user", "-")
+        else:
+            username = get_process_user(pid) if pid and pid.isdigit() else "-"
+        _security_audit_cache[str(port)] = check_security_audit(pid, username)
 
 def get_runtime_classification(pid, prog):
     if not pid or not pid.isdigit(): return "Unknown"
@@ -2653,12 +2723,44 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
     is_paused = (get_process_state(pid) == "PAUSED")
     status_tag = "⏸ [PAUSED] " if is_paused else ""
     
+    # 🚩 Risk level flag from services.json (High/Critical)
+    risk_lvl = _risk_level_cache.get(key, None)
+    if risk_lvl is None:
+        risk_lvl = get_risk_level(prog, port)
+        _risk_level_cache[key] = risk_lvl
+    risk_flag = " 🚩" if is_high_risk(risk_lvl) else ""
+    
+    # ⚠️ Security audit warning (root, public exposure, deleted binary, etc.)
+    sec_audit = _security_audit_cache.get(key, None)
+    if sec_audit is None:
+        sec_audit = check_security_audit(pid, user)
+        _security_audit_cache[key] = sec_audit
+    sec_warn = " ⚠️" if sec_audit else ""
+    
+    # Combine icons after process name
+    alert_icons = f"{risk_flag}{sec_warn}"
+    
     # Preformat with widths (adjust to table widths)
     widths = [10, 8, 18, 28, w - 68]  # same as headers
-    data = [f"{fw_icon} {port}", proto.upper(), usage, f"{status_tag}{proc_icon} {prog}", f"👤 {user}"]
+    data = [f"{fw_icon} {port}", proto.upper(), usage, f"{status_tag}{proc_icon} {prog}{alert_icons}", f"👤 {user}"]
+    
+    def pad_visual(text, width):
+        """Pad string accounting for double-width characters/emojis."""
+        vis_len = 0
+        for char in text:
+            # Zero-width check first (Marks, Enclosing marks, Format characters like ZWJ/VS)
+            if unicodedata.category(char) in ('Mn', 'Me', 'Cf'):
+                continue
+            # Double-width check
+            if unicodedata.east_asian_width(char) in ('W', 'F') or char in ('⚡', '⛔', '👑', '🧑', '🚩', '⚠️', '⏸', '🔗'):
+                vis_len += 2
+            else:
+                vis_len += 1
+        return text + " " * max(0, width - vis_len)
+
     row_str = ""
     for val, wd in zip(data, widths):
-        row_str += val.ljust(wd)
+        row_str += pad_visual(val, wd)
     _table_row_cache[key] = (row_str, now)
     return row_str
 
@@ -4494,6 +4596,8 @@ def main(stdscr):
                 _witr_cache.clear()
                 _conn_cache.clear()
                 cache.clear()
+                _risk_level_cache.clear()
+                _security_audit_cache.clear()
             
             _parse_cache.clear()
             _table_row_cache.clear()
@@ -4502,6 +4606,10 @@ def main(stdscr):
             rows = parse_ss() 
             if is_full:
                 splash_screen(stdscr, rows, cache)
+                # risk levels are re-populated inside splash_screen per-port
+            else:
+                # For list-only refresh, recompute risk levels without full splash
+                compute_risk_for_all_ports(rows, cache)
             
             SNAPSHOT_MODE = old_mode
             
@@ -4544,9 +4652,10 @@ def main(stdscr):
                 # force real refresh and clear caches
                 rows = parse_ss()
                 _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
-                _table_row_cache.clear()
+                _table_row_cache.clear(); _risk_level_cache.clear(); _security_audit_cache.clear()
                 cache.clear()
                 splash_screen(stdscr, rows, cache)
+                # risk levels are re-populated inside splash_screen per-port
                 if selected>=len(rows):
                     selected = len(rows)-1
                 offset=0
