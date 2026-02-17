@@ -219,30 +219,33 @@ sudo apt update && sudo apt install -f
 ### 🐍 Option 3: Python / Pip
 *For Python users.*
  
-Install via pip (ensure `witr` is installed separately):
+Download the `.whl` package from [**Releases**](https://github.com/sunels/heimdall/releases) and install:
  
 ```bash
-pip3 install heimdall
+# Install the downloaded wheel file
+pip3 install heimdall-0.6.0-py3-none-any.whl
+ 
 # Run
 sudo heimdall
 ```
+*(Note: Requires `witr` installed separately)*
  
 ---
  
 ### 🛠️ Option 4: Development (Source)
 *For contributors.*
  
-Clone the repo and run without installing:
+Clone the repo and prepare the environment:
  
 ```bash
 git clone https://github.com/sunels/heimdall.git
 cd heimdall
  
+# Install dependencies (psutil, etc.) in editable mode
+pip3 install -e .
+
 # Run directly using the wrapper script:
 sudo python3 run.py
- 
-# Or install in editable mode:
-pip3 install -e .
 ```
 
 ## 🛠 Action Center (Interactive Operations)
