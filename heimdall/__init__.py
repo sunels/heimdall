@@ -1004,7 +1004,7 @@ def splash_screen(stdscr, rows, cache):
         # Security audit check (uses cached user from above)
         cached_user = cache.get(port, {}).get("user", "-")
         pid_val = row[4] if len(row) > 4 else "-"
-        _security_audit_cache[str(port)] = check_security_audit(pid_val, cached_user)
+        _security_audit_cache[str(port)] = perform_security_heuristics(pid_val, port, prog_name, cached_user)
 
         cache[port]["preloaded"] = True
 
@@ -1847,32 +1847,100 @@ def is_high_risk(risk_level):
     """Return True if the risk level is considered dangerous (High or Critical)."""
     return risk_level in ('High', 'Critical')
 
-def check_security_audit(pid, username):
+def perform_security_heuristics(pid, port, prog, username):
     """
-    Lightweight security audit check for a process.
-    Returns True if any security warning is detected:
-    - Running as root
-    - Executable deleted (malware suspect)
-    - Working directory in world-writable path (/tmp, /dev/shm)
-    - Listening on public interface (0.0.0.0 / ::)
+    Heimdall Sentinel: Behavioral Security Heuristics.
+    Analyzes process metadata, command line, and lineage to detect anomalies.
+    Returns a list of finding dicts: {"level": "...", "msg": "...", "icon": "..."}
     """
+    findings = []
+    
+    # 1. Basic Privilege Check
     if username == "root":
-        return True
+        findings.append({"level": "MEDIUM", "msg": "Process running as ROOT", "icon": "🛡️"})
+    
     if psutil and pid and pid.isdigit():
         try:
             p = psutil.Process(int(pid))
-            if "(deleted)" in p.exe():
-                return True
+            exe = p.exe()
+            raw_cmd = p.cmdline()
+            cmdline = " ".join(raw_cmd).lower()
             cwd = p.cwd()
-            if any(pat in cwd for pat in ["/tmp", "/dev/shm"]):
-                return True
+            
+            # 2. Executable integrity (Malware often deletes itself)
+            if "(deleted)" in exe:
+                findings.append({"level": "CRITICAL", "msg": "Executable DELETED - Common malware indicator", "icon": "💀"})
+            
+            # 3. Suspicious Working Directory
+            if any(pat in cwd for pat in ["/tmp", "/dev/shm", "/var/tmp"]):
+                 findings.append({"level": "HIGH", "msg": f"Suspicious CWD: {cwd} (World-writable)", "icon": "📂"})
+            
+            # 4. Network Exposure Check
             conns = p.connections(kind='inet')
+            is_public = False
             for c in conns:
-                if c.status == 'LISTEN' and c.laddr.ip in ['0.0.0.0', '::']:
-                    return True
-        except:
-            pass
-    return False
+                if c.status == 'LISTEN' and c.laddr.ip in ['0.0.0.0', '::', '0:0:0:0:0:0:0:0']:
+                    is_public = True
+                    break
+            if is_public:
+                 findings.append({"level": "MEDIUM", "msg": "Listening on PUBLIC interface (0.0.0.0/::)", "icon": "🌐"})
+
+            # --- BEHAVIORAL HEURISTICS (THE BRAIN) ---
+            
+            # 5. Tool-as-a-Backdoor (Netcat, Socat, etc)
+            # These tools are almost never used for legitimate persistent listeners in production.
+            tools = ["nc", "ncat", "netcat", "socat"]
+            if any(t in prog.lower() for t in tools):
+                # Check if it's actually in listen mode via args
+                if any(x in cmdline for x in ["-l", "-p", "listen"]):
+                     findings.append({
+                         "level": "CRITICAL", 
+                         "msg": f"BACKDOOR PATTERN: {prog} tool is actively listening for connections!", 
+                         "icon": "☢️"
+                     })
+            
+            # 6. Interpreter-Bound Listeners (Python, Bash, Node, etc)
+            # Melegitimated servers have a specific binary. Interpreters listening on ports
+            # are usually ad-hoc scripts or reverse shells.
+            interpreters = ["python", "python3", "perl", "ruby", "node", "bash", "sh", "zsh"]
+            if any(i == prog.lower() for i in interpreters):
+                # We skip known dev tools like 'npm' or common dev-server markers
+                if not any(dev in cmdline for dev in ["react", "webpack", "vite", "ng "]):
+                    findings.append({
+                        "level": "HIGH", 
+                        "msg": f"INTERPRETER BOUND: {prog} script is listening - Potential 'Reverse Shell' or unofficial server.", 
+                        "icon": "🧪"
+                    })
+            
+            # 7. Masquerading (Evil process using an innocent name)
+            # If a process is named 'ls' or 'date' but is listening on a port, it's 100% evil.
+            common_tools = ["ls", "ps", "date", "cat", "top", "find", "cp", "mv"]
+            if prog.lower() in common_tools:
+                findings.append({
+                    "level": "CRITICAL", 
+                    "msg": f"SECURITY ALERT: Binary named '{prog}' is actually a Network Listener! (Masquerading)", 
+                    "icon": "🎭"
+                })
+            
+            # 8. Lineage Anomaly
+            # Legitimate services usually live under systemd (PID 1). 
+            # Transient backdoors often live under a shell or a user process tree.
+            tree = get_process_parent_chain(pid)
+            tree_str = " ".join(tree).lower()
+            if any(shell in tree_str for shell in ["bash", "sh", "zsh", "ssh", "terminator"]):
+                # If it's listening and has a shell ancestor, but it's not a known dev tool
+                # (This is a lower-confidence flag but useful for scoring)
+                trusted_paths = ["systemd", "dockerd", "containerd", "init", "sshd"]
+                if not any(tp in tree_str for tp in trusted_paths):
+                    findings.append({
+                        "level": "MEDIUM", 
+                        "msg": "Suspicious lineage: Process spawned from a shell/terminal instead of systemd.", 
+                        "icon": "🌲"
+                    })
+
+        except: pass
+    
+    return findings
 
 def compute_risk_for_all_ports(rows, cache=None):
     """Compute and cache risk levels + security audit for all ports/processes."""
@@ -1889,13 +1957,15 @@ def compute_risk_for_all_ports(rows, cache=None):
         level = info.get("risk", "Unknown")
         _risk_level_cache[str(port)] = level
         
-        # Security audit: need username
+        # Security audit: use behavioral heuristics (Heimdall Sentinel)
         username = "-"
         if cache and port in cache:
             username = cache[port].get("user", "-")
         else:
             username = get_process_user(pid) if pid and pid.isdigit() else "-"
-        _security_audit_cache[str(port)] = check_security_audit(pid, username)
+        
+        # Store full findings list
+        _security_audit_cache[str(port)] = perform_security_heuristics(pid, port, prog, username)
 
 def get_runtime_classification(pid, prog):
     if not pid or not pid.isdigit(): return "Unknown"
@@ -1943,30 +2013,16 @@ def build_inspect_content(pid, port, prog, username):
     lines.append(("", CP_TEXT))
 
     # 2. Security Audit (MOVED TO TOP)
-    lines.append(("⚠️ SECURITY AUDIT", CP_ACCENT))
-    risks = []
-    if username == "root":
-        risks.append(("[!] PRIVILEGE: Running as ROOT", CP_WARN))
-    if psutil and pid.isdigit():
-        try:
-            p = psutil.Process(int(pid))
-            if "(deleted)" in p.exe():
-                risks.append(("[!!!] DANGER: Executable deleted/malware suspect", CP_WARN))
-            cwd = p.cwd()
-            if any(pat in cwd for pat in ["/tmp", "/dev/shm"]):
-                risks.append(("[!] SUSPICIOUS: Working in world-writable DIR", CP_WARN))
-            conns = p.connections(kind='inet')
-            for c in conns:
-                if c.status == 'LISTEN' and c.laddr.ip in ['0.0.0.0', '::']:
-                    risks.append(("[!] EXPOSURE: Listening on PUBLIC interface", CP_WARN))
-                    break
-        except: pass
+    lines.append(("⚠️ SECURITY AUDIT (SENTINEL)", CP_ACCENT))
+    
+    findings = perform_security_heuristics(pid, port, prog, username)
         
-    if not risks:
+    if not findings:
         lines.append(("  ✅ No critical security indicators detected.", CP_TEXT))
     else:
-        for r_txt, r_cp in risks:
-            lines.append((f"  {r_txt}", r_cp))
+        for f in findings:
+            color = CP_WARN if f['level'] in ['HIGH', 'CRITICAL'] else CP_TEXT
+            lines.append((f"  {f['icon']} {f['level']}: {f['msg']}", color))
 
     lines.append(("", CP_TEXT))
 
@@ -2031,7 +2087,17 @@ def build_inspect_content(pid, port, prog, username):
     lines.append((f"  OOM Score Adj   : {oom_val}", CP_TEXT))
     lines.append(("", CP_TEXT))
 
-    # 8. Connection Visibility
+    lines.append(("", CP_TEXT))
+
+    # 9. Sentinel Legend (Footer)
+    lines.append(("🛡️ SENTINEL ICON LEGEND", CP_ACCENT))
+    lines.append(("  ☢️ Backdoor  🧪 Script Listener  🎭 Masquerade", CP_TEXT))
+    lines.append(("  💀 Deleted Bin  📂 Suspicious Dir  🌐 Public IP", CP_TEXT))
+    lines.append(("  🛡️ Root Privilege  🌲 Shell Lineage", CP_TEXT))
+    
+    lines.append(("", CP_TEXT))
+
+    # 10. Connection Visibility
     lines.append(("🌐 CONNECTION VISIBILITY", CP_ACCENT))
     c_info = get_connections_info_cached(port)
     lines.append((f"  Active Conn     : {c_info.get('active_connections', 0)}", CP_TEXT))
@@ -2853,12 +2919,23 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
         _risk_level_cache[key] = risk_lvl
     risk_flag = " 🚩" if is_high_risk(risk_lvl) else ""
     
-    # ⚠️ Security audit warning (root, public exposure, deleted binary, etc.)
-    sec_audit = _security_audit_cache.get(key, None)
-    if sec_audit is None:
-        sec_audit = check_security_audit(pid, user)
-        _security_audit_cache[key] = sec_audit
-    sec_warn = " ⚠️" if sec_audit else ""
+    # 🛡️ Security audit warning (Heimdall Sentinel)
+    findings = _security_audit_cache.get(key, None)
+    if findings is None:
+        findings = perform_security_heuristics(pid, port, prog, user)
+        _security_audit_cache[key] = findings
+    
+    sec_warn = ""
+    if findings:
+        # Show most critical icon first
+        findings_sorted = sorted(findings, key=lambda x: {"CRITICAL":0, "HIGH":1, "MEDIUM":2}.get(x['level'], 9))
+        best_finding = findings_sorted[0]
+        
+        # Avoid twin icons: if it's just the root shield and we already have proc_icon='👑', hide it
+        if proc_icon == "👑" and best_finding['icon'] == "🛡️" and len(findings) == 1:
+            sec_warn = ""
+        else:
+            sec_warn = f" {best_finding['icon']}"
     
     # Combine icons after process name
     alert_icons = f"{risk_flag}{sec_warn}"
@@ -2875,7 +2952,9 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
             if unicodedata.category(char) in ('Mn', 'Me', 'Cf'):
                 continue
             # Double-width check
-            if unicodedata.east_asian_width(char) in ('W', 'F') or char in ('⚡', '⛔', '👑', '🧑', '🚩', '⚠️', '⏸', '🔗'):
+            # Added more sentinel icons to the double-width list
+            if (unicodedata.east_asian_width(char) in ('W', 'F') or 
+                char in ('⚡', '⛔', '👑', '🧑', '🚩', '⚠️', '⏸', '🔗', '💀', '☢️', '🧪', '🎭', '🌲', '🌐', '🛡️', '📝', '🎨', '⚙️', '🔍', '📂', '🎯')):
                 vis_len += 2
             else:
                 vis_len += 1
@@ -4406,13 +4485,52 @@ def generate_full_system_dump(stdscr, rows, cache):
         win = None
         show_message(stdscr, "⏳ Generating dump... Please wait.")
         curses.doupdate()
-
     try:
         with open(filename, "w", encoding="utf-8") as f:
             f.write("╔══════════════════════════════════════════════════════════════════════════════╗\n")
             f.write("║                 HEIMDALL FULL SYSTEM INSPECTION REPORT                       ║\n")
             f.write(f"║ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                                            ║\n")
             f.write("╚══════════════════════════════════════════════════════════════════════════════╝\n\n")
+
+            f.write("🛡️  HEIMDALL SENTINEL: SECURITY EXECUTIVE SUMMARY\n")
+            f.write("=" * 48 + "\n")
+            f.write("Legend: ☢️ Backdoor | 🧪 Interpreter | 🎭 Masquerade | 💀 Deleted\n")
+            f.write("        📂 CWD Risk | 🌐 Public IP  | 🛡️ Root Priv   | 🌲 Lineage\n")
+            f.write("-" * 48 + "\n")
+            
+            all_findings = []
+            for row in rows:
+                p, _, _, prog_name, p_id = row
+                # Use current process user for the summary scan
+                p_user = get_process_user(p_id) if (p_id and p_id.isdigit()) else "-"
+                findings = perform_security_heuristics(p_id, p, prog_name, p_user)
+                if findings:
+                    for find in findings:
+                        all_findings.append((p, prog_name, find))
+            
+            if not all_findings:
+                f.write("  ✅ No high-priority security threats detected across active services.\n")
+            else:
+                # Filter specifically for High/Critical to keep summary clean
+                threats = [x for x in all_findings if x[2]['level'] in ['HIGH', 'CRITICAL']]
+                
+                if not threats:
+                    f.write("  ✅ No critical threats found (Some minor warnings exist in details).\n")
+                else:
+                    crit = [x for x in threats if x[2]['level'] == 'CRITICAL']
+                    hi = [x for x in threats if x[2]['level'] == 'HIGH']
+                    
+                    if crit:
+                        f.write(f"  🛑 CRITICAL THREATS FOUND ({len(crit)}):\n")
+                        for p, pr, fi in crit:
+                             f.write(f"     - [Port {p}] {pr}: {fi['msg']}\n")
+                    
+                    if hi:
+                        f.write(f"  ☢️  HIGH RISKS DETECTED ({len(hi)}):\n")
+                        for p, pr, fi in hi:
+                             f.write(f"     - [Port {p}] {pr}: {fi['msg']}\n")
+            
+            f.write("\n")
             f.write(f"Total Active Ports/Services: {len(rows)}\n")
             f.write("=" * 80 + "\n\n")
 
@@ -4506,6 +4624,13 @@ def generate_full_system_dump(stdscr, rows, cache):
                 # ── Process Reality Check ──
                 if pid and pid.isdigit():
                     f.write("   🔥 Process Reality Check:\n")
+                    
+                    # Sentinel Findings
+                    findings = perform_security_heuristics(pid, port, prog, user)
+                    if findings:
+                        f.write("     🛡️ SENTINEL AUDIT:\n")
+                        for find in findings:
+                            f.write(f"       [{find['level']}] {find['msg']}\n")
                     # Cmdline
                     cmd = get_full_cmdline(pid)
                     f.write(f"     Command: {cmd}\n")

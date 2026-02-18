@@ -29,9 +29,9 @@
 - 📡 **Live Auto-Scan**: Periodic background refresh of the port list (adjustable speed).
 - 📸 **Full System Dump (d)**: Comprehensive text report of all active services, including logs, process trees, and resource limits.
 - 📦 **Local Package Intelligence**: Automatic fallback to local package managers (dpkg/rpm) for rich service details when other sources fail.
-- 🛡️ **Risk Assessment & Security Audit**:
+- 🛡️ **Heimdall Sentinel (Security Audit)**:
   - 🚩 **Risk Level**: Flags known high-risk services (e.g., FTP, Telnet) based on a built-in vulnerability database.
-  - ⚠️ **Security Audit**: Real-time alerts for dangerous configurations (Running as ROOT, Public exposure, Empty passwords, etc.).
+  - ☢️ **Behavioral Analysis**: Real-time alerts for Backdoors, Masquerading, Script Listeners, and other anomalies.
 - 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
 - ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
 - 🔍 **Interactive System Filter (F)**: Real-time filtering by Port, PID, or User directly from the TUI.
@@ -122,6 +122,16 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ### 🔍 Interactive System Filter — Real-time TUI Filtering
 <img src="screenshots/pp-10.png" alt="heimdall system filter" width="100%"/>
+
+---
+
+### 🛡️ Heimdall Sentinel — Behavioral Security Intelligence
+<img src="screenshots/pp-11.png" alt="heimdall sentinel analysis" width="100%"/>
+
+---
+
+### 🛡️ Sentinel Deep Audit — Intelligent Risk Scoring
+<img src="screenshots/pp-12.png" alt="heimdall sentinel detailed audit" width="100%"/>
 
 ---
 
@@ -341,7 +351,7 @@ Invoked from Action Center via `[b]`:
   2. Manual entry: press `m` to start manual input, type the IP (digits, `.` for IPv4, `:` and hex for IPv6 allowed), Backspace supported, press `x` to execute.
 - Validation:
   - Uses Python's `ipaddress` module for final validation before applying rules.
-  - Textual length limits applied (reasonable max for IPv4/IPv6) to reject obviously invalid submissions.
+  - Textual length limits applied (reasonble max for IPv4/IPv6) to reject obviously invalid submissions.
 - Execution:
   - Blocks via iptables (sudo) using a DROP rule limited to the selected port.
   - The UI updates a local cache of blocked IPs and shows that list inside the modal under "⛔ Blocked IPs".
@@ -408,8 +418,22 @@ Invoked from Main View via `[F]`:
   - Press `[c]` to clear all active filters instantly.
 - **Status Indicator**: When filters are active, a "🔍 Filter: ..." status line appears above the help bar in the main view.
 
+## 🛡️ Heimdall Sentinel — details
 
+Heimdall Sentinel is a **behavioral heuristic engine** that goes beyond simple process listing. It analyzes process metadata, command-line arguments, working directories, and process lineage to detect anomalies that traditional tools miss.
 
+### Key Behavioral Detections:
+- **☢️ Backdoor Patterns**: Detects Netcat (`nc`), `socat`, and other tools when they are used as active network listeners (e.g., `nc -l`).
+- **🧪 Interpreter Bound**: Flags scripting languages (`python`, `bash`, `node`, `perl`) that are listening on ports without a known development context (Potential Reverse Shells).
+- **🎭 Masquerading**: Identifies malicious processes that use innocent names (like `ls`, `ps`, or `date`) but are actually network services.
+- **💀 Integrity Alerts**: Flags processes running from executables that have been deleted from the disk (a common malware persistence technique).
+- **🌲 Lineage Analysis**: Detects suspicious process trees, such as network listeners spawned directly from a user shell instead of a proper system supervisor like `systemd`.
+- **📂 Path & Privilege**: Alerts on processes running from world-writable directories (`/tmp`) or possessing unnecessary root privileges.
+
+### Sentinel Intelligence Locations:
+1. **Main View**: Visual icons (`☢️`, `💀`, `🧪`) appear next to process names for instant triage.
+2. **Deep Inspection (i)**: Shows a prioritized list of security findings with human-readable explanations.
+3. **Full System Dump (d)**: Includes a **Security Executive Summary** at the top of the report, grouping all critical threats for quick review.
 ## UI / Implementation notes
 
 - Modal sizing is responsive to terminal size and has been widened to reduce text wrapping compared to earlier versions.
@@ -426,18 +450,23 @@ Invoked from Main View via `[F]`:
 
 ---
 
----
- 
 ## 🛡️ Risk & Security Indicators
  
-Heimdall now proactively flags potential security issues directly in the main view:
+Heimdall now proactively flags potential security issues directly in the main view using the **Sentinel Heuristic Engine**:
+ 
+| Icon | Level | Meaning | Description |
+|------|-------|---------|-------------|
+| 🚩 | **DB** | **High Risk Service** | Known risky service (e.g., `FTP`, `Telnet`, `Redis`) from building-in database. |
+| ☢️ | **CRIT** | **Backdoor Pattern** | `nc`, `socat` or similar tools actively waiting for inbound connections. |
+| 🎭 | **CRIT** | **Masquerading** | Binary named like a common tool (`ls`, `ps`, `date`) but acting as a network listener. |
+| 💀 | **CRIT** | **Deleted Binary** | The process is running from a deleted executable (Common malware behavior). |
+| 🧪 | **HIGH** | **Script Listener** | An interpreter (`python`, `bash`, `node`) is listening without a known dev context. |
+| 📂 | **HIGH** | **Suspicious CWD** | Process is working from world-writable directories like `/tmp` or `/dev/shm`. |
+| 🌐 | **MED** | **Public Exposure** | Service is listening on `0.0.0.0` or `::` (Public) instead of localhost. |
+| 🛡️ | **MED** | **Root Privilege** | Process belongs to the root user (Surface area risk). |
+| 🌲 | **MED** | **Shell Lineage** | Process was spawned from a shell/terminal instead of a proper system service. |
 
-| Icon | Meaning | Description |
-|------|---------|-------------|
-| 🚩 | **High Risk Service** | The service is inherently risky (e.g., `vsftpd`, `telnet`, `redis` without auth) based on `services.json` definitions. |
-| ⚠️ | **Security Warning** | A runtime security issue was detected during audit. Examples: <br>• Process running as **ROOT** <br>• Listening on **0.0.0.0** (Public) <br>• Executable **deleted** (malware indicator) <br>• Working directory is world-writable (`/tmp`) |
-
-*Example:* `👑 redis-server 🚩 ⚠️` means the service is High Risk AND has a runtime setup warning (likely running as root).
+*Example:* `👑 nc ☢️` means a Netcat process is running as root and has been flagged as a potential Backdoor.
  
 ---
  
@@ -490,6 +519,8 @@ MIT License
 ## 👤 Author
 
 **Serkan Sunel**
+
+---
 
 ---
 
