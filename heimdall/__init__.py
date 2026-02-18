@@ -957,17 +957,18 @@ def splash_screen(stdscr, rows, cache):
 
         # --- Preload data per port ---
         prog_name = row[3] if len(row) > 3 else "-"
+        pid = row[4] if len(row) > 4 else "-"
+        
         try:
             lines = get_witr_output(port)
             _witr_cache[str(port)] = (lines, time.time())
             user = extract_user_from_witr(lines)
             # Fallback: if witr didn't provide user, resolve from PID
             if user == "-":
-                pid_val = row[4] if len(row) > 4 else "-"
-                user = get_process_user(pid_val)
+                user = get_process_user(pid)
             process = extract_process_from_witr(lines)
             detail_width = w - 4
-            wrapped_icon_lines = prepare_witr_content(lines, detail_width, prog=prog_name, port=port)
+            wrapped_icon_lines = prepare_witr_content(lines, detail_width, prog=prog_name, port=port, pid=pid)
             cache[port] = {
                 "user": user,
                 "process": process,
@@ -977,7 +978,7 @@ def splash_screen(stdscr, rows, cache):
             }
         except Exception:
             detail_width = w - 4
-            fallback_lines = prepare_witr_content(["No data"], detail_width, prog=prog_name, port=port)
+            fallback_lines = prepare_witr_content(["No data"], detail_width, prog=prog_name, port=port, pid=pid)
             cache[port] = {"user": "-", "process": "-", "lines": ["No data"], "wrapped_icon_lines": fallback_lines}
 
         try:
@@ -987,7 +988,6 @@ def splash_screen(stdscr, rows, cache):
             _conn_cache[str(port)] = ({"active_connections": 0, "top_ip": "-", "top_ip_count": 0, "all_ips": Counter()}, time.time())
 
         try:
-            pid = row[4] if len(row) > 4 else "-"
             if pid and pid.isdigit():
                 _proc_usage_cache[pid] = (get_process_usage(pid), time.time())
                 _open_files_cache[pid] = (get_open_files(pid), time.time())
@@ -1030,19 +1030,83 @@ def splash_screen(stdscr, rows, cache):
     global SNAPSHOT_MODE
     SNAPSHOT_MODE = True
 
-def prepare_witr_content(lines, width, prog=None, port=None):
-    # If witr returned nothing useful, generate fallback from services.json
-    if (not lines or lines == ["No data"]) and (prog or port):
-        return _generate_service_fallback(prog, port, width)
+def resolve_service_knowledge(prog, port, pid=None):
+    """
+    Unified resolver: merges system intelligence and curated DB.
+    Priority:
+    1. Curated Database (services.json) for Name/Desc/Risk/Rec (User-Friendly)
+    2. System Discovery (systemctl, dpkg, rpm, snap) for Name/Desc/Version
+    """
+    # 1. Start with Curated Database
+    # This is where the "User Friendly" names like "Very Secure FTP Daemon" live.
+    info = get_service_info(prog, port)
+    is_known = (info.get("name") != "Unknown")
+    
+    # 2. Get Live System Metadata
+    system_info = get_local_package_info(prog, pid=pid) if (prog or pid) else None
+    
+    if system_info:
+        # 3. If Curated DB has no info, use System Info as fallback for name/description
+        if not is_known:
+            if system_info.get("name"):
+                info["name"] = system_info["name"]
+            if system_info.get("description"):
+                info["description"] = system_info["description"]
+            is_known = (info.get("name") != "Unknown")
+        
+        # 4. BRIDGE: If still unknown or even if known by generic process name,
+        # lookup curated DB by the PACKAGE name revealed by the system.
+        if system_info.get("package"):
+            pkg_curated = get_service_info(system_info["package"], None)
+            if pkg_curated.get("name") != "Unknown":
+                # We found knowledge by package name!
+                # Prioritize this curated info as it's specifically written for Heimdall.
+                for field in ["name", "description", "risk", "recommendation", "typical_user"]:
+                    if pkg_curated.get(field):
+                        info[field] = pkg_curated[field]
+                is_known = True
+
+        # 5. Add technical metadata from system (never overrides Identity/Scope)
+        for f in ["version", "package", "homepage", "maintainer", "installed_size", "source"]:
+            if system_info.get(f):
+                info[f] = system_info[f]
+    
+    # 6. Special Case: 'master' is almost always Postfix
+    if not is_known and prog == "master":
+         postfix_info = get_service_info("postfix", None)
+         if postfix_info.get("name") != "Unknown":
+             info.update(postfix_info)
+             is_known = True
+
+    # 7. Final cosmetic fallback
+    if info.get("name") == "Unknown" and prog:
+        info["name"] = prog.replace("-", " ").title()
+        
+    return info, is_known
+
+def prepare_witr_content(lines, width, prog=None, port=None, pid=None):
+    """Wraps witr output lines, adds icons, and supplements with knowledge."""
+    # Ensure lines is a list
+    if not lines: lines = []
+    
+    # Resolve knowledge base info
+    info, is_unknown = resolve_service_knowledge(prog, port, pid=pid)
+    
+    # If witr returned nothing, use full fallback
+    if lines == ["No data"] or not lines:
+        return _generate_service_fallback(prog, port, width, pid=pid)
 
     lines = annotate_warnings(lines)
     wrapped = []
+    
+    # Icon variants
     icons = {
         "Target": "🎯",
         "Container": "🐳",
         "Command": "🧠",
         "Started": "⏱ ",
-        "Why it Exists!": "🔍",
+        "Why It Exists": "🔍",
+        "Why it Exists": "🔍",
         "Source": "📦",
         "Working Dir": "🗂 ",
         "Listening": "👂",
@@ -1052,123 +1116,113 @@ def prepare_witr_content(lines, width, prog=None, port=None):
         "User": "👤",
         "Process": "🧠"
     }
+
+    # PRE-EXTRACT identity lines from witr for priority display
+    identity_lines = []
+    other_lines = []
     for line in lines:
-        # Icon replacement is only performed once
+        if any(x in line for x in ["Target", "Process", "User", "Command"]):
+            identity_lines.append(line)
+        else:
+            other_lines.append(line)
+
+    # 1. Identity Section
+    for line in identity_lines:
         for key, icon in icons.items():
             if key in line and not line.strip().startswith(icon):
                 line = line.replace(key, f"{icon} {key}", 1)
         wrapped.extend(textwrap.wrap(line, width=width) or [""])
+
+    # 2. HEIMDALL INSIGHTS (Promoted to top for maximum visibility)
+    wrapped.append("")
+    wrapped.append(f"🔍 HEIMDALL INSIGHTS (Service Purpose):")
+    desc = info.get("description", "Purpose not discovered in local package database or Heimdall knowledge base.")
+    for line in textwrap.wrap(f"   {desc}", width=width):
+        wrapped.append(line)
+    
+    if info.get("risk") and info["risk"] != "Unknown":
+        wrapped.append(f"   🚩 Risk Level: {info['risk']}")
+
+    wrapped.append("")
+
+    # 3. All other witr details (Why it exists, connections, etc)
+    for line in other_lines:
+        for key, icon in icons.items():
+            if key in line and not line.strip().startswith(icon):
+                line = line.replace(key, f"{icon} {key}", 1)
+        wrapped.extend(textwrap.wrap(line, width=width) or [""])
+
     return wrapped
 
-def _generate_service_fallback(prog, port, width):
-    """Generate rich detail content when witr has no data.
-    Prioritizes local system intelligence (systemctl, packages) before falling back to services.json."""
+def _generate_service_fallback(prog, port, width, pid=None):
+    """Generate rich detail content when witr has no data."""
     wrapped = []
+    info, is_unknown = resolve_service_knowledge(prog, port, pid=pid)
     
-    # Layer 1: Ask the OS (systemctl, dpkg, rpm, snap, etc)
-    pkg_info = get_local_package_info(prog) if prog else None
+    wrapped.append(f"📦 Service: {info.get('name')}")
+    wrapped.append(f"   Process: {prog or '-'}")
+    wrapped.append(f"   Port: {port or '-'}")
     
-    # Layer 2: Ask the static database
-    svc = get_service_info(prog, port)
-    is_curated_unknown = svc.get("name") == "Unknown"
+    if info.get("version"):
+        wrapped.append(f"   Version: {info['version']}")
+    if info.get("package"):
+        wrapped.append(f"   Package: {info['package']}")
+    wrapped.append("")
 
-    if pkg_info:
-        # We got real data from the local system!
-        wrapped.append(f"📦 {pkg_info.get('name', prog)}")
-        wrapped.append(f"   Process: {prog}")
-        wrapped.append(f"   Port: {port or '-'}")
-        if pkg_info.get("version"):
-            wrapped.append(f"   Version: {pkg_info['version']}")
-        if pkg_info.get("package"):
-            wrapped.append(f"   Package: {pkg_info['package']}")
-        wrapped.append("")
+    wrapped.append("🔍 What is this service?")
+    desc = info.get("description", "No description available.")
+    for line in textwrap.wrap(f"   {desc}", width=width):
+        wrapped.append(line)
+    wrapped.append("")
 
-        wrapped.append("🔍 What is this service?")
-        desc = pkg_info.get("description", "No description available.")
-        for line in textwrap.wrap(f"   {desc}", width=width):
-            wrapped.append(line)
-        wrapped.append("")
-
-        # Merge with curated info if available (to get Risk/Recommendation)
-        if not is_curated_unknown:
-            risk = svc.get("risk", "Unknown")
-            rec = svc.get("recommendation", "No specific recommendation.")
-            
-            wrapped.append("⚠️  Risk Assessment (Curated):")
-            for line in textwrap.wrap(f"   {risk}", width=width):
-                wrapped.append(line)
-            wrapped.append("")
-
-            wrapped.append("🛡️ Recommendation (Curated):")
-            for line in textwrap.wrap(f"   {rec}", width=width):
-                wrapped.append(line)
-            wrapped.append("")
-
-        if pkg_info.get("homepage"):
-            wrapped.append(f"🌐 Homepage: {pkg_info['homepage']}")
-            wrapped.append("")
-
-        source_label = pkg_info.get("source", "Local package manager")
-        wrapped.append(f"ℹ️  Source: {source_label}")
-        wrapped.append("   This information was auto-discovered from your")
-        wrapped.append("   system's installed packages or services.")
-    else:
-        # Fallback to curated info (Layer 2)
-        name = svc.get("name", prog or "Unknown")
-        desc = svc.get("description", "No description available.")
-        risk = svc.get("risk", "Unknown")
-        rec = svc.get("recommendation", "No specific recommendation.")
-        typical_user = svc.get("typical_user", "-")
-        known_ports = svc.get("ports", [])
-        dynamic = svc.get("dynamic_ports", False)
-
-        wrapped.append(f"📦 Service: {name}")
-        wrapped.append(f"   Process: {prog or '-'}")
-        wrapped.append(f"   Port: {port or '-'}")
-        wrapped.append("")
-
-        wrapped.append("🔍 What is this service?")
-        for line in textwrap.wrap(f"   {desc}", width=width):
-            wrapped.append(line)
-        wrapped.append("")
-
+    # Typical user for curated services
+    typical_user = info.get("typical_user", "-")
+    if typical_user != "-":
         wrapped.append(f"👤 Typical User: {typical_user}")
-        port_str = ", ".join(str(p) for p in known_ports) if known_ports else "Dynamic"
-        if dynamic:
-            port_str += " + dynamic high ports"
+
+    # Port info
+    known_ports = info.get("ports", [])
+    if known_ports:
+        port_str = ", ".join(str(p) for p in known_ports)
+        if info.get("dynamic_ports"):
+            port_str += " + dynamic"
         wrapped.append(f"🔌 Known Ports: {port_str}")
         wrapped.append("")
 
-        wrapped.append("⚠️  Risk Assessment:")
-        for line in textwrap.wrap(f"   {risk}", width=width):
-            wrapped.append(line)
-        wrapped.append("")
+    # Risk and Recommendation
+    risk = info.get("risk", "Unknown")
+    rec = info.get("recommendation", "No specific recommendation.")
+    
+    wrapped.append("⚠️  Risk Assessment:")
+    for line in textwrap.wrap(f"   {risk}", width=width):
+        wrapped.append(line)
+    wrapped.append("")
 
-        wrapped.append("🛡️ Recommendation:")
-        for line in textwrap.wrap(f"   {rec}", width=width):
-            wrapped.append(line)
-        wrapped.append("")
+    wrapped.append("🛡️ Recommendation:")
+    for line in textwrap.wrap(f"   {rec}", width=width):
+        wrapped.append(line)
+    wrapped.append("")
 
-        if is_curated_unknown:
-            wrapped.append("ℹ️  This process is not in the Heimdall knowledge")
-            wrapped.append("   base and no local package info was found.")
-            wrapped.append("   Consider investigating manually.")
-        else:
-            wrapped.append("ℹ️  Source: Heimdall service knowledge base")
+    # Source Attribution
+    source = info.get("source", "Heimdall service knowledge base")
+    wrapped.append(f"ℹ️  Source: {source}")
+    if is_unknown and not info.get("source"):
+        wrapped.append("   Consider investigating manually.")
 
     return wrapped
 
 # ── Layer 2: Local System Intelligence ──────────────────────────────
 _pkg_info_cache = {}
 
-def get_local_package_info(prog):
+def get_local_package_info(prog, pid=None):
     """
     Query the local package manager (dpkg/rpm) to discover information
     about a running process. Zero internet, zero API keys required.
     Results are cached for the session.
     """
-    if prog in _pkg_info_cache:
-        return _pkg_info_cache[prog]
+    cache_key = f"{prog}_{pid}" if pid else prog
+    if cache_key in _pkg_info_cache:
+        return _pkg_info_cache[cache_key]
 
     info = None
     # Strategy 0: Try systemd description (fastest and most direct for services)
@@ -1180,7 +1234,7 @@ def get_local_package_info(prog):
 
     # Strategy 2: Find binary path and reverse-lookup package
     if not info:
-        binary_path = _find_binary_path(prog)
+        binary_path = _find_binary_path(prog, pid=pid)
         if binary_path:
             pkg_name = _dpkg_search_file(binary_path)
             if pkg_name:
@@ -1202,7 +1256,7 @@ def get_local_package_info(prog):
     if not info:
         info = _try_desktop_file(prog)
 
-    _pkg_info_cache[prog] = info
+    _pkg_info_cache[cache_key] = info
     return info
 
 def _try_systemd(prog):
@@ -1227,13 +1281,30 @@ def _try_systemd(prog):
         pass
     return None
 
-def _find_binary_path(prog):
-    """Find the actual binary path of a process via 'which' or /proc."""
+def _find_binary_path(prog, pid=None):
+    """Find the actual binary path of a process via /proc or 'which'."""
+    # Priority 1: /proc/[pid]/exe is the most reliable way to find the actual binary
+    if pid:
+        try:
+            proc_exe = f"/proc/{pid}/exe"
+            if os.path.exists(proc_exe):
+                return os.path.realpath(proc_exe)
+        except Exception:
+            pass
+
+    # Priority 2: Use psutil if available
+    if psutil and pid:
+        try:
+            p = psutil.Process(int(pid))
+            return os.path.realpath(p.exe())
+        except Exception:
+            pass
+
+    # Priority 3: 'which' (only works if in PATH)
     try:
         res = subprocess.run(["which", prog], capture_output=True, text=True, timeout=1)
         path = res.stdout.strip()
         if path and os.path.exists(path):
-            # Resolve symlinks to find the real package
             return os.path.realpath(path)
     except Exception:
         pass
@@ -1812,8 +1883,12 @@ def compute_risk_for_all_ports(rows, cache=None):
         port = row[0]
         prog = row[3] if len(row) > 3 else "-"
         pid = row[4] if len(row) > 4 else "-"
-        level = get_risk_level(prog, port)
+        
+        # Use full resolver to get accurate risk (handles package-bridge lookups)
+        info, _ = resolve_service_knowledge(prog, port, pid=pid)
+        level = info.get("risk", "Unknown")
         _risk_level_cache[str(port)] = level
+        
         # Security audit: need username
         username = "-"
         if cache and port in cache:
@@ -1846,29 +1921,21 @@ def build_inspect_content(pid, port, prog, username):
     # 1. Service Knowledge (MOVED TO TOP)
     lines.append(("📚 SERVICE KNOWLEDGE", CP_ACCENT))
     
-    # NEW PRIORITY: System Intelligence -> Curated Database
-    sys_info = get_local_package_info(prog) if prog else None
-    curated_info = get_service_info(prog, port)
+    # Unified resolver: System Intelligence -> Curated Database
+    info, is_unknown = resolve_service_knowledge(prog, port, pid=pid)
     
-    # Pick the best identity and description
-    best_info = sys_info or curated_info
-    name = best_info.get("name")
-    if name == "Unknown" and prog: name = prog.title()
-    
-    lines.append((f"  Identity    : {name}", CP_TEXT))
+    lines.append((f"  Identity    : {info.get('name')}", CP_TEXT))
     lines.append(("  Scope       :", CP_TEXT))
     
-    # Prioritize description from system
-    desc = best_info.get("description", "No detailed description available.")
+    desc = info.get("description", "No detailed description available.")
     desc_wrapped = textwrap.wrap(desc, 70)
     for d_line in desc_wrapped:
         lines.append((f"    {d_line}", CP_TEXT))
     
-    # Always try to show curated risk/recommendation if available
-    risk_lvl = curated_info.get('risk', 'Unknown')
+    risk_lvl = info.get('risk', 'Unknown')
     lines.append((f"  🚩 Risk Level: {risk_lvl}", CP_WARN if any(x in risk_lvl for x in ["High", "Danger", "Medium"]) else CP_TEXT))
     lines.append((f"  💡 Recommendation:", CP_ACCENT))
-    rec = curated_info.get('recommendation', 'No specific recommendation.')
+    rec = info.get('recommendation', 'No specific recommendation.')
     rec_wrapped = textwrap.wrap(rec, 70)
     for r_line in rec_wrapped:
         lines.append((f"    {r_line}", CP_TEXT))
@@ -4407,20 +4474,17 @@ def generate_full_system_dump(stdscr, rows, cache):
                 f.write(f"   User: {user}\n")
                 
                 # ── Service Intelligence (Heimdall & Package) ──
-                svc = get_service_info(prog, port)
-                pkg_info = get_local_package_info(prog) or {}
+                info, _ = resolve_service_knowledge(prog, port, pid=pid)
                 
-                name = pkg_info.get("name", svc.get("name", prog))
-                desc = pkg_info.get("description", svc.get("description", "No description available."))
+                f.write(f"   Identity: {info.get('name', prog)}\n")
+                f.write(f"   Scope: {info.get('description', 'No description available.')}\n")
                 
-                f.write(f"   Name: {name}\n")
-                f.write(f"   Description: {desc[:150]}...\n")
-                if pkg_info:
-                    f.write(f"   Package: {pkg_info.get('package', '-')}\n")
-                    f.write(f"   Version: {pkg_info.get('version', '-')}\n")
+                if info.get('package'):
+                    f.write(f"   Package: {info.get('package', '-')}\n")
+                    f.write(f"   Version: {info.get('version', '-')}\n")
                 
-                f.write(f"   Risk: {svc.get('risk', 'Unknown')}\n")
-                f.write(f"   Recommendation: {svc.get('recommendation', '-')}\n\n")
+                f.write(f"   Risk: {info.get('risk', 'Unknown')}\n")
+                f.write(f"   Recommendation: {info.get('recommendation', '-')}\n\n")
 
                 # ── WITR Deep Analysis ──
                 f.write("   🔍 witr Analysis:\n")
@@ -4741,7 +4805,7 @@ def main(stdscr, args=None):
                 if abs(w - prewrapped_width) > 10:  # Threshold for rewrap
                     lines = port_cache.get("lines", [])
                     sel_prog = rows[selected][3] if selected >= 0 and selected < len(rows) else None
-                    cached_wrapped_icon_lines = prepare_witr_content(lines, w - 4, prog=sel_prog, port=port)
+                    cached_wrapped_icon_lines = prepare_witr_content(lines, w - 4, prog=sel_prog, port=port, pid=pid)
                     if port in cache:
                         cache[port]["wrapped_icon_lines"] = cached_wrapped_icon_lines
                         cache[port]["prewrapped_width"] = w
