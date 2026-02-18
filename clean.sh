@@ -15,6 +15,7 @@ find . -type f -name '*~' -delete 2>/dev/null || true
 # debian paketleme kalıntıları (kaynak dosyaları korumak için dikkatli)
 if [[ -d debian ]]; then
     echo "debian/ klasöründe temizlik yapılıyor (kontrol et!)"
+    rm -rf debian/heimdall debian/heimdall-doc debian/.debhelper
     rm -f debian/files debian/*.debhelper debian/*.substvars debian/*.log debian/debhelper-build-stamp
     # debian/control, rules, compat gibi dosyaları korumak için yukarıdakileri silmeyiz
 fi
@@ -31,4 +32,4 @@ ls -A -l --group-directories-first
 
 echo ""
 echo "Temizlik tamamlandı."
-echo "Önemli dosyalar: heimdall.py, setup.py, README.md, LICENSE, debian/ (paketleme dosyaları)"
+echo "Önemli dosyalar: heimdall/, setup.py, README.md, LICENSE, debian/ (paketleme dosyaları)"

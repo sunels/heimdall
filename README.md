@@ -58,7 +58,7 @@ This eliminates the need to jump between multiple tools such as `ss`, `netstat`,
 ## Core Navigation
 
 ```text
-portwitr
+heimdall
 ├─ 🌐 Ports              View all open ports and their states
 ├─ ⚡ Usage (CPU/Mem)    Real-time resource consumption per process
 ├─ 🧠 Processes          Process inspection and ownership mapping
@@ -216,7 +216,31 @@ sudo apt update && sudo apt install -f
  
 ---
  
-### 🐍 Option 3: Python / Pip
+### 🎩 Option 3: Fedora / RHEL / CentOS (.rpm)
+*Native RPM support.*
+ 
+```bash
+# Build the RPM package
+rpmbuild -ba heimdall.rpm.spec
+
+# Install the generated RPM
+sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.6.0-1.noarch.rpm
+```
+ 
+---
+
+### 🏔️ Option 4: Arch Linux
+*Native Arch Linux package.*
+
+```bash
+# Build and install using the provided PKGBUILD
+makepkg -si
+```
+
+---
+
+ 
+### 🐍 Option 5: Python / Pip
 *For Python users.*
  
 Download the `.whl` package from [**Releases**](https://github.com/sunels/heimdall/releases) and install:
@@ -232,7 +256,7 @@ sudo heimdall
  
 ---
  
-### 🛠️ Option 4: Development (Source)
+### 🛠️ Option 6: Development (Source)
 *For contributors.*
  
 Clone the repo and prepare the environment:
