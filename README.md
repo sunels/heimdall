@@ -135,6 +135,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 🛡️ Sentinel Report — Security Executive Summary
+<img src="screenshots/pp-13.png" alt="heimdall sentinel executive summary report" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
