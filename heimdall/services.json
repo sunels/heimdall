@@ -1299,5 +1299,93 @@
         "typical_user": "root, lightdm",
         "risk": "Very Low - Desktop login manager.",
         "recommendation": "None (Standard desktop component)."
+    },
+    "dbus-daemon": {
+        "name": "D-Bus Message Bus",
+        "description": "System-wide message bus for inter-process communication (IPC). Essential for desktop environments.",
+        "ports": [],
+        "typical_user": "messagebus, root",
+        "risk": "Very Low - Core system IPC.",
+        "recommendation": "None (Standard system component)."
+    },
+    "systemd-journald": {
+        "name": "Systemd Journal Service",
+        "description": "Collects and stores logging data from the kernel, services, and applications.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Core logging component.",
+        "recommendation": "None (Standard system component)."
+    },
+    "ModemManager": {
+        "name": "Modem Manager",
+        "description": "Controls mobile broadband (2G/3G/4G/5G) devices and connections.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Hardware management.",
+        "recommendation": "Disable if no mobile modem is used."
+    },
+    "colord": {
+        "name": "Color Management Daemon",
+        "description": "Manages color profiles for printers, scanners, and monitors.",
+        "ports": [],
+        "typical_user": "colord",
+        "risk": "Very Low - Desktop color management.",
+        "recommendation": "None (Standard desktop component)."
+    },
+    "rtkit-daemon": {
+        "name": "Realtime Kit",
+        "description": "D-Bus system service that hands out realtime scheduling priority to user processes.",
+        "ports": [],
+        "typical_user": "rtkit",
+        "risk": "Very Low - Performance management.",
+        "recommendation": "None (Standard system component)."
+    },
+    "packagekitd": {
+        "name": "PackageKit Daemon",
+        "description": "D-Bus abstraction layer for software management (installing, updating, removing packages).",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Handles software installation.",
+        "recommendation": "Keep system updated. PackageKit is used by GUI software centers."
+    },
+    "upowerd": {
+        "name": "Power Management Daemon",
+        "description": "Handles power management, battery levels, and energy sources.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Very Low - Hardware management.",
+        "recommendation": "None (Standard system component)."
+    },
+    "winbindd": {
+        "name": "Samba Winbind",
+        "description": "Resolves user and group information from Windows NT/Active Directory servers.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Essential for AD integration.",
+        "recommendation": "Configure securely within Samba suite."
+    },
+    "qemu-system-x86_64": {
+        "name": "QEMU x86_64 Emulator",
+        "description": "Full hardware emulation for x86_64 virtual machines.",
+        "ports": [],
+        "typical_user": "libvirt-qemu, root",
+        "risk": "Medium - VM escape risk.",
+        "recommendation": "Keep QEMU updated."
+    },
+    "containerd-shim": {
+        "name": "Containerd Shim",
+        "description": "Manages the lifecycle of a single container (start, stop, IO).",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Container lifecycle management.",
+        "recommendation": "None (Docker/Kubernetes component)."
+    },
+    "runc": {
+        "name": "runc Container Runtime",
+        "description": "CLI tool for spawning and running containers according to OCI specification.",
+        "ports": [],
+        "typical_user": "root",
+        "risk": "Low - Low-level container runtime.",
+        "recommendation": "Keep updated to avoid container escape vulnerabilities."
     }
 }

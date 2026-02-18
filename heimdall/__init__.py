@@ -1062,15 +1062,15 @@ def prepare_witr_content(lines, width, prog=None, port=None):
 
 def _generate_service_fallback(prog, port, width):
     """Generate rich detail content when witr has no data.
-    Layer 1: services.json → Layer 2: local package manager intelligence."""
+    Prioritizes local system intelligence (systemctl, packages) before falling back to services.json."""
     wrapped = []
+    
+    # Layer 1: Ask the OS (systemctl, dpkg, rpm, snap, etc)
+    pkg_info = get_local_package_info(prog) if prog else None
+    
+    # Layer 2: Ask the static database
     svc = get_service_info(prog, port)
-    is_unknown = svc.get("name") == "Unknown"
-
-    # Layer 2: If services.json doesn't know it, ask the OS package manager
-    pkg_info = None
-    if is_unknown and prog:
-        pkg_info = get_local_package_info(prog)
+    is_curated_unknown = svc.get("name") == "Unknown"
 
     if pkg_info:
         # We got real data from the local system!
@@ -1089,21 +1089,31 @@ def _generate_service_fallback(prog, port, width):
             wrapped.append(line)
         wrapped.append("")
 
+        # Merge with curated info if available (to get Risk/Recommendation)
+        if not is_curated_unknown:
+            risk = svc.get("risk", "Unknown")
+            rec = svc.get("recommendation", "No specific recommendation.")
+            
+            wrapped.append("⚠️  Risk Assessment (Curated):")
+            for line in textwrap.wrap(f"   {risk}", width=width):
+                wrapped.append(line)
+            wrapped.append("")
+
+            wrapped.append("🛡️ Recommendation (Curated):")
+            for line in textwrap.wrap(f"   {rec}", width=width):
+                wrapped.append(line)
+            wrapped.append("")
+
         if pkg_info.get("homepage"):
             wrapped.append(f"🌐 Homepage: {pkg_info['homepage']}")
             wrapped.append("")
 
-        if pkg_info.get("maintainer"):
-            wrapped.append(f"👤 Maintainer: {pkg_info['maintainer']}")
-        if pkg_info.get("installed_size"):
-            wrapped.append(f"💾 Installed Size: {pkg_info['installed_size']}")
-        wrapped.append("")
-
-        wrapped.append("ℹ️  Source: Local package manager (dpkg/rpm)")
+        source_label = pkg_info.get("source", "Local package manager")
+        wrapped.append(f"ℹ️  Source: {source_label}")
         wrapped.append("   This information was auto-discovered from your")
-        wrapped.append("   system's installed packages.")
+        wrapped.append("   system's installed packages or services.")
     else:
-        # Use services.json data (Layer 1) or show unknown
+        # Fallback to curated info (Layer 2)
         name = svc.get("name", prog or "Unknown")
         desc = svc.get("description", "No description available.")
         risk = svc.get("risk", "Unknown")
@@ -1139,7 +1149,7 @@ def _generate_service_fallback(prog, port, width):
             wrapped.append(line)
         wrapped.append("")
 
-        if is_unknown:
+        if is_curated_unknown:
             wrapped.append("ℹ️  This process is not in the Heimdall knowledge")
             wrapped.append("   base and no local package info was found.")
             wrapped.append("   Consider investigating manually.")
@@ -1161,8 +1171,12 @@ def get_local_package_info(prog):
         return _pkg_info_cache[prog]
 
     info = None
+    # Strategy 0: Try systemd description (fastest and most direct for services)
+    info = _try_systemd(prog)
+
     # Strategy 1: Direct dpkg query by process name
-    info = _try_dpkg(prog)
+    if not info:
+        info = _try_dpkg(prog)
 
     # Strategy 2: Find binary path and reverse-lookup package
     if not info:
@@ -1190,6 +1204,28 @@ def get_local_package_info(prog):
 
     _pkg_info_cache[prog] = info
     return info
+
+def _try_systemd(prog):
+    """Query systemd for unit description."""
+    if not prog or prog == "-": return None
+    try:
+        # Try both unit name and service alias
+        units = [f"{prog}.service", prog]
+        for unit in units:
+            # Check if unit exists first to avoid stderr noise
+            res = subprocess.run(["systemctl", "show", unit, "-p", "Description", "--value"], 
+                                 capture_output=True, text=True, timeout=1)
+            desc = res.stdout.strip()
+            # systemctl show returns "" if not found or no description
+            if desc and desc != "" and not desc.startswith("Unit "):
+                return {
+                    "name": prog.replace("-", " ").title(),
+                    "description": desc,
+                    "source": "systemd (systemctl)"
+                }
+    except:
+        pass
+    return None
 
 def _find_binary_path(prog):
     """Find the actual binary path of a process via 'which' or /proc."""
@@ -1809,17 +1845,31 @@ def build_inspect_content(pid, port, prog, username):
 
     # 1. Service Knowledge (MOVED TO TOP)
     lines.append(("📚 SERVICE KNOWLEDGE", CP_ACCENT))
-    svc_info = get_service_info(prog, port)
-    lines.append((f"  Identity    : {svc_info.get('name')}", CP_TEXT))
+    
+    # NEW PRIORITY: System Intelligence -> Curated Database
+    sys_info = get_local_package_info(prog) if prog else None
+    curated_info = get_service_info(prog, port)
+    
+    # Pick the best identity and description
+    best_info = sys_info or curated_info
+    name = best_info.get("name")
+    if name == "Unknown" and prog: name = prog.title()
+    
+    lines.append((f"  Identity    : {name}", CP_TEXT))
     lines.append(("  Scope       :", CP_TEXT))
-    desc_wrapped = textwrap.wrap(svc_info.get('description', ''), 70)
+    
+    # Prioritize description from system
+    desc = best_info.get("description", "No detailed description available.")
+    desc_wrapped = textwrap.wrap(desc, 70)
     for d_line in desc_wrapped:
         lines.append((f"    {d_line}", CP_TEXT))
     
-    risk_lvl = svc_info.get('risk', 'Unknown')
+    # Always try to show curated risk/recommendation if available
+    risk_lvl = curated_info.get('risk', 'Unknown')
     lines.append((f"  🚩 Risk Level: {risk_lvl}", CP_WARN if any(x in risk_lvl for x in ["High", "Danger", "Medium"]) else CP_TEXT))
     lines.append((f"  💡 Recommendation:", CP_ACCENT))
-    rec_wrapped = textwrap.wrap(svc_info.get('recommendation', ''), 70)
+    rec = curated_info.get('recommendation', 'No specific recommendation.')
+    rec_wrapped = textwrap.wrap(rec, 70)
     for r_line in rec_wrapped:
         lines.append((f"    {r_line}", CP_TEXT))
 
