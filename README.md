@@ -34,6 +34,7 @@
   - ⚠️ **Security Audit**: Real-time alerts for dangerous configurations (Running as ROOT, Public exposure, Empty passwords, etc.).
 - 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
 - ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
+- 🔍 **Interactive System Filter (F)**: Real-time filtering by Port, PID, or User directly from the TUI.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
@@ -119,6 +120,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 🔍 Interactive System Filter — Real-time TUI Filtering
+<img src="screenshots/pp-10.png" alt="heimdall system filter" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -135,6 +141,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | f | Toggle firewall for selected port |
 | a | Actions (open Action Center modal) |
 | i | Inspect / Deep Information modal |
+| F | Filter (Port, PID, User modal) |
 | d | Full System Dump (Reports to file) |
 | p | Settings (Auto-update, etc.) |
 | q | Quit |
@@ -380,6 +387,26 @@ Invoked from Action Center via `[l]`:
 - **Safety**:
   - Limits are enforced immediately via `sudo iptables`.
   - Non-persistent (cleared on reboot unless saved manually).
+
+
+## 🔍 Interactive System Filter — details
+
+Invoked from Main View via `[F]`:
+
+- **Dynamic Filtering**: Instantly narrow down the live list without restarting the application.
+- **Supported Fields**:
+  - `[p] Port`: Filter by specific listener port (e.g., `80`, `443`).
+  - `[i] PID`: Filter by specific Process ID.
+  - `[u] User`: Filter by process owner (e.g., `root`, `www-data`).
+- **Interactive Input**:
+  - Press the field key (p, i, or u) to start typing.
+  - Real-time buffer: See what you are typing before applying.
+  - Press **ENTER** to save the value to the filter set.
+  - Press **ESC** while typing to cancel the current field edit.
+- **Apply & Clear**:
+  - Press **ESC** (when not typing) to apply filters and return to the main view.
+  - Press `[c]` to clear all active filters instantly.
+- **Status Indicator**: When filters are active, a "🔍 Filter: ..." status line appears above the help bar in the main view.
 
 
 
