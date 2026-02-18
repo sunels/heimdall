@@ -1,3 +1,15 @@
+heimdall (0.7.0-1) unstable; urgency=medium
+
+  * Distribution & Packaging:
+    - Added Arch Linux (PKGBUILD) support.
+    - Added Fedora/RHEL/CentOS (RPM spec) support.
+    - Added installation guides for multiple distros to README.
+  * Branding & Fixes:
+    - Replaced remaining 'portwitr' references with 'heimdall'.
+    - Improved `clean.sh` for thorough build artifact removal.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 18 Feb 2026 08:20:00 +0200
+
 heimdall (0.6.0-1) unstable; urgency=medium
 
   * Infrastructure:

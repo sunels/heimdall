@@ -1,3 +1,19 @@
+## 🚀 Release v0.7.0
+
+**Multi-Distro Support & Branding Consistency!**
+
+### 📦 New Distribution Support
+*   **Arch Linux:** Official `PKGBUILD` added for easier AUR/makepkg integration.
+*   **RPM Support:** Added `heimdall.rpm.spec` for Fedora, RHEL, and CentOS users.
+*   **Expanded Documentation:** Installation guides for all major Linux families now in README.
+
+### 🧹 Improvements & Fixes
+*   **Final Branding:** All remaining references to the old name "portwitr" have been scrubbed.
+*   **Cleaner Workspace:** `clean.sh` now handles complex debian build artifacts.
+*   **Version Parity:** Unified versioning across all package manifests.
+
+---
+
 ## 🚀 Release v0.6.0
 
 **Heimdall is now cleaner, safer, and easier to install!**
