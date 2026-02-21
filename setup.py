@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='heimdall',
-    version='0.9.0',
+    version='0.9.1',
     description='Interactive curses-based port and process viewer (using witr)',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
@@ -32,6 +32,6 @@ setup(
     install_requires=[
         'psutil>=5.8.0',
     ],
-    package_data={'heimdall': ['services.json', 'services.sha256', 'system-services.json', 'system-services.sha256']},
+    package_data={'heimdall': ['services.json', 'services.sha256', 'system-services.json', 'system-services.sha256', 'sentinel_rules.json']},
     include_package_data=True,
 )

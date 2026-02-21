@@ -1,3 +1,10 @@
+heimdall (0.9.1-1) unstable; urgency=medium
+
+  * FIX: Included sentinel_rules.json in package data and binary builds.
+  * Corrected missing Sentinel icons issue in standalone and deb installs.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 21 Feb 2026 12:30:00 +0200
+
 heimdall (0.9.0-1) unstable; urgency=medium
 
   * NEW FEATURE: Enhanced System Service Identities:
