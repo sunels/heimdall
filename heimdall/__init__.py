@@ -416,9 +416,8 @@ def apply_current_theme(stdscr=None):
     # We use CP_TEXT's background which is usually the theme background
     if stdscr:
         try:
-            stdscr.bkgd(' ', curses.color_pair(CP_TEXT))
-            stdscr.erase() # ⚡ Force repaint everything with new background
-            stdscr.refresh()
+            stdscr.bkgdset(' ', curses.color_pair(CP_TEXT))
+            # stdscr.erase() removed to prevent background persistence issues
         except:
             pass
 
@@ -953,6 +952,13 @@ def splash_screen(stdscr, rows, cache):
     bh = min(18, h - 6)          # Higher window
     bw = min(99, w - 6)          # Wider (enough to prevent overflow)
     y, x = (h - bh) // 2, (w - bw) // 2
+    
+    # 🎨 Keep current screen content visible as a background
+    try:
+        stdscr.touchwin()
+        stdscr.noutrefresh()
+    except: pass
+
     win = curses.newwin(bh, bw, y, x)
     # 🎨 Set window background to theme
     try:
@@ -999,28 +1005,22 @@ def splash_screen(stdscr, rows, cache):
         win.addstr(progress_y, 4, "Collecting system intelligence...", curses.color_pair(3))
         win.addstr(progress_y + 1, 4, f"Scanning port: {port}", curses.color_pair(4))
 
-        # Progress bar + step count INSIDE BAR (overflow impossible)
-        filled = int(bar_w * i / total)
-        bar = "█" * filled + "░" * (bar_w - filled)
-
-        progress_str = f" {i}/{total} "
-        mid = bar_w // 2
-        start_pos = mid - len(progress_str) // 2
-
-        # If bar is too short, align to start (security)
-        if start_pos < 0:
-            start_pos = 0
-        if start_pos + len(progress_str) > bar_w:
-            start_pos = bar_w - len(progress_str)
-
-        bar_with_progress = (
-            bar[:start_pos] + progress_str + bar[start_pos + len(progress_str):]
-        )
-
+        # Progress bar logic
+        pct = int((i / total) * 100)
+        pct_str = f" {pct}%"
+        draw_bar_w = bar_w - len(pct_str)
+        filled = int(draw_bar_w * i / total)
+        bar = "█" * filled + "░" * (draw_bar_w - filled)
+        
         bar_x = (bw - bar_w) // 2
-        win.addstr(progress_y + 3, bar_x, f"[{bar_with_progress}]", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+        win.addstr(progress_y + 3, bar_x, f"[{bar}]{pct_str}", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
 
-        win.refresh()
+        # 🎨 Keep background visible on every update
+        try: stdscr.noutrefresh()
+        except: pass
+        
+        win.noutrefresh()
+        curses.doupdate()
 
         # --- Preload data per port ---
         prog_name = row[3] if len(row) > 3 else "-"
@@ -3651,7 +3651,7 @@ def draw_help_bar(stdscr, show_detail):
     bar_x = w - bar_w
     
     try:
-        bar_win = curses.newwin(h, bar_w, 0, bar_x)
+        bar_win = stdscr.derwin(h, bar_w, 0, bar_x)
         bar_win.erase()
         try:
             bar_win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -4881,6 +4881,13 @@ def generate_full_system_dump(stdscr, rows, cache):
     win_y = (h - bh) // 2
     win_x = (w - bw) // 2
     
+    # Force redraw background content once before overlaying
+    try:
+        stdscr.touchwin()
+        stdscr.noutrefresh()
+    except:
+        pass
+    
     try:
         # Create splash window
         win = curses.newwin(bh, bw, win_y, win_x)
@@ -4951,6 +4958,8 @@ def generate_full_system_dump(stdscr, rows, cache):
                 # --- UPDATE UI ---
                 if win:
                     try:
+                        # Ensure background stays visible by not clearing stdscr
+                        # and by using noutrefresh + doupdate
                         win.erase()
                         try: win.bkgd(' ', curses.color_pair(CP_TEXT))
                         except: pass
@@ -4967,16 +4976,12 @@ def generate_full_system_dump(stdscr, rows, cache):
                         # Progress Bar logic fixed to avoid wrapping
                         pct = int(((idx + 1) / total) * 100)
                         pct_str = f" {pct}%"
-                        # Available width for bar: total window width - padding (5 left + 5 right?) 
-                        # We use 5 left padding. Let's use 5 right padding too.
                         avail_w = bw - 10 
                         bar_len = avail_w - len(pct_str)
                         
                         if bar_len > 0:
                             filled = int(bar_len * (idx + 1) / total)
                             bar = "█" * filled + "░" * (bar_len - filled)
-                            
-                            # Draw bar + pct on same line without overflow
                             win.addstr(8, 5, f"[{bar}]{pct_str}", curses.color_pair(CP_TEXT))
                         
                         # Stats
@@ -4984,7 +4989,12 @@ def generate_full_system_dump(stdscr, rows, cache):
                         win.addstr(10, 5, f"Processed: {idx + 1}/{total} services", curses.A_DIM)
                         win.addstr(11, 5, f"Time: {elapsed:.1f}s", curses.A_DIM)
                         
-                        win.refresh()
+                        # 🎨 Keep background visible on every update
+                        try: stdscr.noutrefresh()
+                        except: pass
+
+                        win.noutrefresh()
+                        curses.doupdate()
                     except:
                         pass
                 
@@ -5313,10 +5323,10 @@ def main(stdscr, args=None):
             bar_w = 22
             main_w = w - bar_w
             
-            table_win = curses.newwin(table_h, main_w//2, 0, 0)
+            table_win = stdscr.derwin(table_h, main_w//2, 0, 0)
             draw_table(table_win, rows, selected, offset, cache, firewall_status)
 
-            open_files_win = curses.newwin(table_h, main_w - main_w//2, 0, main_w//2)
+            open_files_win = stdscr.derwin(table_h, main_w - main_w//2, 0, main_w//2)
             try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
             except: pass
             pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
@@ -5325,7 +5335,7 @@ def main(stdscr, args=None):
             files = get_open_files_cached(pid)
             draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll)
 
-            detail_win = curses.newwin(h-table_h, main_w, table_h, 0)
+            detail_win = stdscr.derwin(h-table_h, main_w, table_h, 0)
             try: detail_win.bkgd(' ', curses.color_pair(CP_TEXT))
             except: pass
 
@@ -5379,7 +5389,7 @@ def main(stdscr, args=None):
         elif show_detail:
             bar_w = 22
             main_w = w - bar_w
-            detail_win = curses.newwin(h, main_w, 0, 0)
+            detail_win = stdscr.derwin(h, main_w, 0, 0)
             draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             draw_help_bar(stdscr, show_detail)
 
