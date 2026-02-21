@@ -1,3 +1,5 @@
 include README.md
 recursive-include heimdall services.json
 recursive-include heimdall services.sha256
+recursive-include heimdall system-services.json
+recursive-include heimdall system-services.sha256

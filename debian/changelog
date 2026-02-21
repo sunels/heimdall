@@ -1,3 +1,14 @@
+heimdall (0.9.0-1) unstable; urgency=medium
+
+  * NEW FEATURE: Enhanced System Service Identities:
+    - Externalized system service descriptions into system-services.json.
+    - Added user-friendly names (Identity) and categories (Type) for 80+ common Linux services.
+    - Improved 'i' Info modal with rich service descriptions.
+    - Updated Full System Dump to include Identity and Type information.
+    - Added parallel background updates for system-services database.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 21 Feb 2026 11:35:00 +0200
+
 heimdall (0.8.0-1) unstable; urgency=medium
 
   * New Feature: System Services Manager (z):

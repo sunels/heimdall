@@ -49,3 +49,8 @@ env/
 
 # PyInstaller
 *.spec
+
+# Heimdall Dumps
+heimdall_dump_*.txt
+*.png
+!screenshots/*.png

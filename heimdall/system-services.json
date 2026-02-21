@@ -1,0 +1,457 @@
+{
+    "accounts-daemon.service": {
+        "name": "User Accounts Manager",
+        "type": "System",
+        "description": "Provides a set of D-Bus interfaces for querying and manipulating user account information. It manages user metadata like login names, real names, and account types."
+    },
+    "acpid.service": {
+        "name": "ACPI Event Handler",
+        "type": "Hardware",
+        "description": "Advanced Configuration and Power Interface event daemon. It monitors hardware events like power button presses, lid closures, and AC adapter plugs, executing configured scripts in response."
+    },
+    "alsa-restore.service": {
+        "name": "Audio Level Restorer",
+        "type": "Hardware",
+        "description": "Saves and restores hardware register states for sound cards during boot and shutdown, ensuring your volume levels and mixer settings persist between reboots."
+    },
+    "alsa-state.service": {
+        "name": "Audio Handler",
+        "type": "Hardware",
+        "description": "Manages sound card state, specifically handling the background restoration and storage of audio device configurations using the alsactl utility."
+    },
+    "anacron.service": {
+        "name": "Periodic Task Runner",
+        "type": "System",
+        "description": "A periodic command scheduler that doesn't assume the system is running continuously. It's used to run daily, weekly, and monthly jobs (like log rotation) even if the PC was off during the scheduled time."
+    },
+    "apparmor.service": {
+        "name": "AppArmor Security",
+        "type": "Security",
+        "description": "Mandatory Access Control (MAC) system that restricts programs' capabilities (like file access or networking) based on per-program profiles. A key layer of Linux defense-in-depth."
+    },
+    "apport.service": {
+        "name": "Auto Crash Reporting",
+        "type": "System",
+        "description": "Automatically generates crash reports when a program fails. It intercepts segmentation faults and other crashes to collect debugging information for developers."
+    },
+    "apport-autoreport.service": {
+        "name": "Background Error Reporter",
+        "type": "System",
+        "description": "Silently uploads collected crash reports to the distribution's error tracking system (e.g., Ubuntu Error Tracker). It helps developers identify and fix widespread bugs without user intervention."
+    },
+    "apt-daily.service": {
+        "name": "APT Package Maintenance",
+        "type": "System",
+        "description": "Background task that refreshes the package database (apt update) and performs cleanup of old package files to keep the system repository information up to date."
+    },
+    "apt-daily-upgrade.service": {
+        "name": "APT Package Upgrader",
+        "type": "System",
+        "description": "Handles automatic downloading and installation of security updates. It ensures that critical patches are applied without waiting for a manual update command."
+    },
+    "auditd.service": {
+        "name": "Security Auditor",
+        "type": "Security",
+        "description": "The Linux Audit daemon. It writes audit records to the disk based on pre-configured rules, tracking security-relevant events like file access, command execution, and network connections."
+    },
+    "auto-cpufreq.service": {
+        "name": "CPU Power Optimizer",
+        "type": "System",
+        "description": "Automatic CPU speed and power optimizer for Linux laptop/desktop. It dynamically adjusts CPU frequencies and power states to balance performance and battery life."
+    },
+    "avahi-daemon.service": {
+        "name": "mDNS/ZeroConf Discovery",
+        "type": "Network",
+        "description": "Implements the Multicast DNS and DNS Service Discovery protocols. It allows devices on a local network to discover each other automatically (e.g., finding printers or shared folders) without a central DNS server."
+    },
+    "blk-availability.service": {
+        "name": "Storage Availability",
+        "type": "System",
+        "description": "Manages the availability of block devices, ensuring that complex storage setups like LVM or Multipath are correctly deactivated during system shutdown to prevent data corruption."
+    },
+    "blueman-mechanism.service": {
+        "name": "Bluetooth Manager",
+        "type": "Hardware",
+        "description": "A D-Bus helper for the Blueman bluetooth manager. It provides privileged operations like pairing devices, changing adapter states, and managing network connections via Bluetooth."
+    },
+    "bluetooth.service": {
+        "name": "Bluetooth Connectivity",
+        "type": "Hardware",
+        "description": "The main Bluetooth system service (BlueZ). It handles the low-level communication with Bluetooth hardware and provides the interface for all desktop Bluetooth tools."
+    },
+    "colord.service": {
+        "name": "Color Profile Manager",
+        "type": "Hardware",
+        "description": "System service that manages, installs, and generates color profiles for hardware like monitors, printers, and scanners to ensure consistent color representation across devices."
+    },
+    "connman.service": {
+        "name": "Connection Manager",
+        "type": "Network",
+        "description": "A daemon for managing internet connections within embedded devices or desktops. It is designed to be slim and fully integrated with systemd and D-Bus."
+    },
+    "console-setup.service": {
+        "name": "Console Look & Feel",
+        "type": "System",
+        "description": "Configures the Linux TTY console (the black screen before login) with the correct font, encoding, and keyboard layout chosen during system installation."
+    },
+    "containerd.service": {
+        "name": "Container Runtime",
+        "type": "Virtualization",
+        "description": "An industry-standard container runtime used by Docker and Kubernetes. It manages the complete container lifecycle of its host system, from image transfer and storage to execution and supervision."
+    },
+    "cron.service": {
+        "name": "Task Scheduler",
+        "type": "System",
+        "description": "The classic Linux job scheduler. It executes commands at specified times, dates, or intervals based on entries in crontab files."
+    },
+    "cups.service": {
+        "name": "Common Unix Print System",
+        "type": "Hardware",
+        "description": "The primary printing system for Linux. It manages print queues, processes print jobs, and provides drivers for thousands of printer models."
+    },
+    "cups-browsed.service": {
+        "name": "Remote Printer Finder",
+        "type": "Hardware",
+        "description": "A helper service for CUPS that automatically discovers and adds shared printers from the local network (using Avahi/Bonjour) to your local printer list."
+    },
+    "dbus.service": {
+        "name": "System Messaging Bus",
+        "type": "System",
+        "description": "The 'nervous system' of the Linux desktop. It provides a simple way for many different applications to talk to each other and for desktop tools to talk to system services."
+    },
+    "dmesg.service": {
+        "name": "Kernel Log Management",
+        "type": "System",
+        "description": "Saves the initial kernel boot messages (dmesg) to a persistent file after system startup, allowing for troubleshooting of early boot hardware issues."
+    },
+    "dns-clean.service": {
+        "name": "DNS Cache Flush",
+        "type": "Network",
+        "description": "A small utility service that clears out temporary DNS information and stale connection states when network interfaces go up or down."
+    },
+    "docker.service": {
+        "name": "Docker Engine",
+        "type": "Virtualization",
+        "description": "The core Docker service. It manages Linux containers, images, networks, and volumes. Essential for running applications in isolated, reproducible environments."
+    },
+    "fstrim.service": {
+        "name": "SSD Lifecycle Manager",
+        "type": "System",
+        "description": "Periodically informs the SSD about which blocks of data are no longer in use, allowing the drive's internal controller to optimize performance and increase the lifespan of the flash memory."
+    },
+    "fwupd.service": {
+        "name": "Firmware Updater",
+        "type": "Hardware",
+        "description": "A system service that allows session software to update the firmware of hardware devices (like BIOS, docking stations, and mice) safely from within the OS."
+    },
+    "getty@tty1.service": {
+        "name": "TTY Login (Console)",
+        "type": "System",
+        "description": "Manages the login prompt on the first virtual console (Ctrl+Alt+F1). It initializes the terminal and starts the login process for a text-based session."
+    },
+    "gnome-remote-desktop.service": {
+        "name": "GNOME Remote Desktop",
+        "type": "Network",
+        "description": "A remote desktop server for the GNOME desktop environment. It allows you to access and control your desktop remotely using the RDP or VNC protocols."
+    },
+    "gpu-manager.service": {
+        "name": "GPU Driver Detector",
+        "type": "Hardware",
+        "description": "Detects the available GPUs on the system and automatically configures the correct drivers (especially on hybrid systems like NVIDIA Optimus) or generates the necessary X.org configuration."
+    },
+    "grub-common.service": {
+        "name": "GRUB Bootloader Helper",
+        "type": "System",
+        "description": "Performs background maintenance for the GRUB bootloader, such as recording that the system booted successfully to prevent 'recovery boot loops'."
+    },
+    "haveged.service": {
+        "name": "Entropy Generator",
+        "type": "System",
+        "description": "Generates random data (entropy) from processor timing jitter. This ensures the system's random number generator (/dev/random) never runs out of 'randomness' during heavy cryptographic operations."
+    },
+    "hddtemp.service": {
+        "name": "HDD Temperature Monitor",
+        "type": "Hardware",
+        "description": "Monitors the hard drive temperature using S.M.A.R.T. data and provides it to other monitoring tools or the desktop environment for hardware health tracking."
+    },
+    "irqbalance.service": {
+        "name": "Interrupt Balancer",
+        "type": "System",
+        "description": "Distributes hardware interrupts (CPU requests from devices) across all available CPU cores. This prevents a single core from becoming a bottleneck during heavy I/O or network traffic."
+    },
+    "kerneloops.service": {
+        "name": "Kernel Crash Reporter",
+        "type": "System",
+        "description": "Specifically monitors the kernel for 'oopses' (minor crashes/faults). It collects the crash signature and submits it to kerneloops.org to help kernel developers improve stability."
+    },
+    "keyboard-setup.service": {
+        "name": "Keyboard Configuration",
+        "type": "Hardware",
+        "description": "Applies the chosen keyboard layout and key repeat settings to the system console and early boot environment."
+    },
+    "lightdm.service": {
+        "name": "Display Manager (Login)",
+        "type": "System",
+        "description": "The graphical login screen. It manages the X/Wayland server, provides the UI for users to log in, and then starts the desktop environment session."
+    },
+    "lm-sensors.service": {
+        "name": "Hardware Sensors",
+        "type": "Hardware",
+        "description": "Initializes hardware monitoring sensors (voltage, fan speed, temperature) on the motherboard, allowing them to be read by tools like 'sensors' or the desktop environment."
+    },
+    "logrotate.service": {
+        "name": "Log Rotator",
+        "type": "System",
+        "description": "Automatically rotates, compresses, and removes old log files in /var/log. This prevents the system logs from growing until they consume all available disk space."
+    },
+    "man-db.service": {
+        "name": "Manual Page Indexer",
+        "type": "System",
+        "description": "Maintains the index of installed manual pages. This allows tools like 'man -k' (keyword search) or 'apropos' to work quickly and accurately."
+    },
+    "ModemManager.service": {
+        "name": "Mobile Modem Manager",
+        "type": "Hardware",
+        "description": "Provides a unified high-level API for communicating with mobile broadband modems (2G/3G/4G/5G). It works with NetworkManager to handle cellular internet connections."
+    },
+    "NetworkManager.service": {
+        "name": "Network Manager",
+        "type": "Network",
+        "description": "The primary network management service. It handles ethernet, Wi-Fi, and VPN connections, automatically switching to the best available connection while the user moves between locations."
+    },
+    "NetworkManager-wait-online.service": {
+        "name": "Network Wait State",
+        "type": "Network",
+        "description": "A blocking service used during boot that holds up other services (like network mounts) until NetworkManager has successfully established a working internet connection."
+    },
+    "networkd-dispatcher.service": {
+        "name": "Network Change Handler",
+        "type": "Network",
+        "description": "Listen for network interface status changes from systemd-networkd and executes custom scripts. Useful for triggering firewall changes or service restarts when the IP address changes."
+    },
+    "networking.service": {
+        "name": "Core Networking",
+        "type": "Network",
+        "description": "Handles the 'legacy' network configuration style (/etc/network/interfaces). It brings up basic networking if not using NetworkManager or systemd-networkd."
+    },
+    "openvpn.service": {
+        "name": "VPN Connectivity",
+        "type": "Network",
+        "description": "The main OpenVPN service. It manages encrypted Virtual Private Network connections, allowing secure access to private networks over the public internet."
+    },
+    "plocate-updatedb.service": {
+        "name": "File Search Indexer",
+        "type": "System",
+        "description": "Updates the database used by the 'locate' command. It scans the entire filesystem in the background so you can find any file instantly by name."
+    },
+    "plymouth-start.service": {
+        "name": "Boot Splash Screen",
+        "type": "System",
+        "description": "Provides the graphical animation during boot. It hides the technical kernel messages and shows the distribution logo while the system initializes in the background."
+    },
+    "polkit.service": {
+        "name": "Policy Authorization",
+        "type": "Security",
+        "description": "An authorization framework for Linux. It defines who can perform privileged operations (like installing softare or changing system time) without requiring a full 'root' login."
+    },
+    "postfix.service": {
+        "name": "Mail Transfer Agent",
+        "type": "Network",
+        "description": "A high-performance Mail Transfer Agent (MTA). It handles the routing and delivery of email, often used as the local system's default way to send notifications or alerts."
+    },
+    "power-profiles-daemon.service": {
+        "name": "Power Profile Manager",
+        "type": "System",
+        "description": "Offers a way to change system power states (e.g., 'Power Saver', 'Balanced', 'Performance') via D-Bus, often controlled by the desktop environment's battery settings."
+    },
+    "rsync.service": {
+        "name": "Remote File Sync",
+        "type": "Network",
+        "description": "The rsync daemon. It allows remote clients to synchronize files with this system efficiently by only transmitting the differences between modified files."
+    },
+    "rsyslog.service": {
+        "name": "System Logging",
+        "type": "System",
+        "description": "A traditional logger that collects messages from the system and applications, sorting them into the various files in /var/log based on rules (like auth.log, syslog, kern.log)."
+    },
+    "rtkit-daemon.service": {
+        "name": "Realtime Scheduling",
+        "type": "System",
+        "description": "RealtimeKit; a system service which hands out realtime scheduling priority to user-space threads (typically used by PulseAudio or PipeWire) to prevent audio skipping during high CPU load."
+    },
+    "samba.service": {
+        "name": "SMB File Sharing",
+        "type": "Network",
+        "description": "The Samba service, providing file and print sharing services to Windows clients and other Linux machines using the SMB/CIFS protocol."
+    },
+    "smbd.service": {
+        "name": "Samba Server",
+        "type": "Network",
+        "description": "The actual server daemon that provides SMB/CIFS services for file sharing and print services in a Windows-compatible network."
+    },
+    "snap.anbox.container-manager.service": {
+        "name": "Anbox Android Manager",
+        "type": "Virtualization",
+        "description": "Manages the Android container for Anbox (Android in a Box). It coordinates the execution of the Android system within an isolated Linux container on your desktop."
+    },
+    "snap.lxd.daemon.service": {
+        "name": "LXD Container Service",
+        "type": "Virtualization",
+        "description": "The LXD container and virtual machine manager daemon. It offers a powerful API for managing full Linux system containers and VMs at scale."
+    },
+    "snapd.service": {
+        "name": "Snap Package Daemon",
+        "type": "System",
+        "description": "The background service that manages 'snap' packages. It handles the installation, update, and isolation of application snaps and their runtime environments."
+    },
+    "ssh.service": {
+        "name": "Secure Shell (SSH)",
+        "type": "Network",
+        "description": "The OpenSSH server. It allows users to log in to the system remotely and securely via the command line or transfer files using SFTP/SCP."
+    },
+    "sssd.service": {
+        "name": "System Security Services",
+        "type": "Security",
+        "description": "System Security Services Daemon. It manages access to remote identity and authentication sources like LDAP, Active Directory, or FreeIPA, providing offline caching for logins."
+    },
+    "sssd-autofs.service": {
+        "name": "SSSD Automount Handler",
+        "type": "Security",
+        "description": "A component of SSSD that handles automatic mounting of network file systems (like NFS or SMB) based on user identity information from a central directory server."
+    },
+    "switcheroo-control.service": {
+        "name": "GPU Switcher Manager",
+        "type": "Hardware",
+        "description": "Coordinates the switching between integrated and discrete GPUs. It allows the desktop environment to launch specific applications on the powerful dedicated GPU only when needed."
+    },
+    "systemd-binfmt.service": {
+        "name": "Binary Support",
+        "type": "System",
+        "description": "Enables the kernel to run non-native binary formats (e.g., running Windows .exe via Wine or ARM code via QEMU) automatically when they are double-clicked or executed."
+    },
+    "systemd-journald.service": {
+        "name": "System Log Collector",
+        "type": "System",
+        "description": "The modern systemd logging service. It collects all log messages into a structured, binary format. Use 'journalctl' to read these logs efficiently."
+    },
+    "systemd-logind.service": {
+        "name": "Login Session Manager",
+        "type": "System",
+        "description": "Manages user logins, seats, and sessions. It keeps track of who is logged in and where, handles power button events, and cleans up user processes on logout."
+    },
+    "systemd-modules-load.service": {
+        "name": "Kernel Module Loader",
+        "type": "System",
+        "description": "Reads configuration files (in /etc/modules-load.d) and automatically loads specific kernel drivers (modules) into memory during the boot process."
+    },
+    "systemd-oomd.service": {
+        "name": "OOM Killer (RAM Protect)",
+        "type": "System",
+        "description": "Out-Of-Memory daemon. It monitors system memory and swap pressure, automatically terminating memory-hungry processes before the entire system becomes unresponsive."
+    },
+    "systemd-random-seed.service": {
+        "name": "Random Seed Handler",
+        "type": "System",
+        "description": "Restores the random number generator's seed from a previous session during boot and saves a new one during shutdown, ensuring strong randomness immediately after startup."
+    },
+    "systemd-resolved.service": {
+        "name": "DNS Name Resolver",
+        "type": "Network",
+        "description": "A system daemon that provides network name resolution to local applications via a caching DNS stub resolver and an LLMNR/mDNS responder."
+    },
+    "systemd-timesyncd.service": {
+        "name": "Time Synchronizer",
+        "type": "Network",
+        "description": "A lightweight system service that synchronizes the local system clock with remote Network Time Protocol (NTP) servers to ensure the time is always accurate."
+    },
+    "systemd-tmpfiles-setup.service": {
+        "name": "Temp Files Setup",
+        "type": "System",
+        "description": "Creates, deletes, and cleans up temporary and volatile files and directories based on configuration files, ensuring the system has the necessary folder structure in /tmp and /run."
+    },
+    "systemd-udev-trigger.service": {
+        "name": "Hardware Event Trigger",
+        "type": "Hardware",
+        "description": "Requests the kernel to 'replay' all hardware events during boot. This ensures that all hardware devices are correctly detected and their drivers are loaded by the udev daemon."
+    },
+    "systemd-udevd.service": {
+        "name": "Hardware Device Manager",
+        "type": "Hardware",
+        "description": "The kernel device manager. It listens to kernel events when hardware is added or removed, automatically creating device nodes in /dev and loading the appropriate drivers."
+    },
+    "systemd-update-utmp.service": {
+        "name": "Login Logger",
+        "type": "System",
+        "description": "Updates the 'utmp' and 'wtmp' files which keep track of system reboots and runlevel changes. This information is used by commands like 'who' and 'last'."
+    },
+    "systemd-user-sessions.service": {
+        "name": "User Session Control",
+        "type": "System",
+        "description": "Enables or disables user logins. It holds up the login process during boot until all essential services have started, and blocks logins during system shutdown."
+    },
+    "thermald.service": {
+        "name": "Thermal Monitor",
+        "type": "Hardware",
+        "description": "Monitors the system temperature and uses various cooling methods (like throttling the CPU or increasing fan speeds) to prevent hardware from overheating or becoming too loud."
+    },
+    "tlp.service": {
+        "name": "Power Efficiency Optimizer",
+        "type": "System",
+        "description": "Advanced power management for Linux. It applies a suite of settings to minimize power consumption when running on battery, without sacrificing system stability."
+    },
+    "ua-timer.service": {
+        "name": "Ubuntu Pro Maintenance",
+        "type": "System",
+        "description": "Handles periodic tasks for Ubuntu Pro (formerly Ubuntu Advantage), such as checking for Expanded Security Maintenance (ESM) updates and keeping the subscription status current."
+    },
+    "ubuntu-advantage.service": {
+        "name": "Ubuntu Pro Support",
+        "type": "System",
+        "description": "The main service for managing Ubuntu Pro subscriptions. It handles the activation of features like Livepatch (kernel updates without rebooting) and extra security patches."
+    },
+    "ubuntu-fan.service": {
+        "name": "Network Acceleration",
+        "type": "Network",
+        "description": "Implements the Ubuntu 'Fan' networking protocol. This allows containers (like LXD) on different hosts to communicate easily by mapping their addresses into a larger virtual network."
+    },
+    "udisks2.service": {
+        "name": "Disk Management Service",
+        "type": "Hardware",
+        "description": "Provides a high-level interface to query and manipulate storage devices (mount disks, format partitions, etc.) without requiring root privileges for end-user tools."
+    },
+    "ufw.service": {
+        "name": "Uncomplicated Firewall",
+        "type": "Security",
+        "description": "A user-friendly management layer for the system's firewall (iptables/nftables). It simplifies the process of allowing or blocking network traffic to and from your computer."
+    },
+    "unattended-upgrades.service": {
+        "name": "Automatic Updates",
+        "type": "System",
+        "description": "Automatically installs security (and other) packages in the background, ensuring your system is always patched against the latest vulnerabilities without user intervention."
+    },
+    "upower.service": {
+        "name": "Power Management",
+        "type": "Hardware",
+        "description": "Collects battery and power information from hardware devices and provides it to the desktop. It tells your computer when to dim the screen or go to sleep due to low battery."
+    },
+    "vsftpd.service": {
+        "name": "Very Secure FTP Daemon",
+        "type": "Network",
+        "description": "A fast and secure FTP server. It is designed to be extremely secure while handling high loads of file transfers efficiently."
+    },
+    "whoopsie.service": {
+        "name": "Error Reporting",
+        "type": "System",
+        "description": "The Ubuntu crash database submission daemon. It works with Apport to send crash reports to Canonical's servers, helping them identify and fix bugs in the distribution."
+    },
+    "wpa_supplicant.service": {
+        "name": "Wi-Fi Security Handler",
+        "type": "Network",
+        "description": "The background service that handles Wi-Fi connections. it negotiates the WPA/WPA2/WPA3 encryption protocols with your wireless router to establish a secure connection."
+    },
+    "rustdesk.service": {
+        "name": "RustDesk Remote Access",
+        "type": "Network",
+        "description": "The RustDesk remote desktop server. It allows you to access this computer remotely or provide technical assistance over the network with high performance and security."
+    }
+}

@@ -40,6 +40,7 @@ CONFIG = {
     "auto_scan_interval": 3.0
 }
 SERVICES_DB = {}
+SYSTEM_SERVICES_DB = {}
 SENTINEL_RULES = []
 CONFIG_LOCK = threading.Lock()
 UPDATING_SERVICES_EVENT = threading.Event()
@@ -50,6 +51,8 @@ SCANNING_STATUS_EXP = 0.0
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
 SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.json"
 SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.sha256"
+SYSTEM_SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/system-services.json"
+SYSTEM_SERVICES_SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/system-services.sha256"
 
 def init_config():
     global CONFIG
@@ -78,7 +81,7 @@ def get_hash(data):
     return hashlib.sha256(data).hexdigest()
 
 def update_services_bg():
-    global SERVICES_DB, UPDATE_STATUS_MSG
+    global SERVICES_DB, SYSTEM_SERVICES_DB, UPDATE_STATUS_MSG
     # Initial wait to avoid startup lag
     time.sleep(10)
     
@@ -93,66 +96,61 @@ def update_services_bg():
             continue
             
         UPDATING_SERVICES_EVENT.set()
-        UPDATE_STATUS_MSG = "Loading latest services.json..."
-        debug_log("UPDATER: Starting check...")
-        start_time = time.time()
         
-        try:
-            debug_log(f"UPDATER: Checking {SHA_URL} for updates...")
-            # Fetch remote SHA first
-            with urllib.request.urlopen(SHA_URL, timeout=10) as response:
-                remote_sha = response.read().decode('utf-8').strip().split()[0]
+        targets = [
+            ("services.json", SERVICES_URL, SHA_URL, "SERVICES_DB"),
+            ("system-services.json", SYSTEM_SERVICES_URL, SYSTEM_SERVICES_SHA_URL, "SYSTEM_SERVICES_DB")
+        ]
+        
+        for filename, url, sha_url, db_name in targets:
+            UPDATE_STATUS_MSG = f"Syncing {filename}..."
+            debug_log(f"UPDATER: Checking {filename}...")
+            start_time = time.time()
             
-            local_json_path = os.path.join(CONFIG_DIR, "services.json")
-            local_sha_path = os.path.join(CONFIG_DIR, "services.sha256")
-            
-            do_update = True
-            if os.path.exists(local_sha_path):
-                with open(local_sha_path, 'r') as f:
-                    local_sha = f.read().strip()
+            try:
+                # Fetch remote SHA first
+                with urllib.request.urlopen(sha_url, timeout=10) as response:
+                    remote_sha = response.read().decode('utf-8').strip().split()[0]
                 
-                debug_log(f"UPDATER: Remote SHA: {remote_sha}")
-                debug_log(f"UPDATER: Local SHA:  {local_sha} (at {local_sha_path})")
+                local_json_path = os.path.join(CONFIG_DIR, filename)
+                local_sha_path = os.path.join(CONFIG_DIR, filename.replace(".json", ".sha256"))
                 
-                if local_sha == remote_sha:
-                    do_update = False
-                    debug_log("UPDATER: Match found. No update needed.")
-            else:
-                debug_log(f"UPDATER: No local SHA found at {local_sha_path}. First-time update forced.")
-            
-            if do_update:
-                UPDATE_STATUS_MSG = "Downloading new services.json..."
-                debug_log("UPDATER: New version detected. Downloading from GitHub...")
-                with urllib.request.urlopen(SERVICES_URL, timeout=10) as response:
-                    raw_data = response.read()
-                    computed_sha = get_hash(raw_data)
-                    
-                    if computed_sha == remote_sha:
-                        data = json.loads(raw_data.decode('utf-8'))
-                        if isinstance(data, dict) and "sshd" in data: # simple schema check
+                do_update = True
+                if os.path.exists(local_sha_path):
+                    with open(local_sha_path, 'r') as f:
+                        local_sha = f.read().strip()
+                    if local_sha == remote_sha:
+                        do_update = False
+                
+                if do_update:
+                    debug_log(f"UPDATER: New version for {filename} detected.")
+                    with urllib.request.urlopen(url, timeout=10) as response:
+                        raw_data = response.read()
+                        computed_sha = get_hash(raw_data)
+                        
+                        if computed_sha == remote_sha:
+                            data = json.loads(raw_data.decode('utf-8'))
                             with open(local_json_path, 'wb') as f:
                                 f.write(raw_data)
                             with open(local_sha_path, 'w') as f:
                                 f.write(remote_sha)
-                            SERVICES_DB = data
-                            debug_log(f"UPDATER: Download complete. Applied {len(data)} service definitions.")
-                            UPDATE_STATUS_MSG = "Update successful! ✅"
-                        else:
-                            debug_log("UPDATER: ERROR - Remote JSON schema invalid.")
-                    else:
-                        debug_log("UPDATER: ERROR - SHA256 mismatch from remote.")
-        except Exception as e:
-            debug_log(f"UPDATER: Error during update: {e}")
-            
-        # Ensure the message is visible for at least 4 seconds
-        elapsed = time.time() - start_time
-        if elapsed < 4.0:
-            time.sleep(4.0 - elapsed)
+                            
+                            if db_name == "SERVICES_DB":
+                                SERVICES_DB = data
+                            else:
+                                SYSTEM_SERVICES_DB = data
+                                
+                            debug_log(f"UPDATER: Applied {len(data)} definitions to {db_name}.")
+            except Exception as e:
+                debug_log(f"UPDATER: Error updating {filename}: {e}")
+                
+        UPDATE_STATUS_MSG = "Sync complete! ✅"
+        time.sleep(4) # visibility
             
         UPDATING_SERVICES_EVENT.clear()
         UPDATE_STATUS_MSG = ""
         
-        sleep_interval = max(1, interval_mins) # Keep min 1m for flexibility
+        sleep_interval = max(1, interval_mins)
         time.sleep(sleep_interval * 60)
 
 def start_services_updater():
@@ -218,24 +216,34 @@ def evaluate_sentinel_logic(logic, context):
     return False
 
 def load_services_db():
-    global SERVICES_DB
-    # Priority: ~/.config/heimdall/services.json > local services.json
-    paths = [
-        os.path.join(CONFIG_DIR, "services.json"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "services.json")
-    ]
-    # If running as a bundled executable (PyInstaller), check the unpacked temp dir
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        paths.append(os.path.join(sys._MEIPASS, "services.json"))
-    for json_path in paths:
-        try:
-            if os.path.exists(json_path):
-                with open(json_path, 'r') as f:
-                    SERVICES_DB = json.load(f)
-                debug_log(f"SERVICES: Loaded from {json_path}")
-                return
-        except Exception as e:
-            debug_log(f"SERVICES: Error loading {json_path}: {e}")
+    global SERVICES_DB, SYSTEM_SERVICES_DB
+    
+    # helper to load a specific JSON database
+    def load_json(filename, target_db_name):
+        paths = [
+            os.path.join(CONFIG_DIR, filename),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        ]
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            paths.append(os.path.join(sys._MEIPASS, filename))
+            
+        for json_path in paths:
+            try:
+                if os.path.exists(json_path):
+                    with open(json_path, 'r') as f:
+                        data = json.load(f)
+                        if target_db_name == "SERVICES_DB":
+                            globals()["SERVICES_DB"] = data
+                        elif target_db_name == "SYSTEM_SERVICES_DB":
+                            globals()["SYSTEM_SERVICES_DB"] = data
+                    debug_log(f"SERVICES: {filename} loaded from {json_path}")
+                    return True
+            except Exception as e:
+                debug_log(f"SERVICES: Error loading {json_path}: {e}")
+        return False
+
+    load_json("services.json", "SERVICES_DB")
+    load_json("system-services.json", "SYSTEM_SERVICES_DB")
 
 init_config()
 load_services_db()
@@ -438,7 +446,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='heimdall 0.8.0')
+    parser.add_argument('--version', action='version', version='heimdall 0.9.0')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -2856,15 +2864,15 @@ def draw_services_modal(stdscr, services, selected_idx, offset, mode=0):
     
     if mode == 0:
         title = " ⚙️  System Services: Units (Running/Active/Inactive) "
-        headers = ["  UNIT", "ACTIVE", "SUB", "DESCRIPTION"]
+        headers = ["  UNIT", "IDENTITY", "STATE", "STATUS", "DESCRIPTION"]
+        widths = [35, 25, 10, 12, max(10, bw - 87)]
     else:
         title = " 📂 System Services: All Unit Files (Installed/Enabled/Disabled) "
-        headers = ["  UNIT FILE", "STATE", "PRESET", ""]
+        headers = ["  UNIT FILE", "IDENTITY", "TYPE", "STATE", "PRESET"]
+        widths = [35, 25, 12, 10, max(10, bw - 87)]
 
     try: win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     except: pass
-    
-    widths = [45, 14, 14, max(10, bw - 80)]
     
     hx = 2
     for head, wd in zip(headers, widths):
@@ -2901,15 +2909,27 @@ def draw_services_modal(stdscr, services, selected_idx, offset, mode=0):
             elif st in ('masked', 'bad', 'error'): prefix = "⚠️ "
             else: prefix = "📄 "
         
+        # Get user friendly info
+        info = SYSTEM_SERVICES_DB.get(s['unit'], {})
+        friendly_name = info.get('name', '')
+        srv_type = info.get('type', '-')
+
         try:
-            # Draw the row with fixed column offsets to handle wide emoji alignment correctly
+            # Draw the row with fixed column offsets
             win.addstr(3 + i, 1, " " * (bw - 2), color | attr) # Fill background
             win.addstr(3 + i, 1, prefix, color | attr)
-            win.addstr(3 + i, 4, s['unit'][:42].ljust(42), color | attr)
-            win.addstr(3 + i, 48, s['active'].ljust(13), color | attr)
-            win.addstr(3 + i, 62, s['sub'].ljust(13), color | attr)
-            desc_w = bw - 78
-            win.addstr(3 + i, 76, s['description'][:desc_w], color | attr)
+            win.addstr(3 + i, 4, s['unit'][:32], color | attr)
+            win.addstr(3 + i, 37, friendly_name[:24], color | attr)
+            
+            if mode == 0:
+                win.addstr(3 + i, 62, s['active'][:9].ljust(9), color | attr)
+                win.addstr(3 + i, 72, s['sub'][:11].ljust(11), color | attr)
+                desc_w = bw - 87
+                win.addstr(3 + i, 84, s['description'][:desc_w], color | attr)
+            else:
+                win.addstr(3 + i, 62, srv_type[:11].ljust(11), color | attr)
+                win.addstr(3 + i, 74, s['active'][:9].ljust(9), color | attr)
+                win.addstr(3 + i, 84, s['sub'][:12].ljust(12), color | attr)
         except: pass
         
     hints = " [↑↓] Nav  [Enter] Status  [i] Help/Info  [S] Start  [s] Stop  [r] Restart  [l] Reload  [e] Edit  [ESC] Exit"
@@ -3026,6 +3046,20 @@ def show_service_help_modal(stdscr, service_entry, legend):
         ])
 
     content.append("─────────────────────────────────────────────────────────────────")
+    # Identify friendly info
+    info = SYSTEM_SERVICES_DB.get(service_entry['unit'], {})
+    if info:
+        content.append(f"🆔 IDENTITY: {info.get('name', 'N/A')}")
+        content.append(f"🏷️  TYPE:     {info.get('type', 'N/A')}")
+        desc = info.get('description', '')
+        if desc:
+            content.append("📝 DESCRIPTION:")
+            # Wrap description to fit the modal width
+            wrapped = textwrap.wrap(desc, width=bw-8)
+            for w_line in wrapped:
+                content.append(f"   {w_line}")
+        content.append("─────────────────────────────────────────────────────────────────")
+
     content.append(f"CURRENT SELECTION: {service_entry['unit']}")
     if 'load' in service_entry:
         content.append(f"  ● Load State: {service_entry['load']}")
@@ -5056,22 +5090,27 @@ def generate_full_system_dump(stdscr, rows, cache):
 
             if include_services:
                 f.write("\n" + "═" * 80 + "\n")
-                f.write("      ⚙️  SYSTEM SERVICES & UNIT FILES ANALYSIS\n")
+                f.write("      ⚙️  SYSTEM SERVICES & UNIT FILES ANALYSIS (With Identity Info)\n")
                 f.write("═" * 80 + "\n\n")
                 
                 f.write("── ACTIVE SYSTEMD UNITS ──\n")
-                try:
-                    units_out = subprocess.check_output(['systemctl', 'list-units', '--type=service', '--all', '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore')
-                    f.write(units_out)
-                except:
-                    f.write("(Error fetching active units)\n")
+                f.write(f"{'UNIT':<50} {'IDENTITY':<30} {'ACTIVE':<12} {'SUB':<12} {'DESCRIPTION'}\n")
+                f.write("-" * 140 + "\n")
+                units, _ = get_systemd_services()
+                for u in units:
+                    info = SYSTEM_SERVICES_DB.get(u['unit'], {})
+                    identity = info.get('name', '-')
+                    f.write(f"{u['unit']:<50} {identity:<30} {u['active']:<12} {u['sub']:<12} {u['description']}\n")
                 
                 f.write("\n\n── INSTALLED UNIT FILES ──\n")
-                try:
-                    files_out = subprocess.check_output(['systemctl', 'list-unit-files', '--type=service', '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore')
-                    f.write(files_out)
-                except:
-                    f.write("(Error fetching unit files)\n")
+                f.write(f"{'UNIT FILE':<50} {'IDENTITY':<30} {'TYPE':<15} {'STATE':<12} {'PRESET'}\n")
+                f.write("-" * 140 + "\n")
+                unit_files = get_systemd_unit_files()
+                for uf in unit_files:
+                    info = SYSTEM_SERVICES_DB.get(uf['unit'], {})
+                    identity = info.get('name', '-')
+                    srv_type = info.get('type', '-')
+                    f.write(f"{uf['unit']:<50} {identity:<30} {srv_type:<15} {uf['active']:<12} {uf['sub']}\n")
                 
                 f.write("\n" + "═" * 80 + "\n\n")
 
