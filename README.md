@@ -35,6 +35,10 @@
 - 🔄 **Auto Service Updates**: Background synchronization of `services.json` from GitHub.
 - ⚙️ **Settings Console (p)**: Configuration modal for updates and system preferences.
 - 🔍 **Interactive System Filter (F)**: Real-time filtering by Port, PID, or User directly from the TUI.
+- ⚙️ **System Services Manager (z)**: Integrated systemd service management.
+  - 🔄 **Units vs Files (TAB)**: Toggle between active/running units and all installed unit files on disk.
+  - 🛠️ **Full Actions**: Start, stop, restart, reload, and edit unit files directly.
+  - ℹ️ **Intelligence (i)**: Explain systemd terminology and clarify `alias` / `static` states.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
@@ -140,6 +144,21 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### ⚙️ System Services Manager (z) — View & Control Units (Active)
+<img src="screenshots/pp-14.png" alt="heimdall services manager" width="100%"/>
+
+---
+
+### ⚙️ System Services Manager — Info & Help (i)
+<img src="screenshots/pp-15.png" alt="heimdall services info" width="100%"/>
+
+---
+
+### 📂 System Services Manager — All Unit Files (TAB)
+<img src="screenshots/pp-16.png" alt="heimdall all unit files" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -157,7 +176,8 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | a | Actions (open Action Center modal) |
 | i | Inspect / Deep Information modal |
 | F | Filter (Port, PID, User modal) |
-| d | Full System Dump (Reports to file) |
+| z | System Services Manager modal (TAB to switch view, 'i' for info) |
+| d | Full System Dump (Reports all services/units to file) |
 | p | Settings (Auto-update, etc.) |
 | q | Quit |
 
@@ -231,7 +251,7 @@ sudo ./heimdall
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases) layer:
  
 ```bash
-sudo dpkg -i heimdall_0.6.0-1_all.deb
+sudo dpkg -i heimdall_0.8.0-1_all.deb
 # If dependencies are missing:
 sudo apt update && sudo apt install -f
 ```
@@ -246,7 +266,7 @@ sudo apt update && sudo apt install -f
 rpmbuild -ba heimdall.rpm.spec
 
 # Install the generated RPM
-sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.6.0-1.noarch.rpm
+sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.8.0-1.noarch.rpm
 ```
  
 ---
@@ -269,7 +289,7 @@ Download the `.whl` package from [**Releases**](https://github.com/sunels/heimda
  
 ```bash
 # Install the downloaded wheel file
-pip3 install heimdall-0.6.0-py3-none-any.whl
+pip3 install heimdall-0.8.0-py3-none-any.whl
  
 # Run
 sudo heimdall

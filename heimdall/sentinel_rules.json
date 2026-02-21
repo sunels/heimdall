@@ -1,0 +1,182 @@
+{
+    "version": "1.0",
+    "description": "Heimdall Sentinel Behavioral Heuristics Ruleset",
+    "rules": [
+        {
+            "id": "root_check",
+            "name": "Root Privilege",
+            "level": "MEDIUM",
+            "icon": "🛡️",
+            "message": "Process running as ROOT",
+            "logic": [
+                {
+                    "field": "user",
+                    "op": "equals",
+                    "value": "root"
+                }
+            ]
+        },
+        {
+            "id": "deleted_binary",
+            "name": "Integrity Check",
+            "level": "CRITICAL",
+            "icon": "💀",
+            "message": "Executable DELETED - Common malware indicator",
+            "logic": [
+                {
+                    "field": "exe",
+                    "op": "contains",
+                    "value": "(deleted)"
+                }
+            ]
+        },
+        {
+            "id": "suspicious_cwd",
+            "name": "CWD Risk",
+            "level": "HIGH",
+            "icon": "📂",
+            "message": "Suspicious CWD: {cwd} (World-writable)",
+            "logic": [
+                {
+                    "field": "cwd",
+                    "op": "contains_any",
+                    "value": [
+                        "/tmp",
+                        "/dev/shm",
+                        "/var/tmp"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "public_exposure",
+            "name": "Public Exposure",
+            "level": "MEDIUM",
+            "icon": "🌐",
+            "message": "Listening on PUBLIC interface (0.0.0.0/::)",
+            "logic": [
+                {
+                    "field": "is_public",
+                    "op": "is_true"
+                }
+            ]
+        },
+        {
+            "id": "backdoor_pattern",
+            "name": "Backdoor Tool",
+            "level": "CRITICAL",
+            "icon": "☢️",
+            "message": "BACKDOOR PATTERN: {prog} tool is actively listening for connections!",
+            "logic": [
+                {
+                    "field": "prog",
+                    "op": "contains_any",
+                    "value": [
+                        "nc",
+                        "ncat",
+                        "netcat",
+                        "socat"
+                    ]
+                },
+                {
+                    "field": "cmdline",
+                    "op": "contains_any",
+                    "value": [
+                        "-l",
+                        "-p",
+                        "listen"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "interpreter_listener",
+            "name": "Script Listener",
+            "level": "HIGH",
+            "icon": "🧪",
+            "message": "INTERPRETER BOUND: {prog} script is listening - Potential 'Reverse Shell' or unofficial server.",
+            "logic": [
+                {
+                    "field": "prog",
+                    "op": "in",
+                    "value": [
+                        "python",
+                        "python3",
+                        "perl",
+                        "ruby",
+                        "node",
+                        "bash",
+                        "sh",
+                        "zsh"
+                    ]
+                },
+                {
+                    "field": "cmdline",
+                    "op": "not_contains_any",
+                    "value": [
+                        "react",
+                        "webpack",
+                        "vite",
+                        "ng ",
+                        "npm",
+                        "yarn"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "masquerading",
+            "name": "Masquarading",
+            "level": "CRITICAL",
+            "icon": "🎭",
+            "message": "SECURITY ALERT: Binary named '{prog}' is actually a Network Listener! (Masquerading)",
+            "logic": [
+                {
+                    "field": "prog",
+                    "op": "in",
+                    "value": [
+                        "ls",
+                        "ps",
+                        "date",
+                        "cat",
+                        "top",
+                        "find",
+                        "cp",
+                        "mv"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "suspicious_lineage",
+            "name": "Lineage Anomaly",
+            "level": "MEDIUM",
+            "icon": "🌲",
+            "message": "Suspicious lineage: Process spawned from a shell/terminal instead of systemd.",
+            "logic": [
+                {
+                    "field": "tree",
+                    "op": "contains_any",
+                    "value": [
+                        "bash",
+                        "sh",
+                        "zsh",
+                        "ssh",
+                        "terminator"
+                    ]
+                },
+                {
+                    "field": "tree",
+                    "op": "not_contains_any",
+                    "value": [
+                        "systemd",
+                        "dockerd",
+                        "containerd",
+                        "init",
+                        "sshd"
+                    ]
+                }
+            ]
+        }
+    ]
+}

@@ -1,3 +1,23 @@
+## 🚀 Release v0.8.0
+
+**System Services Management & UI Revolution!**
+
+### ⚙️ New System Services Manager (z)
+*   **Complete Control:** Start, stop, restart, and reload services directly from the TUI.
+*   **Dual-View Engine (TAB):** Seamlessly toggle between **Units** (currently in memory) and **Unit Files** (all installed on disk).
+*   **Terminal Editing (e):** Edit service unit files with your default editor; Heimdall performs an automatic `daemon-reload` on save.
+*   **Intelligent Info (i):** New modal clarifying systemd terminology and identifying `alias` targets (🔗 Pointer tracking).
+
+### 💾 Expanded Audit Logs
+*   **Systemd Integration:** Full System Dumps (`d`) now optionally include a comprehensive audit of all systemd units and files.
+
+### 🎨 UI/UX Excellence
+*   **Wide Modals:** Redesigned windows to leverage full terminal width for better readability.
+*   **Icon-Centric Feedback:** Distinctive status icons for `enabled` (✅), `disabled` (🚫), `masked` (⚠️), `failed` (💀), and `alias` (🔗).
+*   **Precise Alignment:** Fixed character-width issues for a perfect pixel-aligned table view.
+
+---
+
 ## 🚀 Release v0.7.0
 
 **Multi-Distro Support & Branding Consistency!**

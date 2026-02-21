@@ -438,7 +438,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', action='version', version='heimdall 0.7.0')
+    parser.add_argument('--version', action='version', version='heimdall 0.8.0')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -2778,6 +2778,357 @@ def draw_auto_scan_settings_modal(stdscr):
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
 
+# --------------------------------------------------
+# System Services Management
+# --------------------------------------------------
+
+def get_systemd_services():
+    """Fetch all systemd services and capture legend info."""
+    try:
+        output = subprocess.check_output(['systemctl', 'list-units', '--type=service', '--no-pager', '--all'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore')
+        services = []
+        legend = []
+        for line in output.splitlines():
+            orig_line = line
+            line = line.strip()
+            if not line: continue
+            
+            # Identify legend/explanation lines (LOAD=, ACTIVE=, SUB=, etc) 
+            # or lines that aren't service units
+            is_legend = any(line.startswith(s) for s in ('UNIT', 'LOAD', 'ACTIVE', 'SUB', 'LEGEND', 'Legend:', 'To ')) or 'loaded units listed' in line or 'Reflects' in line
+            if is_legend:
+                if not line.startswith('UNIT'): # Don't need the header twice
+                    legend.append(line)
+                continue
+
+            # Handle lines starting with error/status markers
+            if line.startswith('●'): line = line[1:].strip()
+            
+            parts = line.split(None, 4)
+            if len(parts) >= 4 and parts[0].endswith('.service'):
+                services.append({
+                    "unit": parts[0],
+                    "load": parts[1],
+                    "active": parts[2],
+                    "sub": parts[3],
+                    "description": parts[4] if len(parts) > 4 else ""
+                })
+        return sorted(services, key=lambda x: x['unit']), legend
+    except Exception as e:
+        debug_log(f"SERVICES: Error fetching: {e}")
+        return [], []
+
+def get_systemd_unit_files():
+    """Fetch all installed systemd unit files."""
+    try:
+        output = subprocess.check_output(['systemctl', 'list-unit-files', '--type=service', '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore')
+        files = []
+        for line in output.splitlines():
+            line = line.strip()
+            if not line or line.startswith('UNIT FILE') or 'unit files listed' in line or line.startswith('STATE'):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                files.append({
+                    "unit": parts[0],
+                    "active": parts[1], # Map 'state' to 'active' for reused drawing logic
+                    "sub": parts[2] if len(parts) > 2 else "-", # Map 'preset' to 'sub'
+                    "description": "" # No description in list-unit-files
+                })
+        return sorted(files, key=lambda x: x['unit'])
+    except Exception as e:
+        debug_log(f"SERVICES: Error fetching unit files: {e}")
+        return []
+
+def draw_services_modal(stdscr, services, selected_idx, offset, mode=0):
+    h, w = stdscr.getmaxyx()
+    bw = min(w - 4, 140)
+    bh = min(h - 4, 32)
+    y = max(1, (h - bh) // 2)
+    x = (w - bw) // 2
+    
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.erase()
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+    
+    if mode == 0:
+        title = " ⚙️  System Services: Units (Running/Active/Inactive) "
+        headers = ["  UNIT", "ACTIVE", "SUB", "DESCRIPTION"]
+    else:
+        title = " 📂 System Services: All Unit Files (Installed/Enabled/Disabled) "
+        headers = ["  UNIT FILE", "STATE", "PRESET", ""]
+
+    try: win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    except: pass
+    
+    widths = [45, 14, 14, max(10, bw - 80)]
+    
+    hx = 2
+    for head, wd in zip(headers, widths):
+        try: win.addstr(1, hx, head.ljust(wd)[:wd], curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except: pass
+        hx += wd
+        
+    try: win.hline(2, 1, curses.ACS_HLINE, bw - 2, curses.color_pair(CP_BORDER))
+    except: pass
+    
+    visible_rows = bh - 6
+    for i in range(visible_rows):
+        idx = offset + i
+        if idx >= len(services): break
+        s = services[idx]
+        is_selected = (idx == selected_idx)
+        
+        attr = curses.A_REVERSE | curses.A_BOLD if is_selected else curses.A_NORMAL
+        # Flag risky services
+        risk_level = get_risk_level(s['unit'].replace('.service', ''))
+        is_risky = is_high_risk(risk_level)
+        color = curses.color_pair(CP_ACCENT) if is_selected else (curses.color_pair(CP_WARN) if is_risky else curses.color_pair(CP_TEXT))
+        
+        # Define icon/prefix based on mode and status
+        if mode == 0: # Units Mode
+            prefix = "⚠️ " if is_risky or s['active'] != 'active' else "✅ "
+            if s['active'] == 'failed': prefix = "💀 "
+        else: # Unit Files Mode
+            st = s['active'].lower()
+            if st == 'enabled': prefix = "✅ "
+            elif st == 'disabled': prefix = "🚫 "
+            elif st == 'static': prefix = "⚙️  "
+            elif st == 'alias': prefix = "🔗 "
+            elif st in ('masked', 'bad', 'error'): prefix = "⚠️ "
+            else: prefix = "📄 "
+        
+        try:
+            # Draw the row with fixed column offsets to handle wide emoji alignment correctly
+            win.addstr(3 + i, 1, " " * (bw - 2), color | attr) # Fill background
+            win.addstr(3 + i, 1, prefix, color | attr)
+            win.addstr(3 + i, 4, s['unit'][:42].ljust(42), color | attr)
+            win.addstr(3 + i, 48, s['active'].ljust(13), color | attr)
+            win.addstr(3 + i, 62, s['sub'].ljust(13), color | attr)
+            desc_w = bw - 78
+            win.addstr(3 + i, 76, s['description'][:desc_w], color | attr)
+        except: pass
+        
+    hints = " [↑↓] Nav  [Enter] Status  [i] Help/Info  [S] Start  [s] Stop  [r] Restart  [l] Reload  [e] Edit  [ESC] Exit"
+    try: win.addstr(bh - 2, 2, hints[:bw-4], curses.color_pair(CP_TEXT) | curses.A_DIM)
+    except: pass
+    
+    # Mode switch hint
+    mode_hint = " [TAB] Unit Files " if mode == 0 else " [TAB] Running Units "
+    try: win.addstr(bh - 2, bw - len(mode_hint) - 2, mode_hint, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    except: pass
+
+    win.refresh()
+    return win
+
+def handle_services_modal(stdscr):
+    units, legend = get_systemd_services()
+    unit_files = []
+    mode = 0 # 0: Units, 1: Unit Files
+    
+    if not units:
+        show_message(stdscr, "No systemd services found.")
+        return
+        
+    services = units
+    selected = 0
+    offset = 0
+    h, w = stdscr.getmaxyx()
+    visible_rows = min(h - 4, 32) - 6
+    if visible_rows <= 0: visible_rows = 1
+    
+    while True:
+        win = draw_services_modal(stdscr, services, selected, offset, mode=mode)
+        win.timeout(-1)
+        k = win.getch()
+        if k == 27: break
+        elif k == curses.KEY_UP and selected > 0:
+            selected -= 1
+            if selected < offset: offset = selected
+        elif k == curses.KEY_DOWN and selected < len(services) - 1:
+            selected += 1
+            if selected >= offset + visible_rows: offset = selected - visible_rows + 1
+        elif k == 9: # TAB: Switch mode
+            mode = 1 - mode
+            if mode == 1:
+                if not unit_files:
+                    show_modal_message(stdscr, "Loading unit files...", duration=0.2)
+                    unit_files = get_systemd_unit_files()
+                services = unit_files
+            else:
+                services = units
+            # Reset view status
+            selected = 0
+            offset = 0
+        elif k in (ord('s'), ord('S'), ord('r'), ord('l')):
+            unit = services[selected]['unit']
+            action_map = {ord('s'):'stop', ord('S'):'start', ord('r'):'restart', ord('l'):'reload'}
+            action = action_map[k]
+            if action != 'start' and not confirm_dialog(stdscr, f"{action.capitalize()} {unit}?"):
+                continue
+            execute_service_action(unit, action, stdscr)
+            # Refresh list after action
+            if mode == 0:
+                units, legend = get_systemd_services()
+                services = units
+            else:
+                unit_files = get_systemd_unit_files()
+                services = unit_files
+        elif k in (10, 13, curses.KEY_ENTER):
+            show_service_details_modal(stdscr, services[selected]['unit'])
+        elif k == ord('i'):
+            show_service_help_modal(stdscr, services[selected], legend)
+        elif k == ord('e'):
+            edit_service_unit(stdscr, services[selected]['unit'])
+            services, legend = get_systemd_services()
+            
+    stdscr.touchwin()
+    curses.doupdate()
+
+def show_service_help_modal(stdscr, service_entry, legend):
+    """Show a combined Help and Info modal for Systemd terms and the selected service."""
+    h, w = stdscr.getmaxyx()
+    bw = min(w - 2, 90)
+    bh = min(h - 2, 28)
+    y, x = (h - bh) // 2, (w - bw) // 2
+
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.erase()
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+
+    title = " ℹ️  Systemd Service Info & Legend "
+    try: win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    except: pass
+
+    content = [
+        "UNIT: The systemd service unit name.",
+        "─────────────────────────────────────────────────────────────────",
+        "💡 WHICH MODE AM I IN?",
+        " • Units Mode (Default): Shows what is currently in memory (Running/Failed).",
+        " • Unit Files Mode (TAB): Shows what is installed on disk (Enabled/Disabled).",
+        "─────────────────────────────────────────────────────────────────",
+    ]
+    
+    # Use the captured legend lines if available, otherwise use defaults
+    if legend:
+        content.extend(legend)
+    else:
+        content.extend([
+            "LOADED: Reflects whether the unit definition was properly loaded.",
+            "ACTIVE: The high-level unit activation state (generalization of SUB).",
+            "SUB: The low-level unit activation state, values depend on unit type.",
+        ])
+
+    content.append("─────────────────────────────────────────────────────────────────")
+    content.append(f"CURRENT SELECTION: {service_entry['unit']}")
+    if 'load' in service_entry:
+        content.append(f"  ● Load State: {service_entry['load']}")
+        content.append(f"  ● High-Level (Active): {service_entry['active']}")
+        content.append(f"  ● Low-Level (Sub): {service_entry['sub']}")
+    else:
+        # Mode: Unit Files
+        content.append(f"  ● Enable State: {service_entry['active']}")
+        content.append(f"  ● Vendor Preset: {service_entry['sub']}")
+    
+    content.append("")
+    content.append("💡 QUICK TIPS:")
+    content.append(" - 'dead/inactive' is often normal for one-shot services.")
+    content.append(" - 'exited' in Sub-state usually means the service finished successfully.")
+    content.append(" - 'alias' (🔗) means the unit is a symbolic link to another service.")
+    content.append(" - Use 'systemctl list-unit-files' to see all installed units.")
+
+    for i, line in enumerate(content):
+        if i >= bh - 4: break
+        try: win.addstr(2 + i, 2, line[:bw-4], curses.color_pair(CP_TEXT))
+        except: pass
+
+    try: win.addstr(bh-2, 2, " [Any Key] Close Info ", curses.color_pair(CP_TEXT) | curses.A_DIM)
+    except: pass
+    
+    win.refresh()
+    win.getch()
+    del win
+
+def execute_service_action(unit, action, stdscr):
+    try:
+        curses.def_prog_mode()
+        curses.endwin()
+        # Use sudo for actions
+        res = subprocess.run(["sudo", "systemctl", action, unit], capture_output=True, text=True)
+        stdscr.refresh()
+        if res.returncode == 0:
+            show_message(stdscr, f"Service {unit} {action}ed.")
+        else:
+            show_modal_message(stdscr, f"Error: {res.stderr.strip()}", duration=3.0)
+    except Exception as e:
+        show_modal_message(stdscr, f"Exception: {e}")
+
+def show_service_details_modal(stdscr, unit):
+    h, w = stdscr.getmaxyx()
+    bw, bh = min(w - 2, 140), min(h - 2, 42)
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    
+    def get_content():
+        try:
+            # Check if it's an alias and find the real target
+            real_id_raw = subprocess.check_output(['systemctl', 'show', unit, '--property=Id', '--value'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore').strip()
+            
+            status = subprocess.check_output(['systemctl', 'status', unit, '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore').splitlines()
+            logs = subprocess.check_output(['journalctl', '-u', unit, '-n', '50', '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore').splitlines()
+            
+            header_info = []
+            if real_id_raw and real_id_raw != unit:
+                header_info = [f"🔗 ALIAS POINTER: {unit} -> {real_id_raw}", "─────────────────────────────────────────────────────────────────", ""]
+            
+            return header_info + status + ["", "📜 RECENT LOGS:", "━"*(bw-4)] + logs
+        except Exception as e: return [f"Error: {e}"]
+
+    content = get_content()
+    scroll = 0
+    while True:
+        win.erase(); win.box()
+        try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+        except: pass
+        try: win.addstr(0, (bw - len(unit) - 12)//2, f" ⚙️  Details: {unit} ", curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except: pass
+        for i in range(bh - 4):
+            idx = scroll + i
+            if idx >= len(content): break
+            try: win.addstr(i+2, 2, content[idx][:bw-4], curses.color_pair(CP_TEXT))
+            except: pass
+        try: win.addstr(bh-2, 2, " [↑↓] Scroll  [r] Refresh  [q/ESC] Back", curses.color_pair(CP_TEXT) | curses.A_DIM)
+        except: pass
+        win.refresh()
+        k = win.getch()
+        if k in (27, ord('q')): break
+        elif k == curses.KEY_UP and scroll > 0: scroll -= 1
+        elif k == curses.KEY_DOWN and scroll < len(content) - (bh - 4): scroll += 1
+        elif k == ord('r'): content = get_content(); scroll = 0
+    del win
+
+def edit_service_unit(stdscr, unit):
+    try:
+        path = subprocess.check_output(['systemctl', 'show', '-p', 'FragmentPath', '--value', unit], text=True).strip()
+        if not path or not os.path.exists(path):
+            show_message(stdscr, f"No unit file found for {unit}")
+            return
+        editor = os.environ.get('EDITOR', 'nano')
+        curses.def_prog_mode(); curses.endwin()
+        subprocess.call(['sudo', editor, path])
+        # Auto daemon-reload
+        subprocess.run(['sudo', 'systemctl', 'daemon-reload'])
+        stdscr.refresh()
+    except Exception as e:
+        show_message(stdscr, f"Edit error: {e}")
+
 def confirm_dialog(stdscr, question):
     h, w = stdscr.getmaxyx()
     win_h, win_w = 5, min(60, w - 4)
@@ -3300,6 +3651,7 @@ def draw_help_bar(stdscr, show_detail):
                 (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
                 (" 🔥 [f Firewall]", curses.color_pair(CP_ACCENT)),
                 (" 🛠  [a Actions]", curses.color_pair(CP_ACCENT)),
+                (" ⚙️  [z Services]", curses.color_pair(CP_ACCENT)),
                 (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
                 ("", None),
                 (" 📂 [←→ Files]", curses.color_pair(CP_ACCENT)),
@@ -4483,6 +4835,9 @@ def generate_full_system_dump(stdscr, rows, cache):
     Saves the report to a timestamped file.
     Includes a progress splash screen to avoid UI blocking.
     """
+    # Ask user preference first
+    include_services = confirm_dialog(stdscr, "Include System Services & Unit Files in Dump?")
+    
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"heimdall_dump_{timestamp}.txt"
     
@@ -4698,6 +5053,27 @@ def generate_full_system_dump(stdscr, rows, cache):
                     f.write(f"     ... ({len(files)-8} more)\n")
                 
                 f.write("\n" + "=" * 80 + "\n\n")
+
+            if include_services:
+                f.write("\n" + "═" * 80 + "\n")
+                f.write("      ⚙️  SYSTEM SERVICES & UNIT FILES ANALYSIS\n")
+                f.write("═" * 80 + "\n\n")
+                
+                f.write("── ACTIVE SYSTEMD UNITS ──\n")
+                try:
+                    units_out = subprocess.check_output(['systemctl', 'list-units', '--type=service', '--all', '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore')
+                    f.write(units_out)
+                except:
+                    f.write("(Error fetching active units)\n")
+                
+                f.write("\n\n── INSTALLED UNIT FILES ──\n")
+                try:
+                    files_out = subprocess.check_output(['systemctl', 'list-unit-files', '--type=service', '--no-pager'], stderr=subprocess.STDOUT).decode('utf-8', 'ignore')
+                    f.write(files_out)
+                except:
+                    f.write("(Error fetching unit files)\n")
+                
+                f.write("\n" + "═" * 80 + "\n\n")
 
         # Success Screen
         if win:
@@ -5077,6 +5453,10 @@ def main(stdscr, args=None):
             elif k == ord('F'):
                 # open Filter modal
                 draw_filter_modal(stdscr, runtime_filters)
+                request_list_refresh()
+            elif k == ord('z'):
+                # open System Services Manager
+                handle_services_modal(stdscr)
                 request_list_refresh()
 
             elif k == ord('i') and selected >= 0 and rows:

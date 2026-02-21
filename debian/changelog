@@ -1,3 +1,17 @@
+heimdall (0.8.0-1) unstable; urgency=medium
+
+  * New Feature: System Services Manager (z):
+    - Added comprehensive systemd unit management (Running Units & Unit Files).
+    - Added 'i' Info modal to explain systemd terms and alias pointers.
+    - Added 'e' Edit shortcut for unit files with auto-reload.
+    - Integrated service management into Full System Dump (optional).
+  * UI/UX Improvements:
+    - Widened modal windows for better readability.
+    - Fixed icon/emoji alignment in service tables.
+    - Added specific status icons (enabled, disabled, masked, alias).
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 21 Feb 2026 10:05:00 +0200
+
 heimdall (0.7.0-1) unstable; urgency=medium
 
   * Distribution & Packaging:
