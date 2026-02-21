@@ -34,12 +34,13 @@ def debug_log(msg):
     except:
         pass
 
-SERVICES_DB = {}
 CONFIG = {
     "auto_update_services": True,
     "update_interval_minutes": 30,
     "auto_scan_interval": 3.0
 }
+SERVICES_DB = {}
+SENTINEL_RULES = []
 CONFIG_LOCK = threading.Lock()
 UPDATING_SERVICES_EVENT = threading.Event()
 UPDATE_STATUS_MSG = ""
@@ -159,6 +160,63 @@ def start_services_updater():
     t.start()
     return t
 
+def load_sentinel_rules():
+    """Load Sentinel behavioral rules from JSON DSL."""
+    global SENTINEL_RULES
+    rules_paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "sentinel_rules.json"),
+        os.path.join(CONFIG_DIR, "sentinel_rules.json")
+    ]
+    for p in rules_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, 'r') as f:
+                    data = json.load(f)
+                    SENTINEL_RULES = data.get("rules", [])
+                    debug_log(f"SENTINEL: Loaded {len(SENTINEL_RULES)} rules from {p}")
+                    return
+            except Exception as e:
+                debug_log(f"SENTINEL: Error loading rules from {p}: {e}")
+
+def evaluate_sentinel_logic(logic, context):
+    """Evaluates a single DSL logic block against the context."""
+    field = logic.get('field')
+    op = logic.get('op')
+    val = logic.get('value')
+    
+    # Get raw context value
+    ctx_raw = context.get(field)
+    
+    # Normalize for comparison
+    if isinstance(ctx_raw, list):
+        # For lists (like process tree), we check membership or join for string search
+        haystack = [str(x).lower() for x in ctx_raw]
+        haystack_str = " ".join(haystack)
+    else:
+        haystack = [str(ctx_raw).lower()]
+        haystack_str = str(ctx_raw).lower()
+
+    # Operator implementation
+    if op == "equals":
+        return str(val).lower() in haystack
+    elif op == "contains":
+        return str(val).lower() in haystack_str
+    elif op == "contains_any":
+        return any(str(v).lower() in haystack_str for v in val)
+    elif op == "not_contains_any":
+        return not any(str(v).lower() in haystack_str for v in val)
+    elif op == "in":
+        # Check if any element of ctx (haystack) matches any element of rule (val)
+        val_list = val if isinstance(val, list) else [val]
+        val_list = [str(v).lower() for v in val_list]
+        return any(h in val_list for h in haystack)
+    elif op == "is_true":
+        return bool(ctx_raw) is True
+    elif op == "is_false":
+        return bool(ctx_raw) is False
+    
+    return False
+
 def load_services_db():
     global SERVICES_DB
     # Priority: ~/.config/heimdall/services.json > local services.json
@@ -181,6 +239,7 @@ def load_services_db():
 
 init_config()
 load_services_db()
+load_sentinel_rules()
 # Updater starts in main()
 
 KEY_SEP_UP = ord('+')
@@ -1849,96 +1908,63 @@ def is_high_risk(risk_level):
 
 def perform_security_heuristics(pid, port, prog, username):
     """
-    Heimdall Sentinel: Behavioral Security Heuristics.
-    Analyzes process metadata, command line, and lineage to detect anomalies.
-    Returns a list of finding dicts: {"level": "...", "msg": "...", "icon": "..."}
+    Heimdall Sentinel: Behavioral Security Heuristics (Rule Engine version).
+    Loads logic from external DSL (sentinel_rules.json).
     """
     findings = []
     
-    # 1. Basic Privilege Check
-    if username == "root":
-        findings.append({"level": "MEDIUM", "msg": "Process running as ROOT", "icon": "🛡️"})
-    
+    # 1. Gather Context
+    context = {
+        "pid": pid,
+        "port": port,
+        "prog": prog,
+        "user": username,
+        "exe": "",
+        "cmdline": "",
+        "cwd": "",
+        "tree": [],
+        "is_public": False
+    }
+
     if psutil and pid and pid.isdigit():
         try:
             p = psutil.Process(int(pid))
-            exe = p.exe()
-            raw_cmd = p.cmdline()
-            cmdline = " ".join(raw_cmd).lower()
-            cwd = p.cwd()
+            context["exe"] = p.exe()
+            context["cmdline"] = p.cmdline()
+            context["cwd"] = p.cwd()
+            context["tree"] = get_process_parent_chain(pid)
             
-            # 2. Executable integrity (Malware often deletes itself)
-            if "(deleted)" in exe:
-                findings.append({"level": "CRITICAL", "msg": "Executable DELETED - Common malware indicator", "icon": "💀"})
-            
-            # 3. Suspicious Working Directory
-            if any(pat in cwd for pat in ["/tmp", "/dev/shm", "/var/tmp"]):
-                 findings.append({"level": "HIGH", "msg": f"Suspicious CWD: {cwd} (World-writable)", "icon": "📂"})
-            
-            # 4. Network Exposure Check
             conns = p.connections(kind='inet')
-            is_public = False
             for c in conns:
                 if c.status == 'LISTEN' and c.laddr.ip in ['0.0.0.0', '::', '0:0:0:0:0:0:0:0']:
-                    is_public = True
+                    context["is_public"] = True
                     break
-            if is_public:
-                 findings.append({"level": "MEDIUM", "msg": "Listening on PUBLIC interface (0.0.0.0/::)", "icon": "🌐"})
-
-            # --- BEHAVIORAL HEURISTICS (THE BRAIN) ---
-            
-            # 5. Tool-as-a-Backdoor (Netcat, Socat, etc)
-            # These tools are almost never used for legitimate persistent listeners in production.
-            tools = ["nc", "ncat", "netcat", "socat"]
-            if any(t in prog.lower() for t in tools):
-                # Check if it's actually in listen mode via args
-                if any(x in cmdline for x in ["-l", "-p", "listen"]):
-                     findings.append({
-                         "level": "CRITICAL", 
-                         "msg": f"BACKDOOR PATTERN: {prog} tool is actively listening for connections!", 
-                         "icon": "☢️"
-                     })
-            
-            # 6. Interpreter-Bound Listeners (Python, Bash, Node, etc)
-            # Melegitimated servers have a specific binary. Interpreters listening on ports
-            # are usually ad-hoc scripts or reverse shells.
-            interpreters = ["python", "python3", "perl", "ruby", "node", "bash", "sh", "zsh"]
-            if any(i == prog.lower() for i in interpreters):
-                # We skip known dev tools like 'npm' or common dev-server markers
-                if not any(dev in cmdline for dev in ["react", "webpack", "vite", "ng "]):
-                    findings.append({
-                        "level": "HIGH", 
-                        "msg": f"INTERPRETER BOUND: {prog} script is listening - Potential 'Reverse Shell' or unofficial server.", 
-                        "icon": "🧪"
-                    })
-            
-            # 7. Masquerading (Evil process using an innocent name)
-            # If a process is named 'ls' or 'date' but is listening on a port, it's 100% evil.
-            common_tools = ["ls", "ps", "date", "cat", "top", "find", "cp", "mv"]
-            if prog.lower() in common_tools:
-                findings.append({
-                    "level": "CRITICAL", 
-                    "msg": f"SECURITY ALERT: Binary named '{prog}' is actually a Network Listener! (Masquerading)", 
-                    "icon": "🎭"
-                })
-            
-            # 8. Lineage Anomaly
-            # Legitimate services usually live under systemd (PID 1). 
-            # Transient backdoors often live under a shell or a user process tree.
-            tree = get_process_parent_chain(pid)
-            tree_str = " ".join(tree).lower()
-            if any(shell in tree_str for shell in ["bash", "sh", "zsh", "ssh", "terminator"]):
-                # If it's listening and has a shell ancestor, but it's not a known dev tool
-                # (This is a lower-confidence flag but useful for scoring)
-                trusted_paths = ["systemd", "dockerd", "containerd", "init", "sshd"]
-                if not any(tp in tree_str for tp in trusted_paths):
-                    findings.append({
-                        "level": "MEDIUM", 
-                        "msg": "Suspicious lineage: Process spawned from a shell/terminal instead of systemd.", 
-                        "icon": "🌲"
-                    })
-
         except: pass
+
+    # 2. Run Rules
+    for rule in SENTINEL_RULES:
+        logic_blocks = rule.get("logic", [])
+        if not logic_blocks: continue
+        
+        # All logic blocks in a rule must be TRUE (AND logic)
+        match = True
+        for logic in logic_blocks:
+            if not evaluate_sentinel_logic(logic, context):
+                match = False
+                break
+        
+        if match:
+            # Format message with context (e.g. {prog}, {cwd})
+            try:
+                msg = rule["message"].format(**context)
+            except:
+                msg = rule["message"]
+                
+            findings.append({
+                "level": rule["level"],
+                "msg": msg,
+                "icon": rule["icon"]
+            })
     
     return findings
 
@@ -3233,51 +3259,14 @@ def draw_open_files(win, pid, prog, files, scroll=0):
             
     win.noutrefresh()
 
-
 def draw_help_bar(stdscr, show_detail):
     h, w = stdscr.getmaxyx()
-    # Descriptive labels restored with optimal spacing
-    snap = " [🔄 r Refresh]" if SNAPSHOT_MODE else ""
+    # Fixed width for the vertical help bar
+    bar_w = 22
+    bar_x = w - bar_w
     
-    if not show_detail:
-        # Priority list of shortcuts. 
-        # We start with the full set, but if width is constrained, we drop intuitive nav keys.
-        
-        # Essential Action Keys (Always keep these if possible)
-        base = f" [i Inspect🔍][d Dump📝][c Color🎨][p Settings⚙ ️][F Filter🔍]"
-        actions = "[s Stop⛔][f Firewall🔥][a Actions🛠 ][q Quit❌]"
-        
-        # Navigation Instructions (Can be dropped or shortened)
-        nav_files = "[←→ Files📂]"
-        nav_tab = "[Tab⇱⇲]"
-        nav_resize = "[+/- Resize↕ ️]"
-        nav_select = "[↑↓ Select🧭]"
-
-        # Calculate fit
-        # Full Line: base + select + resize + tab + files + actions
-        full_text = f"{base}{nav_select}{nav_resize}{nav_tab}{nav_files}{actions}"
-        
-        if len(full_text) < w - 2:
-            help_text = full_text
-        else:
-            # Plan B: Drop Select and Resize (Intuitive)
-            mid_text = f"{base}{nav_tab}{nav_files}{actions}"
-            if len(mid_text) < w - 2:
-                help_text = mid_text
-            else:
-                # Plan C: Drop Tab instruction, Shorten Files
-                short_files = " [←→ Files]"
-                short_text = f"{base}{short_files}{actions}"
-                if len(short_text) < w - 2:
-                    help_text = short_text
-                else:
-                    # Plan D: Minimalist (Just keys)
-                    help_text = f"{base}{actions}"
-    else:
-        help_text = " 🧭 ↑↓ Scroll  [Tab] Restore  ❌ Quit "
-
     try:
-        bar_win = curses.newwin(3, w, h-3, 0)
+        bar_win = curses.newwin(h, bar_w, 0, bar_x)
         bar_win.erase()
         try:
             bar_win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -3290,25 +3279,55 @@ def draw_help_bar(stdscr, show_detail):
             bar_win.attroff(curses.color_pair(CP_BORDER))
         except:
             bar_win.box()
-            
-        # If terminal is too narrow, use the compact version as fallback
-        if len(help_text) > w - 2:
-            if not show_detail:
-                help_text = (
-                    f" [🔍i]{snap}[🎨c][⚙️p][🔍F] [↑↓][+/-][Tab]"
-                    " [📂←→][⛔s][🔥f][🛠a][❌q]"
-                )
-            else:
-                help_text = " 🧭 ↑↓ [Tab]⇲ ❌q "
 
-        x = max(1, (w - len(help_text)) // 2)
+        # Branding / Title at the top
+        title = " 🛡️ HEIMDALL "
         try:
-            bar_win.addstr(1, x, help_text, curses.color_pair(CP_HEADER) | curses.A_BOLD)
-        except:
-            try:
-                bar_win.addstr(1, x, help_text, curses.color_pair(CP_TEXT) | curses.A_BOLD)
-            except: pass
+            bar_win.addstr(0, max(1, (bar_w - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except: pass
+
+        # Short labels for vertical fit
+        shortcuts = []
+        if not show_detail:
+            snap = " 🔄 [r Refresh]" if SNAPSHOT_MODE else ""
+            shortcuts = [
+                (" 🔍 [i Inspect]", curses.color_pair(CP_ACCENT)),
+                (" 📝 [d Dump]", curses.color_pair(CP_ACCENT)),
+                (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
+                (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
+                (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
+                ("", None),
+                (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
+                (" 🔥 [f Firewall]", curses.color_pair(CP_ACCENT)),
+                (" 🛠  [a Actions]", curses.color_pair(CP_ACCENT)),
+                (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
+                ("", None),
+                (" 📂 [←→ Files]", curses.color_pair(CP_ACCENT)),
+                (" ⇱⇲ [Tab Maximize]", curses.color_pair(CP_ACCENT)),
+                (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
+                (" 🧭 [↑↓ Select]", curses.color_pair(CP_ACCENT)),
+            ]
+            if SNAPSHOT_MODE:
+                shortcuts.insert(0, (snap, curses.color_pair(CP_ACCENT)))
+        else:
+            shortcuts = [
+                (" 🧭 ↑↓ Scroll", curses.color_pair(CP_TEXT)),
+                (" [Tab] Restore", curses.color_pair(CP_ACCENT)),
+                (" ❌ Quit ", curses.color_pair(CP_WARN) | curses.A_BOLD),
+            ]
+        y = 2
+        for text, attr in shortcuts:
+            if y >= h - 1: break
+            if text == "": 
+                y += 1
+                continue
             
+            try:
+                # Use plain addstr without bracket-separation logic to maintain original look
+                bar_win.addstr(y, 1, text[:bar_w-2], attr if attr else curses.color_pair(CP_TEXT))
+            except: pass
+            y += 1
+
         bar_win.noutrefresh()
     except:
         pass
@@ -4842,7 +4861,7 @@ def main(stdscr, args=None):
 
     selected = 0 if rows else -1
     offset = 0
-    table_h = max(6, (curses.LINES-3)//2)
+    table_h = max(6, curses.LINES//2)
     show_detail = False
     detail_scroll = 0
     open_files_scroll = 0
@@ -4876,12 +4895,13 @@ def main(stdscr, args=None):
             rows = [r for r in rows if matches_filter(r, runtime_filters, cache)]
 
         if not show_detail and rows:
-            table_win = curses.newwin(table_h, w//2, 0, 0)
-            try: table_win.bkgd(' ', curses.color_pair(CP_TEXT))
-            except: pass
+            bar_w = 22
+            main_w = w - bar_w
+            
+            table_win = curses.newwin(table_h, main_w//2, 0, 0)
             draw_table(table_win, rows, selected, offset, cache, firewall_status)
 
-            open_files_win = curses.newwin(table_h, w-w//2, 0, w//2)
+            open_files_win = curses.newwin(table_h, main_w - main_w//2, 0, main_w//2)
             try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
             except: pass
             pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
@@ -4890,7 +4910,7 @@ def main(stdscr, args=None):
             files = get_open_files_cached(pid)
             draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll)
 
-            detail_win = curses.newwin(h-table_h-3, w, table_h, 0)
+            detail_win = curses.newwin(h-table_h, main_w, table_h, 0)
             try: detail_win.bkgd(' ', curses.color_pair(CP_TEXT))
             except: pass
 
@@ -4942,7 +4962,9 @@ def main(stdscr, args=None):
             draw_help_bar(stdscr, show_detail)
 
         elif show_detail:
-            detail_win = curses.newwin(h-3, w, 0, 0)
+            bar_w = 22
+            main_w = w - bar_w
+            detail_win = curses.newwin(h, main_w, 0, 0)
             draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             draw_help_bar(stdscr, show_detail)
 
@@ -4952,7 +4974,7 @@ def main(stdscr, args=None):
         if any(runtime_filters.values()):
             f_str = f"🔍 Filter: {get_filter_status_str(runtime_filters)} "
             try:
-                stdscr.addstr(h-4, 2, f_str, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+                stdscr.addstr(h-2, 2, f_str, curses.color_pair(CP_HEADER) | curses.A_BOLD)
             except: pass
         curses.doupdate()
 
@@ -5021,7 +5043,7 @@ def main(stdscr, args=None):
                 selected -=1
             elif k == curses.KEY_DOWN and selected<len(rows)-1:
                 selected +=1
-            elif k == KEY_SEP_UP and table_h<max(6, h-3-2):
+            elif k == KEY_SEP_UP and table_h<max(6, h-2):
                 table_h +=1
             elif k == KEY_SEP_DOWN and table_h>6:
                 table_h -=1
