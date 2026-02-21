@@ -42,7 +42,7 @@ echo "🚀 Starting builds for Heimdall v$VERSION..."
 echo "🧹 Cleaning up old artifacts..."
 rm -rf dist/ build/ *.egg-info/ *.spec 2>/dev/null || true
 # Only use sudo if permission denied
-find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || (echo "🔑 Sudo needed for cache cleanup..." && sudo find . -name "__pycache__" -type d -exec rm -rf {} +)
+find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 # 2. Build Standalone Binary (PyInstaller)
 echo "📦 Building Standalone Binary (PyInstaller)..."
