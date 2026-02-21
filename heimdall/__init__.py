@@ -445,7 +445,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 0.9.1')
+    parser.add_argument("--version", action="version", version='heimdall 0.9.2')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -2505,6 +2505,64 @@ def _parse_log_events(raw_lines, max_entries):
     return events
 
 
+def show_full_inspection_preview(stdscr, report_lines):
+    """Display the full system inspection report in a scrollable modal with save option."""
+    h, w = stdscr.getmaxyx()
+    bh, bw = h - 4, min(140, w - 4)
+    y, x = (h - bh) // 2, (w - bw) // 2
+    
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    
+    scroll_pos = 0
+    total_lines = len(report_lines)
+    max_visible = bh - 4
+    
+    while True:
+        win.erase()
+        try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+        except: pass
+        win.box()
+        
+        title = " 📊 FULL SYSTEM INSPECTION RESULTS "
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        for i in range(max_visible):
+            idx = scroll_pos + i
+            if idx < total_lines:
+                line = report_lines[idx].rstrip('\n')
+                # Basic color coding for preview
+                color = CP_TEXT
+                if any(x in line for x in ["🛑", "⚠️", "CRITICAL", "HIGH"]):
+                    color = CP_WARN
+                elif any(x in line for x in ["✅", "🔹", "🌐", "🧠"]):
+                    color = CP_ACCENT
+                
+                try:
+                    win.addstr(2 + i, 2, line[:bw-4], curses.color_pair(color))
+                except: pass
+        
+        footer = " ↑↓ Scroll / PgUp/PgDn | [s] Save to File | [q/ESC] Close "
+        win.addstr(bh-1, (bw - len(footer)) // 2, footer, curses.color_pair(CP_ACCENT))
+        
+        win.refresh()
+        k = win.getch()
+        
+        if k in (ord('q'), 27):
+            win.erase(); win.refresh(); del win
+            return False # User closed without saving
+        elif k in (ord('s'), ord('S')):
+            win.erase(); win.refresh(); del win
+            return True # User wants to save
+        elif k == curses.KEY_UP and scroll_pos > 0:
+            scroll_pos -= 1
+        elif k == curses.KEY_DOWN and scroll_pos < total_lines - max_visible:
+            scroll_pos += 1
+        elif k == curses.KEY_PPAGE: # PageUp
+            scroll_pos = max(0, scroll_pos - max_visible)
+        elif k == curses.KEY_NPAGE: # PageDown
+            scroll_pos = min(max(0, total_lines - max_visible), scroll_pos + max_visible)
+
 def show_inspect_modal(stdscr, port, prog, pid, username):
     lines = build_inspect_content(pid, port, prog, username)
     h, w = stdscr.getmaxyx()
@@ -3677,7 +3735,7 @@ def draw_help_bar(stdscr, show_detail):
             snap = " 🔄 [r Refresh]" if SNAPSHOT_MODE else ""
             shortcuts = [
                 (" 🔍 [i Inspect]", curses.color_pair(CP_ACCENT)),
-                (" 📝 [d Dump]", curses.color_pair(CP_ACCENT)),
+                (" 📋 [d Full Inspect]", curses.color_pair(CP_ACCENT)),
                 (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
                 (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
                 (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
@@ -3771,7 +3829,7 @@ def draw_action_center_modal(stdscr, highlight_key=None):
         ("  🔄  [r] Restart Service", "r"),
         ("  ⚖️   [n] Renice", "n"),
         ("  ☠   [o] Adjust OOM Score", 'o'),
-        ("  🐞  [d] Debug Dump", 'd'),
+        ("  🔍  [d] Full Inspection", 'd'),
     ]
 
     start_row = 2
@@ -3965,14 +4023,20 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
             stdscr.touchwin()
             curses.doupdate()
             return
+        elif ch == 'd':
+            # Generate Full System Dump (also accessible from main screen)
+            try:
+                win.erase()
+                win.refresh()
+                del win
+            except: pass
+            generate_full_system_dump(stdscr, rows, cache)
+            stdscr.touchwin()
+            curses.doupdate()
+            return
         else:
-            # For other keys, simple not-implemented message
-            if ch in ('d',):
-                show_message(stdscr, f"Action '{ch}' not implemented yet.")
-                win = draw_action_center_modal(stdscr)
-            else:
-                # ignore other keys
-                pass
+            # ignore other keys
+            pass
 
 
 
@@ -4870,7 +4934,7 @@ def generate_full_system_dump(stdscr, rows, cache):
     Includes a progress splash screen to avoid UI blocking.
     """
     # Ask user preference first
-    include_services = confirm_dialog(stdscr, "Include System Services & Unit Files in Dump?")
+    include_services = confirm_dialog(stdscr, "Include System Services & Unit Files in Inspection?")
     
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"heimdall_dump_{timestamp}.txt"
@@ -4878,266 +4942,247 @@ def generate_full_system_dump(stdscr, rows, cache):
     h, w = stdscr.getmaxyx()
     bh = 16
     bw = min(70, w - 4)
-    win_y = (h - bh) // 2
-    win_x = (w - bw) // 2
+    win_y, win_x = (h - bh) // 2, (w - bw) // 2
     
-    # Force redraw background content once before overlaying
+    # Background persistence
     try:
         stdscr.touchwin()
         stdscr.noutrefresh()
-    except:
-        pass
+    except: pass
     
     try:
-        # Create splash window
         win = curses.newwin(bh, bw, win_y, win_x)
-        win.box()
-        # Set background to match text theme to avoid mismatch
         try: win.bkgd(' ', curses.color_pair(CP_TEXT))
         except: pass
+        win.box()
     except:
-        # Fallback if window creation fails (e.g. terminal too small)
         win = None
-        show_message(stdscr, "⏳ Generating dump... Please wait.")
+        show_message(stdscr, "⏳ Generating Inspection... Please wait.")
         curses.doupdate()
+
+    report_lines = []
+    def add_line(text=""):
+        report_lines.append(text)
+
     try:
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write("╔══════════════════════════════════════════════════════════════════════════════╗\n")
-            f.write("║                 HEIMDALL FULL SYSTEM INSPECTION REPORT                       ║\n")
-            f.write(f"║ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                                            ║\n")
-            f.write("╚══════════════════════════════════════════════════════════════════════════════╝\n\n")
+        add_line("╔" + "═" * 78 + "╗")
+        add_line("║                 HEIMDALL FULL SYSTEM INSPECTION REPORT                       ║")
+        add_line(f"║ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<55}  ║")
+        add_line("╚" + "═" * 78 + "╝\n")
 
-            f.write("🛡️  HEIMDALL SENTINEL: SECURITY EXECUTIVE SUMMARY\n")
-            f.write("=" * 48 + "\n")
-            f.write("Legend: ☢️ Backdoor | 🧪 Interpreter | 🎭 Masquerade | 💀 Deleted\n")
-            f.write("        📂 CWD Risk | 🌐 Public IP  | 🛡️ Root Priv   | 🌲 Lineage\n")
-            f.write("-" * 48 + "\n")
-            
-            all_findings = []
-            for row in rows:
-                p, _, _, prog_name, p_id = row
-                # Use current process user for the summary scan
-                p_user = get_process_user(p_id) if (p_id and p_id.isdigit()) else "-"
-                findings = perform_security_heuristics(p_id, p, prog_name, p_user)
-                if findings:
-                    for find in findings:
-                        all_findings.append((p, prog_name, find))
-            
-            if not all_findings:
-                f.write("  ✅ No high-priority security threats detected across active services.\n")
+        add_line("🛡️  HEIMDALL SENTINEL: SECURITY EXECUTIVE SUMMARY")
+        add_line("=" * 48)
+        add_line("Legend: ☢️ Backdoor | 🧪 Interpreter | 🎭 Masquerade | 💀 Deleted")
+        add_line("-" * 48)
+        
+        all_findings = []
+        for row in rows:
+            p, _, _, prog_name, p_id = row
+            p_user = get_process_user(p_id) if (p_id and p_id.isdigit()) else "-"
+            findings = perform_security_heuristics(p_id, p, prog_name, p_user)
+            if findings:
+                for find in findings:
+                    all_findings.append((p, prog_name, find))
+        
+        if not all_findings:
+            add_line("  ✅ No high-priority security threats detected across active services.")
+        else:
+            threats = [x for x in all_findings if x[2]['level'] in ['HIGH', 'CRITICAL']]
+            if threats:
+                crit = [x for x in threats if x[2]['level'] == 'CRITICAL']
+                if crit:
+                    add_line(f"  🛑 {len(crit)} CRITICAL THREATS FOUND:")
+                    for p, pr, fi in crit: add_line(f"     - [Port {p}] {pr}: {fi['msg']}")
+                hi = [x for x in threats if x[2]['level'] == 'HIGH']
+                if hi:
+                    add_line(f"  ☢️  {len(hi)} HIGH RISKS DETECTED:")
+                    for p, pr, fi in hi: add_line(f"     - [Port {p}] {pr}: {fi['msg']}")
             else:
-                # Filter specifically for High/Critical to keep summary clean
-                threats = [x for x in all_findings if x[2]['level'] in ['HIGH', 'CRITICAL']]
-                
-                if not threats:
-                    f.write("  ✅ No critical threats found (Some minor warnings exist in details).\n")
-                else:
-                    crit = [x for x in threats if x[2]['level'] == 'CRITICAL']
-                    hi = [x for x in threats if x[2]['level'] == 'HIGH']
-                    
-                    if crit:
-                        f.write(f"  🛑 CRITICAL THREATS FOUND ({len(crit)}):\n")
-                        for p, pr, fi in crit:
-                             f.write(f"     - [Port {p}] {pr}: {fi['msg']}\n")
-                    
-                    if hi:
-                        f.write(f"  ☢️  HIGH RISKS DETECTED ({len(hi)}):\n")
-                        for p, pr, fi in hi:
-                             f.write(f"     - [Port {p}] {pr}: {fi['msg']}\n")
+                add_line("  ✅ No critical threats found (Warnings exist in details).")
+        
+        add_line()
+        add_line(f"Total Active Ports/Services: {len(rows)}")
+        add_line("=" * 80 + "\n")
+
+        total = len(rows)
+        start_time = time.time()
+
+        for idx, row in enumerate(rows):
+            port, proto, pidprog, prog, pid = row
             
-            f.write("\n")
-            f.write(f"Total Active Ports/Services: {len(rows)}\n")
-            f.write("=" * 80 + "\n\n")
+            # --- UPDATE UI ---
+            if win:
+                try:
+                    win.erase()
+                    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+                    except: pass
+                    win.box()
+                    
+                    # Title
+                    title = "🔍 FULL SYSTEM INSPECTION"
+                    win.addstr(2, max(1, (bw - len(title))//2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+                    
+                    # Service Info
+                    info = f"Archiving: {prog} ({port}/{proto})"
+                    win.addstr(5, 4, info[:bw-6], curses.color_pair(CP_ACCENT))
+                    
+                    # Progress Bar
+                    pct = int(((idx + 1) / total) * 100)
+                    pct_str = f" {pct}%"
+                    avail_w = bw - 10 
+                    bar_len = avail_w - len(pct_str)
+                    
+                    if bar_len > 0:
+                        filled = int(bar_len * (idx + 1) / total)
+                        bar = "█" * filled + "░" * (bar_len - filled)
+                        win.addstr(8, 5, f"[{bar}]{pct_str}", curses.color_pair(CP_TEXT))
+                    
+                    # Stats
+                    elapsed = time.time() - start_time
+                    win.addstr(10, 5, f"Processed: {idx + 1}/{total} services", curses.A_DIM)
+                    win.addstr(11, 5, f"Time: {elapsed:.1f}s", curses.A_DIM)
+                    
+                    try: stdscr.noutrefresh()
+                    except: pass
 
-            total = len(rows)
-            start_time = time.time()
-
-            for idx, row in enumerate(rows):
-                port, proto, pidprog, prog, pid = row
-                
-                # --- UPDATE UI ---
-                if win:
-                    try:
-                        # Ensure background stays visible by not clearing stdscr
-                        # and by using noutrefresh + doupdate
-                        win.erase()
-                        try: win.bkgd(' ', curses.color_pair(CP_TEXT))
-                        except: pass
-                        win.box()
-                        
-                        # Title
-                        title = "💾 SYSTEM DUMP IN PROGRESS"
-                        win.addstr(2, max(1, (bw - len(title))//2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
-                        
-                        # Service Info
-                        info = f"Archiving: {prog} ({port}/{proto})"
-                        win.addstr(5, 4, info[:bw-6], curses.color_pair(CP_ACCENT))
-                        
-                        # Progress Bar logic fixed to avoid wrapping
-                        pct = int(((idx + 1) / total) * 100)
-                        pct_str = f" {pct}%"
-                        avail_w = bw - 10 
-                        bar_len = avail_w - len(pct_str)
-                        
-                        if bar_len > 0:
-                            filled = int(bar_len * (idx + 1) / total)
-                            bar = "█" * filled + "░" * (bar_len - filled)
-                            win.addstr(8, 5, f"[{bar}]{pct_str}", curses.color_pair(CP_TEXT))
-                        
-                        # Stats
-                        elapsed = time.time() - start_time
-                        win.addstr(10, 5, f"Processed: {idx + 1}/{total} services", curses.A_DIM)
-                        win.addstr(11, 5, f"Time: {elapsed:.1f}s", curses.A_DIM)
-                        
-                        # 🎨 Keep background visible on every update
-                        try: stdscr.noutrefresh()
-                        except: pass
-
-                        win.noutrefresh()
-                        curses.doupdate()
-                    except:
-                        pass
-                
-                # --- WRITE LOGIC (Same as before) ---
-                
-                # Fetch basic info
-                user = cache.get(port, {}).get("user")
-                if not user or user == "-":
-                    user = get_process_user(pid)
-                
-                f.write(f"🔹 [{idx+1}/{len(rows)}] SERVICE: {prog} (PID: {pid})\n")
-                f.write(f"   Port: {port}/{proto}\n")
-                f.write(f"   User: {user}\n")
+                    win.noutrefresh()
+                    curses.doupdate()
+                except:
+                    pass
+            
+            # --- COLLECT LOGIC ---
+            user = cache.get(port, {}).get("user") or get_process_user(pid)
+            
+            add_line(f"🔹 [{idx+1}/{len(rows)}] SERVICE: {prog} (PID: {pid})")
+            add_line(f"   Port: {port}/{proto} | User: {user}")
                 
                 # ── Service Intelligence (Heimdall & Package) ──
-                info, _ = resolve_service_knowledge(prog, port, pid=pid)
-                
-                f.write(f"   Identity: {info.get('name', prog)}\n")
-                f.write(f"   Scope: {info.get('description', 'No description available.')}\n")
-                
-                if info.get('package'):
-                    f.write(f"   Package: {info.get('package', '-')}\n")
-                    f.write(f"   Version: {info.get('version', '-')}\n")
-                
-                f.write(f"   Risk: {info.get('risk', 'Unknown')}\n")
-                f.write(f"   Recommendation: {info.get('recommendation', '-')}\n\n")
+            info, _ = resolve_service_knowledge(prog, port, pid=pid)
+            
+            add_line(f"   Identity: {info.get('name', prog)}")
+            add_line(f"   Scope: {info.get('description', 'No description available.')}")
+            
+            if info.get('package'):
+                add_line(f"   Package: {info.get('package', '-')}")
+                add_line(f"   Version: {info.get('version', '-')}")
+            
+            add_line(f"   Risk: {info.get('risk', 'Unknown')}")
+            add_line(f"   Recommendation: {info.get('recommendation', '-')}\n")
 
-                # ── WITR Deep Analysis ──
-                f.write("   🔍 witr Analysis:\n")
-                try:
-                    witr_lines = get_witr_output(port)
-                    if not witr_lines or witr_lines == ["No data"]:
-                        # If witr failed, show our fallback content in text form
-                        fallback = _generate_service_fallback(prog, port, 80)
-                        for l in fallback:
-                            f.write(f"     {l}\n")
-                    else:
-                        for l in witr_lines:
-                             if l.strip():
-                                 f.write(f"     {l}\n")
-                except:
-                    f.write("     (Analysis unavailable)\n")
-                f.write("\n")
+            # ── WITR Deep Analysis ──
+            add_line("   🔍 Analysis:")
+            try:
+                w_lines = get_witr_output(port)
+                if not w_lines or w_lines == ["No data"]:
+                    # If witr failed, show our fallback content in text form
+                    for l in _generate_service_fallback(prog, port, 80):
+                        add_line(f"     {l}")
+                else:
+                    for l in w_lines:
+                         if l.strip():
+                             add_line(f"     {l}")
+            except:
+                add_line("     (Analysis unavailable)")
+            add_line()
 
                 # ── Process Reality Check ──
-                if pid and pid.isdigit():
-                    f.write("   🔥 Process Reality Check:\n")
-                    
-                    # Sentinel Findings
-                    findings = perform_security_heuristics(pid, port, prog, user)
-                    if findings:
-                        f.write("     🛡️ SENTINEL AUDIT:\n")
-                        for find in findings:
-                            f.write(f"       [{find['level']}] {find['msg']}\n")
-                    # Cmdline
-                    cmd = get_full_cmdline(pid)
-                    f.write(f"     Command: {cmd}\n")
-                    
-                    # Tree
-                    chain = get_process_parent_chain(pid)
-                    tree = format_process_tree(chain)
-                    if tree:
-                        f.write("     Process Tree:\n")
-                        for l in tree:
-                            f.write(f"       {l}\n")
-                    
-                    # Runtime
-                    runtime = detect_runtime_type_cached(pid)
-                    if runtime.get("type") != "Native":
-                         f.write(f"     Runtime: {runtime['type']} ({runtime['mode']})\n")
+            if pid and pid.isdigit():
+                add_line("   🔥 Process Reality Check:")
+                findings = perform_security_heuristics(pid, port, prog, user)
+                if findings:
+                    add_line("     🛡️ SENTINEL AUDIT:")
+                    for find in findings:
+                        add_line(f"       [{find['level']}] {find['msg']}")
+                cmd = get_full_cmdline(pid)
+                add_line(f"     Command: {cmd}")
+                
+                chain = get_process_parent_chain(pid)
+                tree = format_process_tree(chain)
+                if tree:
+                    add_line("     Process Tree:")
+                    for l in tree:
+                        add_line(f"       {l}")
+                
+                runtime = detect_runtime_type_cached(pid)
+                if runtime.get("type") != "Native":
+                     add_line(f"     Runtime: {runtime['type']} ({runtime['mode']})")
 
-                    # Resource Pressure
-                    fd_info = get_fd_pressure_cached(pid)
-                    f.write(f"     File Descriptors: {fd_info['open']} / {fd_info['limit']} ({fd_info['usage']})\n")
-                    f.write(f"     OOM Score: {get_oom_score_adj(pid)}\n")
-                    f.write("\n")
-                
-                # ── Activity History ──
-                history = get_service_activity_history(prog, pid, port, max_entries=8)
-                f.write(f"   📜 Recent Activity ({len(history)} events):\n")
-                if history:
-                    for ts, msg, _ in history:
-                        f.write(f"     [{ts}] {msg}\n")
-                else:
-                    f.write("     (No logs found)\n")
-                
-                # ── Connection Stats ──
-                conn = get_connections_info(port)
-                f.write(f"\n   🔴 Network Visibility:\n")
-                f.write(f"     Active Connections: {conn['active_connections']}\n")
-                if conn['top_ip'] != "-":
-                     f.write(f"     Top IP: {conn['top_ip']} ({conn['top_ip_count']})\n")
+                fd_info = get_fd_pressure_cached(pid)
+                add_line(f"     File Descriptors: {fd_info['open']} / {fd_info['limit']} ({fd_info['usage']})")
+                add_line(f"     OOM Score: {get_oom_score_adj(pid)}\n")
+            
+            # ── Activity History ──
+            history = get_service_activity_history(prog, pid, port, max_entries=8)
+            add_line(f"   📜 Recent Activity ({len(history)} events):")
+            if history:
+                for ts, msg, _ in history:
+                    add_line(f"     [{ts}] {msg}")
+            else:
+                add_line("     (No logs found)")
+            
+            # ── Connection Stats ──
+            conn = get_connections_info(port)
+            add_line(f"\n   🔴 Network Visibility:")
+            add_line(f"     Active Connections: {conn['active_connections']}")
+            if conn['top_ip'] != "-":
+                 add_line(f"     Top IP: {conn['top_ip']} ({conn['top_ip_count']})")
 
-                # ── Open Files ──
-                files = get_open_files_cached(pid)
-                f.write(f"\n   📂 Open Files ({len(files)}):\n")
-                for i, file_entry in enumerate(files[:8]):
-                    f.write(f"     - {file_entry}\n")
-                if len(files) > 8:
-                    f.write(f"     ... ({len(files)-8} more)\n")
-                
-                f.write("\n" + "=" * 80 + "\n\n")
+            # ── Open Files ──
+            files = get_open_files_cached(pid)
+            add_line(f"\n   📂 Open Files ({len(files)}):")
+            for i, file_entry in enumerate(files[:8]):
+                add_line(f"     - {file_entry}")
+            if len(files) > 8:
+                add_line(f"     ... ({len(files)-8} more)")
+            
+            add_line("\n" + "=" * 80 + "\n")
 
-            if include_services:
-                f.write("\n" + "═" * 80 + "\n")
-                f.write("      ⚙️  SYSTEM SERVICES & UNIT FILES ANALYSIS (With Identity Info)\n")
-                f.write("═" * 80 + "\n\n")
-                
-                f.write("── ACTIVE SYSTEMD UNITS ──\n")
-                f.write(f"{'UNIT':<50} {'IDENTITY':<30} {'ACTIVE':<12} {'SUB':<12} {'DESCRIPTION'}\n")
-                f.write("-" * 140 + "\n")
-                units, _ = get_systemd_services()
-                for u in units:
-                    info = SYSTEM_SERVICES_DB.get(u['unit'], {})
-                    identity = info.get('name', '-')
-                    f.write(f"{u['unit']:<50} {identity:<30} {u['active']:<12} {u['sub']:<12} {u['description']}\n")
-                
-                f.write("\n\n── INSTALLED UNIT FILES ──\n")
-                f.write(f"{'UNIT FILE':<50} {'IDENTITY':<30} {'TYPE':<15} {'STATE':<12} {'PRESET'}\n")
-                f.write("-" * 140 + "\n")
-                unit_files = get_systemd_unit_files()
-                for uf in unit_files:
-                    info = SYSTEM_SERVICES_DB.get(uf['unit'], {})
-                    identity = info.get('name', '-')
-                    srv_type = info.get('type', '-')
-                    f.write(f"{uf['unit']:<50} {identity:<30} {srv_type:<15} {uf['active']:<12} {uf['sub']}\n")
-                
-                f.write("\n" + "═" * 80 + "\n\n")
+        if include_services:
+            add_line("\n" + "═" * 80)
+            add_line("      ⚙️  SYSTEM SERVICES & UNIT FILES ANALYSIS (With Identity Info)")
+            add_line("═" * 80 + "\n")
+            
+            add_line("── ACTIVE SYSTEMD UNITS ──")
+            add_line(f"{'UNIT':<50} {'IDENTITY':<30} {'ACTIVE':<12} {'SUB':<12} {'DESCRIPTION'}")
+            add_line("-" * 140)
+            units_list, _ = get_systemd_services()
+            for u_item in units_list:
+                info_itm = SYSTEM_SERVICES_DB.get(u_item['unit'], {})
+                id_itm = info_itm.get('name', '-')
+                add_line(f"{u_item['unit']:<50} {id_itm:<30} {u_item['active']:<12} {u_item['sub']:<12} {u_item['description']}")
+            
+            add_line("\n\n── INSTALLED UNIT FILES ──")
+            add_line(f"{'UNIT FILE':<50} {'IDENTITY':<30} {'TYPE':<15} {'STATE':<12} {'PRESET'}")
+            add_line("-" * 140)
+            ufiles = get_systemd_unit_files()
+            for uf in ufiles:
+                info_uf = SYSTEM_SERVICES_DB.get(uf['unit'], {})
+                id_uf = info_uf.get('name', '-')
+                stype_uf = info_uf.get('type', '-')
+                add_line(f"{uf['unit']:<50} {id_uf:<30} {stype_uf:<15} {uf['active']:<12} {uf['sub']}")
+            
+            add_line("\n" + "═" * 80 + "\n")
 
-        # Success Screen
+        # Cleanup splash
         if win:
-            win.erase()
-            win.box()
-            win.addstr(bh//2 - 1, (bw - 15)//2, "✅ COMPLETED!", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
-            win.addstr(bh//2 + 1, (bw - len(filename) - 10)//2, f"Saved to {filename}", curses.color_pair(CP_TEXT))
-            win.refresh()
-            time.sleep(2)
+            win.erase(); win.refresh(); del win
+        
+        # --- SHOW PREVIEW MODAL ---
+        if show_full_inspection_preview(stdscr, report_lines):
+            try:
+                with open(filename, "w", encoding="utf-8") as fsav:
+                    for rl in report_lines:
+                        fsav.write(rl + "\n")
+                show_message(stdscr, f"✅ Full inspection saved to: {filename}")
+            except Exception as e_sav:
+                 show_message(stdscr, f"❌ Save failed: {str(e_sav)}")
         else:
-             show_message(stdscr, f"✅ Full dump saved to: {filename}")
-             time.sleep(1.5)
+            show_message(stdscr, "Inspection closed without saving.")
+        
+        time.sleep(1.5)
 
     except Exception as e:
-        show_message(stdscr, f"❌ Dump failed: {str(e)}")
+        show_message(stdscr, f"❌ Inspection failed: {str(e)}")
         time.sleep(2)
 # --------------------------------------------------
 # Main Loop

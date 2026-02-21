@@ -1,3 +1,16 @@
+heimdall (0.9.2-1) unstable; urgency=medium
+
+  * NEW FEATURE: Full Inspection Results Preview:
+    - Added a scrollable preview modal for Full System Inspection results.
+    - Added manual save option (s) or close without saving (q/ESC).
+    - Added visual color-coding for security threats in the preview.
+  * UI/UX:
+    - Renamed "Dump" to "Full Inspect" for better clarity.
+    - Added background persistence during splash screens and inspection.
+    - Restored Action Center shortcut for Full Inspection (d).
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 21 Feb 2026 21:00:00 +0200
+
 heimdall (0.9.1-1) unstable; urgency=medium
 
   * FIX: Included sentinel_rules.json in package data and binary builds.
