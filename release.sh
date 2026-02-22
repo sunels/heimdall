@@ -4,11 +4,22 @@ set -e
 # ==============================================================================
 # 🚀 HEIMDALL RELEASE SCRIPT
 # ==============================================================================
-# Usage: ./release.sh [patch|minor|major|x.y.z] [--test]
-# Example: ./release.sh patch
-#          ./release.sh 1.0.0 --test
-#
-# Requirements: pip install build twine
+# 🤖 AGENT GUIDE: HOW THIS SCRIPT WORKS
+# 1. It extracts the CURRENT_VERSION from setup.py.
+# 2. It increments the version based on [patch|minor|major] or uses the provided version.
+# 3. It updates version strings in:
+#    - heimdall/__init__.py (CLI version arg)
+#    - setup.py (PyPI metadata)
+#    - PKGBUILD (Arch Linux package)
+#    - debian/changelog (Debian package)
+# 4. It cleans the dist/ folder to prevent conflict.
+# 5. It builds:
+#    - sdist & wheel for PyPI (using .venv if present)
+#    - .deb package (using dpkg-buildpackage)
+# 6. It uploads .tar.gz and .whl to PyPI using twine.
+#    - REQUIRES: TWINE_USERNAME=__token__ and TWINE_PASSWORD=pypi-...
+# 7. It creates a git commit, a git tag vX.Y.Z, and pushes to origin.
+# 8. It creates a GitHub Release if 'gh' CLI is available.
 # ==============================================================================
 
 # 1. Parse Arguments
@@ -110,12 +121,12 @@ fi
 # 9. Upload to PyPI
 if [ "$TEST_MODE" = true ]; then
     echo "🧪 Uploading to TestPyPI..."
-    $TWINE_CMD upload --repository testpypi dist/*
-    PYPI_URL="https://test.pypi.org/project/heimdall/$VERSION/"
+    $TWINE_CMD upload --repository testpypi dist/*.tar.gz dist/*.whl
+    PYPI_URL="https://test.pypi.org/project/heimdall-linux/$VERSION/"
 else
     echo "🚀 Uploading to PyPI..."
-    $TWINE_CMD upload dist/*
-    PYPI_URL="https://pypi.org/project/heimdall/$VERSION/"
+    $TWINE_CMD upload dist/*.tar.gz dist/*.whl
+    PYPI_URL="https://pypi.org/project/heimdall-linux/$VERSION/"
 fi
 
 # 10. Git Tag & Push
