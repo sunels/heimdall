@@ -57,7 +57,7 @@ This eliminates the need to jump between multiple tools such as `ss`, `netstat`,
 
 ---
 
-![heimdall logo](screenshots/logo.png)
+![heimdall logo](https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/logo.png)
 
 ---
 
@@ -85,78 +85,78 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 ## 📸 Screenshots
 
 ### 🔍 Main View — Ports, Processes & Open Files
-<img src="screenshots/pp-1.png" alt="heimdall main view" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-1.png" alt="heimdall main view" width="100%"/>
 
 ---
 
 ### 🧾 Detail View — Deep Port & Process Inspection
-<img src="screenshots/pp-2.png" alt="heimdall detail view" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-2.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Actions Center (Modal)
-<img src="screenshots/pp-3.png" alt="heimdall detail view" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-3.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Block IP Modal
-<img src="screenshots/pp-4.png" alt="heimdall detail view" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-4.png" alt="heimdall detail view" width="100%"/>
 
 ---
 ### 🧾 Detail View — Connection Limit Modal
-<img src="screenshots/pp-5.png" alt="heimdall connection limit" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-5.png" alt="heimdall connection limit" width="100%"/>
 
 ---
 ### 🧾 Color Palette — Happy eyes edition
-<img src="screenshots/pp-6.png" alt="heimdall color palette" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-6.png" alt="heimdall color palette" width="100%"/>
 
 ---
 
 ### 🔍 Deep Inspection — Static Service Analysis & Risk Audit
-<img src="screenshots/pp-7.png" alt="heimdall deep inspection" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-7.png" alt="heimdall deep inspection" width="100%"/>
 
 ---
 
 ### 🔍 Deep Activity History — Historical Log Intelligence
-<img src="screenshots/pp-8.png" alt="heimdall activity history" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-8.png" alt="heimdall activity history" width="100%"/>
 
 ---
 
 ### 💾 Full System Dump — Visual Progress & Archive
-<img src="screenshots/pp-9.png" alt="heimdall system dump" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-9.png" alt="heimdall system dump" width="100%"/>
 
 ---
 
 ### 🔍 Interactive System Filter — Real-time TUI Filtering
-<img src="screenshots/pp-10.png" alt="heimdall system filter" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-10.png" alt="heimdall system filter" width="100%"/>
 
 ---
 
 ### 🛡️ Heimdall Sentinel — Behavioral Security Intelligence
-<img src="screenshots/pp-11.png" alt="heimdall sentinel analysis" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-11.png" alt="heimdall sentinel analysis" width="100%"/>
 
 ---
 
 ### 🛡️ Sentinel Deep Audit — Intelligent Risk Scoring
-<img src="screenshots/pp-12.png" alt="heimdall sentinel detailed audit" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-12.png" alt="heimdall sentinel detailed audit" width="100%"/>
 
 ---
 
 ### 🛡️ Sentinel Report — Security Executive Summary
-<img src="screenshots/pp-13.png" alt="heimdall sentinel executive summary report" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-13.png" alt="heimdall sentinel executive summary report" width="100%"/>
 
 ---
 
 ### ⚙️ System Services Manager (z) — View & Control Units (Active)
-<img src="screenshots/pp-14.png" alt="heimdall services manager" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-14.png" alt="heimdall services manager" width="100%"/>
 
 ---
 
 ### ⚙️ System Services Manager — Info & Help (i)
-<img src="screenshots/pp-15.png" alt="heimdall services info" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-15.png" alt="heimdall services info" width="100%"/>
 
 ---
 
 ### 📂 System Services Manager — All Unit Files (TAB)
-<img src="screenshots/pp-16.png" alt="heimdall all unit files" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-16.png" alt="heimdall all unit files" width="100%"/>
 
 ---
 
@@ -362,29 +362,29 @@ Heimdall isn't just a viewer; it's a **proactive guardian**. Here is how the Sen
 ### 1. Advanced Risk Auditing
 When you use the TUI, Heimdall Sentinel performs a deep dive into every listener. Below, it identifies an outdated `vsftpd` service running as **root** and flags it as **High Risk**, explaining exactly why it's a brute-force magnet.
 
-<img src="screenshots/pp-17.png" alt="Sentinel risk audit" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-17.png" alt="Sentinel risk audit" width="100%"/>
 
 ---
 
 ### 2. Going "Hands-Free" with Daemon Mode
 By running `heimdall --daemon`, you move the security logic into the background. It stays silent until a truly suspicious event occurs — like a script-managed backdoor attempt.
 
-<img src="screenshots/pp-18.png" alt="Starting daemon mode" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-18.png" alt="Starting daemon mode" width="100%"/>
 
 ---
 
 ### 3. Real-time Intervention
 The moment a suspicious process (like a hidden `nc` listener) tries to open a port, the Daemon **immediately suspends** it and prompts you with a high-priority intervention modal.
 
-<img src="screenshots/pp-19.png" alt="Daemon interception modal" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-19.png" alt="Daemon interception modal" width="100%"/>
 
 ---
 
 ### 4. System-Wide Alerts
 If you are working in another terminal, Heimdall sends a **wall broadcast** to all TTYs and a **native desktop notification**, ensuring you never miss a security event even if the TUI is closed.
 
-<img src="screenshots/pp-20.png" alt="Broadcast alert" width="100%"/>
-<img src="screenshots/pp-21.png" alt="Desktop notification" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-20.png" alt="Broadcast alert" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-21.png" alt="Desktop notification" width="100%"/>
 
 ---
 
