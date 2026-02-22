@@ -3170,37 +3170,52 @@ def show_inspect_modal(stdscr, port, prog, pid, username):
 
 def draw_status_indicator(stdscr):
     """
-    Heimdall 'System Tray': Displays background update status and action feedback
-    at the top-right corner.
+    Heimdall 'Status Bar': Displays background activity and action feedback
+    at the bottom-right corner with a progressing icon.
     """
-    global ACTION_STATUS_MSG, ACTION_STATUS_EXP
+    global ACTION_STATUS_MSG, ACTION_STATUS_EXP, UPDATE_STATUS_MSG, SCANNING_STATUS_EXP
     h, w = stdscr.getmaxyx()
     now = time.time()
     
+    # 🌀 Progressing icon: Blue Braille Circle (mavi noktalar)
+    spinner_frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+    s_frame = spinner_frames[int(now * 12) % len(spinner_frames)]
+    
     msg = ""
-    color = curses.color_pair(CP_WARN) | curses.A_BOLD
+    is_active = False
+    # CP_HEADER is blue in most themes (VSCode, Catppuccin, OneDark)
+    spinner_attr = curses.color_pair(CP_HEADER) | curses.A_BOLD
+    status_attr = curses.color_pair(CP_ACCENT) | curses.A_BOLD
     
     # Priority 1: Action Feedback (Killed, Blocked, etc.)
     if ACTION_STATUS_MSG and now < ACTION_STATUS_EXP:
-        is_error = any(kw in ACTION_STATUS_MSG.lower() for kw in ["failed", "error", "invalid", "danger", "strike failed"])
-        msg = f" ⚡ {ACTION_STATUS_MSG} "
-        if is_error:
-            color = curses.color_pair(CP_WARN) | curses.A_REVERSE | curses.A_BOLD
-        else:
-            color = curses.color_pair(CP_ACCENT) | curses.A_REVERSE | curses.A_BOLD
+        msg = ACTION_STATUS_MSG
+        is_active = True
+        is_error = any(kw in ACTION_STATUS_MSG.lower() for kw in ["failed", "error", "invalid"])
+        if is_error: status_attr = curses.color_pair(CP_WARN) | curses.A_BOLD
     # Priority 2: Background Service Updates
     elif UPDATE_STATUS_MSG:
-        icon = "🔄" if "Loading" in UPDATE_STATUS_MSG else "📡"
-        msg = f" {icon} {UPDATE_STATUS_MSG} "
-        color = curses.color_pair(CP_WARN) | curses.A_BOLD
+        msg = UPDATE_STATUS_MSG
+        is_active = True
     # Priority 3: Auto-Scan Heartbeat
     elif now < SCANNING_STATUS_EXP:
-        msg = " 📡 Scanning... "
-        color = curses.color_pair(CP_ACCENT) | curses.A_BOLD
+        msg = "Scanning..."
+        is_active = True
+        status_attr = curses.color_pair(CP_TEXT) | curses.A_DIM
         
-    if msg:
+    if is_active:
+        # Format: [ ⣾ ] Message...
+        indicator = f" {s_frame} {msg} "
         try:
-            stdscr.addstr(0, max(0, w - len(msg) - 2), msg, color)
+            # Position: Bottom-right corner (h-1), right-aligned
+            # We use w - len - 1 to leave a tiny gap at the end
+            start_x = max(0, w - len(indicator) - 1)
+            
+            # 1. Draw the text part
+            stdscr.addstr(h - 1, start_x, indicator, status_attr)
+            
+            # 2. Overlay the spinner with the requested blue color
+            stdscr.addstr(h - 1, start_x + 1, s_frame, spinner_attr)
         except: pass
 
 def draw_period_modal(stdscr):
@@ -3900,7 +3915,7 @@ def toggle_firewall(port, stdscr, firewall_status):
 
 def show_message(stdscr, msg, duration=3.0):
     """
-    Post a non-blocking notification to the 'System Tray' (top-right).
+    Post a non-blocking notification to the 'Status Bar' (bottom-right).
     Does not halt execution; the message persists for `duration` seconds.
     """
     global ACTION_STATUS_MSG, ACTION_STATUS_EXP
@@ -4346,13 +4361,11 @@ def draw_help_bar(stdscr, show_detail):
                 (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
                 (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
                 (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
-                ("", None),
                 (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
                 (" 🔥 [f Firewall]", curses.color_pair(CP_ACCENT)),
                 (" 🛠  [a Actions]", curses.color_pair(CP_ACCENT)),
                 (" ⚙️  [z Services]", curses.color_pair(CP_ACCENT)),
                 (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
-                ("", None),
                 (" 📂 [←→ Files]", curses.color_pair(CP_ACCENT)),
                 (" ⇱⇲ [Tab Maximize]", curses.color_pair(CP_ACCENT)),
                 (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
@@ -4378,6 +4391,40 @@ def draw_help_bar(stdscr, show_detail):
                 bar_win.addstr(y, 1, text[:bar_w-2], attr if attr else curses.color_pair(CP_TEXT))
             except: pass
             y += 1
+
+        # 🛡️ SENTINEL ICON LEGEND (Bottom Section)
+        # Check if we have enough space for the legend
+        if h - y >= 8:
+            try:
+                # Separator
+                y += 1
+                bar_win.attron(curses.color_pair(CP_BORDER))
+                bar_win.hline(y, 1, curses.ACS_HLINE, bar_w - 2)
+                bar_win.attroff(curses.color_pair(CP_BORDER))
+                y += 1
+                
+                # Legend Title
+                legend_title = " SENTINEL LEGEND "
+                bar_win.addstr(y, max(1, (bar_w - len(legend_title)) // 2), legend_title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+                y += 1
+                
+                legend_items = [
+                    ("🚩 Risk (DB)", CP_WARN),
+                    ("☢️  Backdoor", CP_WARN),
+                    ("🎭 Masquerade", CP_WARN),
+                    ("💀 Deleted", CP_WARN),
+                    ("🧪 Script Ln", CP_ACCENT),
+                    ("📂 /tmp Path", CP_ACCENT),
+                    ("🌐 Public Int", CP_ACCENT),
+                    ("🛡️  Root Priv", CP_ACCENT),
+                    ("🌲 Shell Prnt", CP_ACCENT)
+                ]
+                
+                for item_text, pair_id in legend_items:
+                    if y >= h - 1: break
+                    bar_win.addstr(y, 1, item_text[:bar_w-2], curses.color_pair(pair_id))
+                    y += 1
+            except: pass
 
         bar_win.noutrefresh()
     except:
