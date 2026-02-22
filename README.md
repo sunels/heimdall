@@ -40,6 +40,7 @@
   - 🛠️ **Full Actions**: Start, stop, restart, reload, and edit unit files directly.
   - ℹ️ **Intelligence (i)**: Explain systemd terminology and clarify `alias` / `static` states.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
+- 🛡️ **Daemon Mode (Background)**: Non-interactive monitoring with automatic suspicious-outbound detection and mitigation.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
@@ -314,6 +315,73 @@ pip3 install -e .
 sudo python3 run.py
 ```
 
+## 🛡️ Daemon Mode (Background Protection)
+
+Heimdall can run as a background daemon to monitor your system 24/7. It specifically watches for **new outbound connections** from processes that are already flagged as "Suspicious" by the Sentinel logic.
+
+### 🚀 Usage
+```bash
+# Start manually in background
+sudo heimdall --daemon
+
+# Or enable via Settings (p) -> Daemon Mode: ON
+```
+
+### 🧠 How it protects
+1. **Detection**: Daemon polls connections every few seconds.
+2. **Flagging**: If a process with a HIGH/CRIT danger level (e.g. deleted binary, /tmp CWD) tries to connect to the internet.
+3. **Suspension**: Daemon immediately sends `SIGSTOP` to the process.
+4. **Approval**: 
+   - If the Heimdall TUI is open, it pops up a **Priority Alert Modal** for you to Allow or Kill.
+   - If the TUI is closed, it sends a System Notification (`notify-send`) and waits 30s.
+5. **Enforcement**: If denied or timed out, the process is **Permanently Killed** (`SIGKILL`).
+
+### ⚙️ Systemd Installation
+To run Heimdall as a persistent system service:
+
+1. Copy the provided service file:
+   `sudo cp heimdall.service /etc/systemd/system/`
+2. Enable and start:
+   `sudo systemctl enable --now heimdall`
+3. Check status/logs:
+   `sudo systemctl status heimdall`
+   `journalctl -u heimdall -f`
+
+---
+
+## 🛡️ Sentinel & Daemon Mode: The Safety Story
+
+Heimdall isn't just a viewer; it's a **proactive guardian**. Here is how the Sentinel engine and Daemon mode work together to protect your system:
+
+### 1. Advanced Risk Auditing
+When you use the TUI, Heimdall Sentinel performs a deep dive into every listener. Below, it identifies an outdated `vsftpd` service running as **root** and flags it as **High Risk**, explaining exactly why it's a brute-force magnet.
+
+<img src="screenshots/pp-17.png" alt="Sentinel risk audit" width="100%"/>
+
+---
+
+### 2. Going "Hands-Free" with Daemon Mode
+By running `heimdall --daemon`, you move the security logic into the background. It stays silent until a truly suspicious event occurs — like a script-managed backdoor attempt.
+
+<img src="screenshots/pp-18.png" alt="Starting daemon mode" width="100%"/>
+
+---
+
+### 3. Real-time Intervention
+The moment a suspicious process (like a hidden `nc` listener) tries to open a port, the Daemon **immediately suspends** it and prompts you with a high-priority intervention modal.
+
+<img src="screenshots/pp-19.png" alt="Daemon interception modal" width="100%"/>
+
+---
+
+### 4. System-Wide Alerts
+If you are working in another terminal, Heimdall sends a **wall broadcast** to all TTYs and a **native desktop notification**, ensuring you never miss a security event even if the TUI is closed.
+
+<img src="screenshots/pp-20.png" alt="Broadcast alert" width="100%"/>
+<img src="screenshots/pp-21.png" alt="Desktop notification" width="100%"/>
+
+---
+
 ## 🚀 Usage
 
 Launch the interactive dashboard:
@@ -458,7 +526,8 @@ Heimdall Sentinel is a **behavioral heuristic engine** that goes beyond simple p
 ### Sentinel Intelligence Locations:
 1. **Main View**: Visual icons (`☢️`, `💀`, `🧪`) appear next to process names for instant triage.
 2. **Deep Inspection (i)**: Shows a prioritized list of security findings with human-readable explanations.
-3. **Full System Dump (d)**: Includes a **Security Executive Summary** at the top of the report, grouping all critical threats for quick review.
+3. **Daemon Mode**: Monitors all *outbound* connections in real-time and suspends any process flagged by Sentinel until approved.
+4. **Full System Dump (d)**: Includes a **Security Executive Summary** at the top of the report, grouping all critical threats for quick review.
 ## UI / Implementation notes
 
 - Modal sizing is responsive to terminal size and has been widened to reduce text wrapping compared to earlier versions.

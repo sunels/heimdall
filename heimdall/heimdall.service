@@ -1,0 +1,14 @@
+[Unit]
+Description=Heimdall Background Monitoring Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/heimdall --daemon
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/root
+
+[Install]
+WantedBy=multi-user.target

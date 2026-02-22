@@ -1,3 +1,12 @@
+heimdall (0.9.4-1) unstable; urgency=medium
+
+  * DOCUMENTATION:
+    - Added comprehensive visual guide to Sentinel and Daemon Mode in README.
+    - Integrated new screenshots showing background protection and desktop alerts.
+    - Relocated and organized project screenshots for better organization.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sun, 22 Feb 2026 09:05:00 +0200
+
 heimdall (0.9.3-1) unstable; urgency=medium
 
   * SECURITY FIX: Tree Kill (Force Kill Tree) completely rewritten for safety:

@@ -53,6 +53,7 @@ echo "📦 Building Standalone Binary (PyInstaller)..."
     --add-data "heimdall/system-services.json:." \
     --add-data "heimdall/system-services.sha256:." \
     --add-data "heimdall/sentinel_rules.json:." \
+    --add-data "heimdall/heimdall.service:." \
     run.py > /dev/null
 echo "✅ Binary built: dist/heimdall"
 

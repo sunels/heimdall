@@ -177,6 +177,46 @@
                     ]
                 }
             ]
+        },
+        {
+            "id": "outbound_tmp",
+            "name": "Outbound Risk",
+            "level": "CRITICAL",
+            "icon": "📡",
+            "message": "SUSPICIOUS OUTBOUND: {prog} is making external connections from /tmp or /dev/shm!",
+            "logic": [
+                {
+                    "field": "is_outbound",
+                    "op": "is_true"
+                },
+                {
+                    "field": "cwd",
+                    "op": "contains_any",
+                    "value": [
+                        "/tmp",
+                        "/dev/shm",
+                        "/var/tmp"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "outbound_deleted",
+            "name": "Outbound Risk",
+            "level": "CRITICAL",
+            "icon": "📡",
+            "message": "SUSPICIOUS OUTBOUND: {prog} (DELETED binary) is making external connections!",
+            "logic": [
+                {
+                    "field": "is_outbound",
+                    "op": "is_true"
+                },
+                {
+                    "field": "exe",
+                    "op": "contains",
+                    "value": "(deleted)"
+                }
+            ]
         }
     ]
 }
