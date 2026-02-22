@@ -1,3 +1,25 @@
+heimdall (0.9.3-1) unstable; urgency=medium
+
+  * SECURITY FIX: Tree Kill (Force Kill Tree) completely rewritten for safety:
+    - Previous implementation used Process Group (PGRP) kill which could
+      terminate unrelated processes including gnome-shell and the desktop session.
+    - New implementation uses strict ancestor scan (upward) + child sweep
+      (downward) approach — never kills the user's login shell or display server.
+    - Added HARD_PROTECT set: gnome-shell, Xorg, systemd, terminator, konsole,
+      sshd, tmux, pulseaudio, NetworkManager and more are now fully protected.
+  * NEW: Port Orphan Sweep (Phase 3.5):
+    - After tree imha, performs an additional ss-based scan to kill orphan
+      processes (e.g. nc instances reparented to systemd from dead scripts)
+      that are still holding the target port.
+  * NEW: Script Loop Detection:
+    - Processes managed by a script (.sh/.py/.js etc.) are now marked with
+      a 🌲 icon in the main table.
+    - When stopping or force-killing such a process, Heimdall prompts:
+      "Kill Entire Tree" vs "Only This Process" to prevent immediate respawning.
+  * IMPROVED: kill_process_group now auto-detects port if not supplied.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sun, 22 Feb 2026 08:50:00 +0200
+
 heimdall (0.9.2-1) unstable; urgency=medium
 
   * NEW FEATURE: Full Inspection Results Preview:

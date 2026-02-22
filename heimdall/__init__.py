@@ -21,6 +21,10 @@ import functools
 import threading
 import hashlib
 import urllib.request
+import signal
+import socket
+import select
+from concurrent.futures import ThreadPoolExecutor
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -37,7 +41,9 @@ def debug_log(msg):
 CONFIG = {
     "auto_update_services": True,
     "update_interval_minutes": 30,
-    "auto_scan_interval": 3.0
+    "auto_scan_interval": 3.0,
+    "daemon_enabled": False,
+    "alert_timeout": 30
 }
 SERVICES_DB = {}
 SYSTEM_SERVICES_DB = {}
@@ -49,6 +55,144 @@ ACTION_STATUS_MSG = ""
 ACTION_STATUS_EXP = 0.0
 SCANNING_STATUS_EXP = 0.0
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
+PENDING_IPC_ALERT = None
+PENDING_IPC_RESULT = {} # id -> bool
+
+_script_managed_cache = {} # pid -> (is_managed: bool, timestamp: float)
+SC_MANAGED_TTL = 30.0
+
+def is_managed_by_script(pid):
+    """Fast check if a PID is part of a script-managed hierarchy."""
+    if not pid or not pid.isdigit() or pid == "-": return False
+    now = time.time()
+    if pid in _script_managed_cache:
+        val, ts = _script_managed_cache[pid]
+        if now - ts < SC_MANAGED_TTL: return val
+    
+    is_managed = False
+    curr_p = pid
+    try:
+        # Check parent chain (up to 4 levels) for script command lines
+        for _ in range(4):
+            stat_path = f"/proc/{curr_p}/stat"
+            if not os.path.exists(stat_path): break
+            with open(stat_path, "r") as f:
+                c = f.read()
+            m_end = c.rfind(")")
+            ppid = c[m_end+2:].split()[1]
+            if not ppid or ppid in ("0", "1"): break
+            
+            p_cmd = get_full_cmdline(ppid)
+            if any(ext in p_cmd for ext in (".sh", ".py", ".js", ".pl", ".rb", ".php", ".sh ")):
+                is_managed = True
+                break
+            curr_p = ppid
+    except: pass
+    
+    _script_managed_cache[pid] = (is_managed, now)
+    return is_managed
+
+def start_ipc_server():
+    """Run a simple Unix Domain Socket server for Daemon alerting."""
+    global PENDING_IPC_ALERT
+    if os.path.exists(IPC_SOCKET_PATH):
+        try: os.remove(IPC_SOCKET_PATH)
+        except: pass
+        
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(IPC_SOCKET_PATH)
+            server.listen(1)
+            server.settimeout(1.0)
+            while True:
+                try:
+                    conn, _ = server.accept()
+                    with conn:
+                        data_raw = conn.recv(2048)
+                        if data_raw:
+                            alert = json.loads(data_raw.decode('utf-8'))
+                            if alert.get("type") == "ALERT":
+                                alert_id = f"{alert.get('pid')}_{time.time()}"
+                                PENDING_IPC_ALERT = {**alert, "id": alert_id}
+                                request_list_refresh()
+                                
+                                # Wait for result from UI thread
+                                timeout = CONFIG.get("alert_timeout", 30)
+                                start_wait = time.time()
+                                allow = False
+                                while time.time() - start_wait < timeout:
+                                    if alert_id in PENDING_IPC_RESULT:
+                                        result = PENDING_IPC_RESULT.pop(alert_id)
+                                        # result is (allow: bool, kill_parent: bool)
+                                        resp = {"allow": result[0], "kill_parent": result[1]}
+                                        conn.sendall(json.dumps(resp).encode('utf-8'))
+                                        break
+                                    time.sleep(0.1)
+                except socket.timeout:
+                    continue
+                except:
+                    time.sleep(1)
+    except: pass
+
+def draw_ipc_alert_modal(stdscr, alert):
+    """Show an approval modal for an IPC alert."""
+    h, w = stdscr.getmaxyx()
+    bw = min(w - 4, 80)
+    bh = 15
+    y, x = (h - bh) // 2, (w - bw) // 2
+    
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.box()
+    
+    title = "🚨 DAEMON SECURITY ALERT 🚨"
+    win.addstr(1, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    
+    win.addstr(3, 3, f"PID  : {alert['pid']}", curses.A_BOLD)
+    win.addstr(4, 3, f"PROG : {alert['prog']}", curses.color_pair(CP_ACCENT))
+    win.addstr(5, 3, f"USER : {alert['user']}")
+    win.addstr(6, 3, f"DEST : {alert['remote']}", curses.color_pair(CP_WARN))
+    
+    cmd = alert.get('cmdline', '-')
+    if len(cmd) > bw - 8: cmd = cmd[:bw-11] + "..."
+    win.addstr(8, 3, f"COMMAND: {cmd}")
+    
+    msg = "This process is suspicious and attempting OUTBOUND connection."
+    win.addstr(10, (bw - len(msg)) // 2, msg, curses.A_DIM)
+    
+    footer = "[y] ALLOW | [n] KILL PROCESS | [k] KILL PARENT TREE"
+    win.addstr(12, (bw - len(footer)) // 2, footer, curses.color_pair(CP_ACCENT))
+    win.addstr(13, (bw - 20) // 2, "Timeout 30s = KILL", curses.A_DIM)
+    
+    win.timeout(1000)
+    start_t = time.time()
+    allow = False
+    kill_parent = False
+    
+    while True:
+        elapsed = int(time.time() - start_t)
+        remain = CONFIG.get("alert_timeout", 30) - elapsed
+        if remain <= 0: break
+        
+        try:
+            win.addstr(1, bw - 5, f"{remain:2d}s", curses.color_pair(CP_WARN))
+            win.refresh()
+        except: pass
+        
+        k = win.getch()
+        if k == ord('y') or k == ord('Y'):
+            allow = True
+            break
+        elif k == ord('k') or k == ord('K'):
+            allow = False
+            kill_parent = True
+            break
+        elif k == ord('n') or k == ord('N') or k == 27:
+            allow = False
+            kill_parent = False
+            break
+            
+    return allow, kill_parent
 SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.json"
 SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.sha256"
 SYSTEM_SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/system-services.json"
@@ -76,6 +220,239 @@ def save_config():
             json.dump(CONFIG, f, indent=2)
     except Exception as e:
         debug_log(f"CONFIG: Error saving: {e}")
+
+# --------------------------------------------------
+# 🛡️  Daemon Mode & IPC
+# --------------------------------------------------
+IPC_SOCKET_PATH = "/tmp/heimdall_tui.ipc"
+PID_FILE_PATH = "/tmp/heimdall.pid"
+
+class DaemonManager:
+    def __init__(self):
+        self.seen_connections = set() # (pid, ctime, status, addr)
+        self.denied_history = {} # (prog, cmdline) -> expire_time
+        self.running = True
+        self.executor = ThreadPoolExecutor(max_workers=10)
+
+    def stop(self):
+        self.running = False
+        self.executor.shutdown(wait=False)
+
+    def send_notification(self, title, msg):
+        try:
+            subprocess.run(["notify-send", title, msg], stderr=subprocess.DEVNULL)
+        except: pass
+        try:
+            subprocess.run(["wall", f"{title}: {msg}"], stderr=subprocess.DEVNULL)
+        except: pass
+
+    def request_approval(self, pid, prog, user, remote, cmdline):
+        """Request approval for a suspicious outbound connection."""
+        alert_msg = f"Suspected Outbound: PID {pid} ({prog}) -> {remote}"
+        debug_log(f"DAEMON: {alert_msg}")
+
+        # 1. Try to communicate with running TUI
+        if os.path.exists(IPC_SOCKET_PATH):
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(2.0)
+                    client.connect(IPC_SOCKET_PATH)
+                    data = {
+                        "type": "ALERT",
+                        "pid": pid,
+                        "prog": prog,
+                        "user": user,
+                        "remote": remote,
+                        "cmdline": cmdline
+                    }
+                    client.sendall(json.dumps(data).encode('utf-8'))
+                    
+                    # Wait for response
+                    resp_raw = client.recv(1024)
+                    if resp_raw:
+                        resp = json.loads(resp_raw.decode('utf-8'))
+                        return resp.get("allow", False), resp.get("kill_parent", False)
+            except Exception as e:
+                debug_log(f"DAEMON: IPC failed: {e}")
+
+        # 2. Fallback to Zenity
+        try:
+            if os.environ.get("DISPLAY"):
+                # Use --extra-button to allow killing the parent tree
+                z_cmd = [
+                    "zenity", "--question", "--title=🛡️ Heimdall Security Alert",
+                    "--text=Process: " + prog + "\nPID: " + str(pid) + "\nAction: " + remote + "\n\nHeimdall has SUSPENDED this process. What should we do?",
+                    "--ok-label=Allow", "--cancel-label=Kill Process",
+                    "--extra-button=Kill Parent Tree",
+                    "--timeout=" + str(CONFIG.get("alert_timeout", 30))
+                ]
+                res = subprocess.run(z_cmd, capture_output=True, text=True)
+                
+                # Check STDOUT first because extra-button might return 0 or 1 depending on Zenity version
+                # and we should prioritize the label if it's there.
+                stdout_norm = res.stdout.strip()
+                if "Kill Parent Tree" in stdout_norm:
+                    return False, True
+                
+                if res.returncode == 0:
+                    return True, False # Allow
+                
+                return False, False # Killed/Cancelled
+        except Exception as e:
+            debug_log(f"DAEMON: Zenity failed: {e}")
+
+        return False, False # Default to Kill Process only
+
+    def process_suspicious_conn(self, pid, prog, user, remote_display, cmdline, p):
+        """Handle a suspicious connection in a separate thread to avoid blocking the loop."""
+        try:
+            history_key = (prog, cmdline)
+            if history_key in self.denied_history:
+                if time.time() < self.denied_history[history_key]:
+                    # 🚨 AUTO-KILL + TREE STRIKE (If we've seen this malicious loop, strike hard)
+                    try:
+                        perform_tree_strike(pid, port=None)
+                        debug_log(f"DAEMON: AUTO-STRIKED known malicious loop tree at {pid} ({prog}).")
+                    except:
+                        try: os.kill(pid, signal.SIGKILL)
+                        except: pass
+                    return
+
+            try:
+                # Suspend process while waiting for user
+                os.kill(pid, signal.SIGSTOP)
+                debug_log(f"DAEMON: SUSPENDED {pid} ({prog}) for investigation.")
+            except: return
+            
+            parent_info = ""
+            parent_pid = None
+            try:
+                parent = p.parent()
+                if parent: 
+                    parent_info = f" (Parent: {parent.name()} PID {parent.pid})"
+                    parent_pid = parent.pid
+            except: pass
+
+            # Request Approval
+            allow, kill_parent = self.request_approval(pid, prog, user, remote_display, f"{cmdline}{parent_info}")
+            
+            if allow:
+                os.kill(pid, signal.SIGCONT)
+                debug_log(f"DAEMON: ALLOWED {pid} ({prog}). Resumed.")
+            else:
+                # ⚔️ KILL ACTION
+                try:
+                    debug_log(f"DAEMON: Killing suspicious process {pid} ({prog})...")
+                    
+                    if kill_parent and parent_pid:
+                        try:
+                            # Use precision tree logic BEFORE killing the leaf pid, 
+                            # otherwise /proc/pid vanishes and we can't trace the parent tree.
+                            perform_tree_strike(pid, port=None)
+                            debug_log(f"DAEMON: Executed Precision Tree Strike starting at {pid}.")
+                            self.send_notification("🛡️ Heimdall Action", f"Killed Process {prog} AND its associated script tree")
+                        except Exception as e:
+                            debug_log(f"DAEMON: Tree kill failed - {e}")
+                    else:
+                        os.kill(pid, signal.SIGKILL)
+                        self.send_notification("🛡️ Heimdall Action", f"Killed suspicious process {prog} (PID {pid})")
+
+                    # Remember this denial to auto-kill respawns
+                    self.denied_history[history_key] = time.time() + 60
+                except: pass
+        except Exception as e:
+            debug_log(f"DAEMON: Error handling process {pid}: {e}")
+
+    def run_loop(self):
+        debug_log("DAEMON: Monitoring loop started.")
+        while self.running:
+            try:
+                conns = psutil.net_connections(kind='inet')
+                for conn in conns:
+                    try:
+                        # Check for Outbound (ESTABLISHED) OR Suspicious Listeners (LISTEN)
+                        is_established = (conn.status == 'ESTABLISHED' and conn.raddr)
+                        is_listener = (conn.status == 'LISTEN')
+                        
+                        if not (is_established or is_listener):
+                            continue
+
+                        pid = conn.pid
+                        if not pid: continue
+
+                        # Use create_time to ensure we catch every unique process instance
+                        try:
+                            p = psutil.Process(pid)
+                            ctime = p.create_time()
+                        except: continue
+
+                        # Unique key including create_time to handle PID recycling
+                        conn_key = (pid, ctime, conn.status, f"{conn.laddr.ip}:{conn.laddr.port}")
+                        if conn_key in self.seen_connections:
+                            continue
+                        
+                        self.seen_connections.add(conn_key)
+
+                        if is_established:
+                            try:
+                                r_ip = ipaddress.ip_address(conn.raddr.ip)
+                                if r_ip.is_loopback: continue
+                            except: continue
+
+                        # Get more info for heuristics
+                        try:
+                            prog = p.name()
+                            user = p.username()
+                            cmdline = " ".join(p.cmdline())
+                        except: continue
+
+                        # Check heuristics
+                        findings = perform_security_heuristics(str(pid), str(conn.laddr.port), prog, user, is_outbound=is_established)
+                        is_suspicious = any(f['level'] in ['HIGH', 'CRITICAL'] for f in findings)
+                        
+                        if is_suspicious:
+                            remote_display = f"{conn.raddr.ip}:{conn.raddr.port}" if is_established else f"LISTENING on {conn.laddr.port}"
+                            # Submit to executor to avoid blocking the monitoring loop
+                            self.executor.submit(self.process_suspicious_conn, pid, prog, user, remote_display, cmdline, p)
+                            
+                    except Exception as e:
+                        debug_log(f"DAEMON: Connection proc error: {e}")
+
+            except Exception as e:
+                debug_log(f"DAEMON: Loop error: {e}")
+            
+            time.sleep(CONFIG.get("auto_scan_interval", 3.0))
+
+def run_daemon():
+    """Entry point for daemon mode."""
+    print("🚀 Heimdall starting in DAEMON mode...")
+    print(f"📄 Logging to: {DEBUG_LOG_PATH}")
+    
+    # Simple PID file for instance check
+    try:
+        if os.path.exists(PID_FILE_PATH):
+            with open(PID_FILE_PATH, 'r') as f:
+                old_pid = int(f.read().strip())
+                if psutil.pid_exists(old_pid):
+                    print(f"❌ Heimdall is already running (PID {old_pid})")
+                    sys.exit(1)
+        
+        with open(PID_FILE_PATH, 'w') as f:
+            f.write(str(os.getpid()))
+    except: pass
+
+    manager = DaemonManager()
+    
+    def handle_exit(sig, frame):
+        manager.stop()
+        try: os.remove(PID_FILE_PATH)
+        except: pass
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+    
+    manager.run_loop()
 
 def get_hash(data):
     return hashlib.sha256(data).hexdigest()
@@ -445,11 +822,12 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 0.9.2')
+    parser.add_argument("--version", action="version", version='heimdall 0.9.3')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
     parser.add_argument('--user', type=str, help='Filter view by Process Owner (User)')
+    parser.add_argument('--daemon', '--background', action='store_true', help='Run in Daemon (background) monitoring mode')
     return parser.parse_args()
 
 
@@ -655,6 +1033,8 @@ def get_open_files(pid):
                 continue
     except PermissionError:
         files.append(("-", "Permission denied (run as root to view)"))
+    except (FileNotFoundError, ProcessLookupError):
+        pass # Process exited while inspecting
     return files
 
 def format_mem_kb(kb):
@@ -1549,6 +1929,14 @@ def stop_process_or_service(pid, prog, stdscr):
 
     # Otherwise kill normal process
     try:
+        if is_managed_by_script(pid):
+            choice = confirm_tree_kill_dialog(stdscr, pid, prog, "Stop (SIGTERM)")
+            if choice == "tree":
+                kill_process_group(pid, prog, None, stdscr)
+                return
+            elif choice == "cancel":
+                return
+        
         subprocess.run(["sudo", "kill", "-TERM", pid])
         show_message(stdscr, f"Process {pid} stopped.")
     except Exception as e:
@@ -1586,9 +1974,16 @@ def force_kill_process(pid, prog, stdscr):
         show_message(stdscr, "Invalid PID.")
         return
 
-    # Force kill can be dangerous, but requested from Action Center
+    # Force kill can be dangerous
     try:
-        # Check if this process has a script ancestor to warn in logs
+        if is_managed_by_script(pid):
+            choice = confirm_tree_kill_dialog(stdscr, pid, prog, "Force Kill (SIGKILL)")
+            if choice == "tree":
+                kill_process_group(pid, prog, None, stdscr)
+                return
+            elif choice == "cancel":
+                return
+
         cmd = get_full_cmdline(pid)
         debug_log(f"F-KILL: Targeted PID {pid} ({prog}). Cmd: {cmd}")
         
@@ -1604,91 +1999,236 @@ def force_kill_process(pid, prog, stdscr):
         debug_log(f"F-KILL: Exception - {str(e)}")
         show_message(stdscr, f"Failed to force kill {pid}: {e}")
 
+def perform_tree_strike(pid, port=None):
+    """
+    Safe, surgical tree strike that kills a script and all its children
+    WITHOUT touching the user terminal or display session.
+
+    Strategy:
+    1. Walk UP the ancestor chain to find the topmost script root
+    2. Stop at login shell / terminal boundary (never climb into it)
+    3. Sweep DOWN from the identified root using recursive pgrep -P
+    4. Kill only what we found in step 3
+    5. NEVER use PGRP kill (too blunt, kills unrelated processes)
+    """
+    # Processes we NEVER touch under any circumstances
+    HARD_PROTECT = {
+        "gnome-shell", "gnome-session", "kwin", "kwin_x11", "kwin_wayland",
+        "plasmashell", "Xorg", "Xwayland",
+        "systemd", "systemd-user", "init",
+        "lightdm", "gdm", "sddm", "xdm",
+        "terminator", "gnome-terminal", "konsole", "xterm", "xfce4-terminal",
+        "tmux", "screen", "byobu", "dtach",
+        "sshd", "login", "su",
+        "dbus-daemon", "dbus-broker",
+        "pulseaudio", "pipewire",
+        "NetworkManager", "wpa_supplicant",
+    }
+
+    our_pid = str(os.getpid())
+
+    try:
+        debug_log(f"TREE-KILL: Starting safe scan for PID {pid} (Port {port})")
+        scripts_found = set()
+
+        # PHASE 1: Walk UPWARD to locate the script root
+        script_root = str(pid)
+        curr_p = str(pid)
+
+        for level in range(10):
+            if not curr_p or curr_p in ("0", "1"):
+                break
+
+            stat_path = f"/proc/{curr_p}/stat"
+            if not os.path.exists(stat_path):
+                break
+
+            try:
+                with open(stat_path, "r") as f:
+                    content = f.read()
+
+                m_start = content.find("(")
+                m_end   = content.rfind(")")
+                if m_start == -1 or m_end == -1:
+                    break
+
+                name    = content[m_start+1:m_end]
+                ppid    = content[m_end+2:].split()[1]
+                cmdline = get_full_cmdline(curr_p)
+
+                debug_log(f"TREE-KILL: Level {level} - PID {curr_p} ({name}) - Cmd: {cmdline}")
+
+                if name in HARD_PROTECT:
+                    debug_log(f"TREE-KILL: HARD_PROTECT boundary at {name}({curr_p}), stopping.")
+                    break
+
+                is_shell   = name in ("bash", "sh", "dash", "zsh", "fish")
+                has_script = any(ext in cmdline for ext in (".sh", ".py", ".js", ".pl", ".rb", ".php"))
+
+                if is_shell and not has_script:
+                    debug_log(f"TREE-KILL: Bare shell boundary at {name}({curr_p}), stopping.")
+                    break
+
+                script_root = curr_p
+
+                if has_script:
+                    for part in cmdline.split():
+                        for ext in (".sh", ".py", ".js", ".pl", ".rb", ".php"):
+                            if part.endswith(ext):
+                                scripts_found.add(os.path.basename(part))
+
+                curr_p = ppid
+
+            except Exception as e:
+                debug_log(f"TREE-KILL: Ancestor scan error at {curr_p}: {e}")
+                break
+
+        # PHASE 2: Sweep DOWNWARD from script_root
+        pids_to_strike = set()
+        queue   = [script_root]
+        visited = set()
+
+        while queue:
+            p = queue.pop(0)
+            if not p or p in visited or p in ("0", "1"):
+                continue
+            visited.add(p)
+
+            try:
+                with open(f"/proc/{p}/stat", "r") as f:
+                    c = f.read()
+                n_start = c.find("(")
+                n_end   = c.rfind(")")
+                p_name  = c[n_start+1:n_end] if n_start != -1 and n_end != -1 else ""
+                if p_name in HARD_PROTECT:
+                    debug_log(f"TREE-KILL: Skipping protected child {p_name}({p})")
+                    continue
+            except:
+                pass
+
+            pids_to_strike.add(p)
+
+            try:
+                res = subprocess.run(["pgrep", "-P", p], capture_output=True, text=True)
+                for child in res.stdout.split():
+                    if child not in visited:
+                        queue.append(child)
+            except:
+                pass
+
+        # PHASE 3: Script Broadcast
+        for script in scripts_found:
+            if len(script) < 3:
+                continue
+            try:
+                res = subprocess.run(["pgrep", "-f", script], capture_output=True, text=True)
+                for p in res.stdout.split():
+                    try:
+                        with open(f"/proc/{p}/stat", "r") as f:
+                            c = f.read()
+                        n_start = c.find("(")
+                        n_end   = c.rfind(")")
+                        p_name  = c[n_start+1:n_end] if n_start != -1 else ""
+                        if p_name not in HARD_PROTECT:
+                            pids_to_strike.add(p)
+                    except:
+                        pids_to_strike.add(p)
+            except:
+                pass
+
+        # ── PHASE 3.5: Port Orphan Sweep ──────────────────────────────────────
+        # Scripts that died previously may have left orphan nc/socat processes
+        # that got reparented to systemd. They still hold the port.
+        # Use ss to find ALL pids on this port and add them.
+        if port:
+            try:
+                res = subprocess.run(
+                    ["ss", "-lntuHp"],
+                    capture_output=True, text=True
+                )
+                for line in res.stdout.splitlines():
+                    if f":{port}" not in line:
+                        continue
+                    m = re.search(r'pid=(\d+)', line)
+                    if m:
+                        orphan_pid = m.group(1)
+                        try:
+                            with open(f"/proc/{orphan_pid}/stat", "r") as f:
+                                c = f.read()
+                            n_start = c.find("("); n_end = c.rfind(")")
+                            p_name = c[n_start+1:n_end] if n_start != -1 else ""
+                            if p_name not in HARD_PROTECT:
+                                pids_to_strike.add(orphan_pid)
+                                debug_log(f"TREE-KILL: Port orphan found: {p_name}({orphan_pid}) on :{port}")
+                        except:
+                            pids_to_strike.add(orphan_pid)
+            except Exception as e:
+                debug_log(f"TREE-KILL: Port orphan sweep error: {e}")
+
+        # PHASE 4: Execute Strike
+        strike_list = [
+            p for p in pids_to_strike
+            if p and p != "0" and p != "1" and p != our_pid and p.isdigit()
+        ]
+
+
+        if not strike_list:
+            return False, "No targetable PIDs found"
+
+        debug_log(f"TREE-KILL: Final Strike List: {strike_list}")
+
+        for p in strike_list:
+            try: os.kill(int(p), signal.SIGSTOP)
+            except: pass
+
+        remaining = []
+        for p in strike_list:
+            try: os.kill(int(p), signal.SIGKILL)
+            except PermissionError: remaining.append(p)
+            except: pass
+
+        if remaining:
+            subprocess.run(["sudo", "kill", "-9"] + remaining, capture_output=True)
+
+        if port:
+            subprocess.run(["sudo", "fuser", "-k", "-9", "-n", "tcp", str(port)], capture_output=True)
+
+        names = ", ".join(scripts_found) if scripts_found else "process tree"
+        return True, f"Eliminated {len(strike_list)} PIDs ({names})"
+
+    except Exception as e:
+        debug_log(f"TREE-KILL: Exception - {str(e)}")
+        return False, str(e)
+
+
 def kill_process_group(pid, prog, port, stdscr):
     if not pid or not pid.isdigit():
         show_message(stdscr, "Invalid PID.")
         return
-    
-    show_message(stdscr, f"🚀 Precision Tree Strike on port {port}...", duration=1.0)
-    
-    try:
-        debug_log(f"TREE-KILL: Starting precision scan for port {port} (PID {pid})")
-        pids_to_strike = set([pid])
-        scripts_found = set()
-        
-        # 1. ANCESTOR SCAN: Identify the script without killing the login shell
-        curr_p = pid
-        for level in range(12):
-            if not curr_p or curr_p in ("0", "1"): break
-            try:
-                with open(f"/proc/{curr_p}/stat", "r") as f:
-                    content = f.read()
-                match = re.search(r"(\d+) \((.*)\) [A-Z] (\d+)", content)
-                if not match: break
-                
-                name = match.group(2)
-                ppid = match.group(3)
-                cmdline = get_full_cmdline(curr_p)
-                
-                # Check if this is an interactive/login shell we should PROTECT
-                # We skip shells that are likely the user's terminal session
-                is_shell = name in ("bash", "sh", "dash", "zsh", "fish")
-                
-                # If it's a shell, only target it if it's running a specific script file
-                # Otherwise, it might be the user's active terminal. 
-                has_script = any(ext in cmdline for ext in (".sh", ".py", ".pl", ".php", ".js"))
-                
-                if is_shell and not has_script:
-                    debug_log(f"TREE-KILL: Protecting interactive shell parent: {name}({curr_p})")
-                    break # STOP HERE: Do not follow tree into the user's terminal
-                
-                if has_script:
-                    for part in cmdline.split():
-                        if any(part.endswith(ext) for ext in (".sh", ".py", ".pl", ".php", ".js")):
-                            s_name = os.path.basename(part)
-                            scripts_found.add(s_name)
-                            debug_log(f"TREE-KILL: Targeting script process: {s_name}({curr_p})")
-                
-                pids_to_strike.add(curr_p)
-                if name in ("sshd", "login", "tmux", "screen", "systemd", "init"): break
-                curr_p = ppid
-            except: break
 
-        # 2. BROADCAST CLUSTER: Find all children of identified scripts
-        for script in scripts_found:
-            try:
-                res = subprocess.run(["pgrep", "-f", script], capture_output=True, text=True)
-                for p in res.stdout.split():
-                    pids_to_strike.add(p)
-            except: pass
-
-        # 3. ATOMIC STRIKE: Kill only the target cluster
-        if pids_to_strike:
-            debug_log(f"TREE-KILL: Striking PIDs {pids_to_strike}")
-            # Individual PIDs
-            subprocess.run(["sudo", "kill", "-9"] + list(pids_to_strike), capture_output=True)
-            
-            # 4. PGID cleanup (only for the cluster PIDs, not general)
-            for p in pids_to_strike:
-                try:
-                    res = subprocess.run(["ps", "-o", "pgid=", "-p", p], capture_output=True, text=True)
-                    pg = res.stdout.strip()
-                    if pg and pg != "0":
-                         # Only kill the group if the leader is one of our targets
-                         subprocess.run(["sudo", "kill", "-9", f"-{pg}"], capture_output=True)
-                except: pass
-            
-            # Final fuser backup constrained to port only
-            subprocess.run(["sudo", "fuser", "-k", "-9", "-n", "tcp", str(port)], capture_output=True)
-            
-            time.sleep(0.5) 
-            show_message(stdscr, f"✅ Clean Kill: Tree terminated (Terminal protected).")
+    # If port is not directly known, try to find it from the process
+    actual_port = port
+    if not actual_port:
+        try:
+            res = subprocess.run(["ss", "-lntuHp"],
+                                 capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                if f"pid={pid}," in line or f"pid={pid})" in line:
+                    local = line.split()[4] if len(line.split()) > 4 else ""
+                    actual_port = local.split(":")[-1]
+                    break
+        except: pass
+    
+    if stdscr:
+        show_message(stdscr, f"🚀 Precision Tree Strike on port {actual_port or '?'}...", duration=1.0)
+    
+    success, msg = perform_tree_strike(pid, actual_port)
+    
+    if stdscr:
+        if success:
+            show_message(stdscr, f"✅ Clean Kill: {msg} (Terminal protected).")
         else:
-            show_message(stdscr, "No process found.")
-            
-    except Exception as e:
-        debug_log(f"TREE-KILL: Precision Exception - {str(e)}")
-        show_message(stdscr, f"Strike failed: {e}")
+            show_message(stdscr, f"Strike failed: {msg}")
 
 def pause_process(pid, prog, stdscr):
     try:
@@ -1914,7 +2454,7 @@ def is_high_risk(risk_level):
     """Return True if the risk level is considered dangerous (High or Critical)."""
     return risk_level in ('High', 'Critical')
 
-def perform_security_heuristics(pid, port, prog, username):
+def perform_security_heuristics(pid, port, prog, username, is_outbound=False):
     """
     Heimdall Sentinel: Behavioral Security Heuristics (Rule Engine version).
     Loads logic from external DSL (sentinel_rules.json).
@@ -1931,7 +2471,8 @@ def perform_security_heuristics(pid, port, prog, username):
         "cmdline": "",
         "cwd": "",
         "tree": [],
-        "is_public": False
+        "is_public": False,
+        "is_outbound": is_outbound
     }
 
     if psutil and pid and pid.isdigit():
@@ -2257,8 +2798,10 @@ def _get_process_lifecycle(prog, pid):
 
                 info.append(("⏰", f"🚀 Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", CP_ACCENT))
                 info.append(("⏰", f"⏱️  Uptime: {uptime_str}", CP_ACCENT))
-            except Exception:
+            except (FileNotFoundError, ProcessLookupError):
                 pass
+            except Exception as e:
+                debug_log(f"LIFECYCLE error for pid {pid}: {e}")
 
             # Who started it (loginuid / parent)
             try:
@@ -2305,8 +2848,8 @@ def _get_process_lifecycle(prog, pid):
             except Exception:
                 pass
 
-    except Exception:
-        pass
+    except Exception as e:
+        debug_log(f"LIFECYCLE outer error for prog {prog} pid {pid}: {e}")
     return info
 
 def _format_duration(seconds):
@@ -2759,7 +3302,7 @@ def draw_auto_update_settings_modal(stdscr):
 
 def draw_settings_modal(stdscr):
     h, w = stdscr.getmaxyx()
-    bh, bw = 8, 45
+    bh, bw = 10, 45
     y, x = (h - bh) // 2, (w - bw) // 2
     win = curses.newwin(bh, bw, y, x)
     win.keypad(True)
@@ -2774,7 +3317,11 @@ def draw_settings_modal(stdscr):
         
         win.addstr(2, 4, "[s] Auto Update Settings (Services)", curses.color_pair(CP_TEXT))
         win.addstr(3, 4, "[r] Background Scan Interval (UI)", curses.color_pair(CP_TEXT))
+        win.addstr(4, 4, "[d] Daemon Mode (Background)", curses.color_pair(CP_TEXT))
         
+        daemon_status = "ON" if CONFIG.get("daemon_enabled") else "OFF"
+        win.addstr(4, bw - 10, f"[{daemon_status}]", curses.color_pair(CP_ACCENT) if daemon_status == "ON" else curses.A_DIM)
+
         footer = " [q/ESC] Close "
         win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_TEXT))
         
@@ -2785,6 +3332,45 @@ def draw_settings_modal(stdscr):
             draw_auto_update_settings_modal(stdscr)
         elif k == ord('r'):
             draw_auto_scan_settings_modal(stdscr)
+        elif k == ord('d'):
+            draw_daemon_settings_modal(stdscr)
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_daemon_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 10, 60
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    title = " 🛡️ Daemon Mode Settings "
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        enabled = CONFIG.get("daemon_enabled", False)
+        status_str = "ENABLED" if enabled else "DISABLED"
+        
+        win.addstr(2, 4, "Daemon mode monitors outbound connections in the background.")
+        win.addstr(3, 4, "It is useful when the TUI is not running.")
+        
+        win.addstr(5, 4, f"Current Status: ")
+        win.addstr(5, 20, status_str, curses.color_pair(CP_ACCENT) if enabled else curses.A_DIM)
+        
+        win.addstr(7, 4, "[SPACE] Toggle  |  [ENTER/q] Apply & Close", curses.A_DIM)
+        
+        win.refresh()
+        k = win.getch()
+        if k in (curses.KEY_ENTER, 10, 13, ord('q'), 27):
+            break
+        elif k == ord(' '):
+            with CONFIG_LOCK:
+                CONFIG["daemon_enabled"] = not enabled
+            save_config()
             
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
@@ -3245,6 +3831,26 @@ def confirm_dialog(stdscr, question):
         if k in (ord('n'), ord('N'), 27):
             return False
 
+def confirm_tree_kill_dialog(stdscr, pid, prog, action_name):
+    """Specific dialog for script-managed processes."""
+    h, w = stdscr.getmaxyx()
+    win_h, win_w = 8, min(70, w - 4)
+    win = curses.newwin(win_h, win_w, (h - win_h) // 2, (w - win_w) // 2)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+    win.addstr(1, 2, "⚠️ SCRIPT LOOP DETECTED", curses.color_pair(CP_WARN) | curses.A_BOLD)
+    win.addstr(2, 2, f"Target: {prog} (PID {pid})", curses.color_pair(CP_TEXT))
+    win.addstr(3, 2, "This process is managed by a script. If killed alone,", curses.color_pair(CP_TEXT))
+    win.addstr(4, 2, "it will likely RESPAWN immediately.", curses.color_pair(CP_TEXT))
+    win.addstr(6, 2, "[t] Kill Entire Tree (Safe)  [9] Only Process  [ESC] Cancel", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+    win.refresh()
+    while True:
+        k = win.getch()
+        if k in (ord('t'), ord('T')): return "tree"
+        if k == ord('9'): return "process"
+        if k == 27: return "cancel"
+
 # --------------------------------------------------
 # Warnings / Annotation
 # --------------------------------------------------
@@ -3407,7 +4013,8 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
             sec_warn = f" {best_finding['icon']}"
     
     # Combine icons after process name
-    alert_icons = f"{risk_flag}{sec_warn}"
+    managed_icon = " 🌲" if is_managed_by_script(str(pid)) else ""
+    alert_icons = f"{managed_icon}{risk_flag}{sec_warn}"
     
     # Preformat with widths (adjust to table widths)
     widths = [10, 8, 18, 28, w - 68]  # same as headers
@@ -5301,6 +5908,9 @@ def draw_filter_modal(stdscr, filters):
     return True
 
 def main(stdscr, args=None):
+    global TRIGGER_REFRESH, TRIGGER_LIST_ONLY, SCANNING_STATUS_EXP, SNAPSHOT_MODE
+    global PENDING_IPC_ALERT, CURRENT_THEME_INDEX
+    
     curses.curs_set(0)
     stdscr.keypad(True)
     # make input non-blocking with short timeout so we can debounce selection and let caches serve during fast scroll
@@ -5313,6 +5923,9 @@ def main(stdscr, args=None):
     start_services_updater()
 
     # use cached parse initially to reduce startup churn
+    # Start IPC Server for Daemon alerts
+    ipc_thread = threading.Thread(target=start_ipc_server, daemon=True)
+    ipc_thread.start()
 
     rows = parse_ss_cached()
     cache = {}
@@ -5344,7 +5957,6 @@ def main(stdscr, args=None):
     last_selected = selected
     last_selected_change_time = time.time()
 
-    global TRIGGER_REFRESH  # we will mutate this inside the loop
     last_auto_scan_time = time.time()
     
     while True:
@@ -5352,7 +5964,6 @@ def main(stdscr, args=None):
         if not show_detail:
             auto_interval = CONFIG.get("auto_scan_interval", 3.0)
             if auto_interval > 0 and time.time() - last_auto_scan_time > auto_interval:
-                global SCANNING_STATUS_EXP
                 SCANNING_STATUS_EXP = time.time() + 1.0
                 request_list_refresh()
 
@@ -5440,6 +6051,17 @@ def main(stdscr, args=None):
 
         draw_status_indicator(stdscr)
 
+        # 🚨 Handle Pending IPC Alerts from Daemon
+        if PENDING_IPC_ALERT:
+            alert = PENDING_IPC_ALERT
+            PENDING_IPC_ALERT = None
+            result = draw_ipc_alert_modal(stdscr, alert)
+            PENDING_IPC_RESULT[alert["id"]] = result
+            # Force redraw after modal
+            stdscr.touchwin()
+            stdscr.noutrefresh()
+            curses.doupdate()
+
         # Show active filters if any
         if any(runtime_filters.values()):
             f_str = f"🔍 Filter: {get_filter_status_str(runtime_filters)} "
@@ -5449,14 +6071,12 @@ def main(stdscr, args=None):
         curses.doupdate()
 
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
-        global TRIGGER_LIST_ONLY
         if TRIGGER_REFRESH or TRIGGER_LIST_ONLY:
             is_full = TRIGGER_REFRESH
             TRIGGER_REFRESH = False
             TRIGGER_LIST_ONLY = False
             
             # IMPORTANT: Disable snapshot mode temporarily to allow fresh scan
-            global SNAPSHOT_MODE
             old_mode = SNAPSHOT_MODE
             SNAPSHOT_MODE = False
             
@@ -5467,6 +6087,7 @@ def main(stdscr, args=None):
                 cache.clear()
                 _risk_level_cache.clear()
                 _security_audit_cache.clear()
+                _script_managed_cache.clear()
             
             _parse_cache.clear()
             _table_row_cache.clear()
@@ -5499,6 +6120,11 @@ def main(stdscr, args=None):
             continue
 
         if k == ord('q'):
+            # Cleanup IPC
+            try:
+                if os.path.exists(IPC_SOCKET_PATH):
+                    os.remove(IPC_SOCKET_PATH)
+            except: pass
             break
         if show_detail:
             if k == curses.KEY_UP and detail_scroll>0:
@@ -5570,7 +6196,6 @@ def main(stdscr, args=None):
                 toggle_firewall(port, stdscr, firewall_status)
             elif k == ord('c'):
                 # Switch theme (Colorize)
-                global CURRENT_THEME_INDEX
                 CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
                 save_theme_preference(CURRENT_THEME_INDEX)
                 apply_current_theme(stdscr)
@@ -5594,7 +6219,13 @@ def main(stdscr, args=None):
                 stdscr.timeout(120)    # restore explicit timeout
 
                 if next_k == ord('c'):
-                    pass # Handled by direct 'c' key now
+                    # Trigger the same logic as direct 'c'
+                    CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
+                    save_theme_preference(CURRENT_THEME_INDEX)
+                    apply_current_theme(stdscr)
+                    rows = parse_ss_cached()
+                    splash_screen(stdscr, rows, cache)
+                    continue
 
             if selected >= len(rows):
                 selected = len(rows) - 1
@@ -5637,12 +6268,22 @@ def check_and_show_terminal_size_then_exit():
 def cli_entry():
     """terminal command 'heimdall' entry point"""
     check_python_version()
+    init_config()
     args = parse_args()
+
+    # Daemon mode logic
+    if args.daemon or (CONFIG.get("daemon_enabled") and not sys.stdin.isatty()):
+        check_witr_exists()
+        run_daemon()
+        return
+
     # Check terminal size after args so --help works in small terminals
     check_and_show_terminal_size_then_exit()
     check_witr_exists()
+    
     if args.no_update:
         CONFIG["auto_update_services"] = False
+        
     curses.wrapper(main, args)
 
 
