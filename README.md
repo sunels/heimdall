@@ -286,11 +286,17 @@ makepkg -si
 ### 🐍 Option 5: Python / Pip
 *For Python users.*
  
-Download the `.whl` package from [**Releases**](https://github.com/sunels/heimdall/releases) and install:
+You can install directly from PyPI:
+ 
+```bash
+pip3 install heimdall-linux
+```
+
+Or download the `.whl` package from [**Releases**](https://github.com/sunels/heimdall/releases) and install:
  
 ```bash
 # Install the downloaded wheel file
-pip3 install heimdall-0.8.0-py3-none-any.whl
+pip3 install heimdall-0.9.5-py3-none-any.whl
  
 # Run
 sudo heimdall
