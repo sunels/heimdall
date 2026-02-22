@@ -20,6 +20,8 @@ set -e
 #    - REQUIRES: TWINE_USERNAME=__token__ and TWINE_PASSWORD=pypi-...
 # 7. It creates a git commit, a git tag vX.Y.Z, and pushes to origin.
 # 8. It creates a GitHub Release if 'gh' CLI is available.
+#
+# ℹ️ NOTE: The PyPI package name is 'heimdall-linux' because 'heimdall' was already taken.
 # ==============================================================================
 
 # 1. Parse Arguments
