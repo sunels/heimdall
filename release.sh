@@ -2,92 +2,139 @@
 set -e
 
 # ==============================================================================
-# 🤖 AGENT GUIDE: HOW TO RELEASE HEIMDALL
+# 🚀 HEIMDALL RELEASE SCRIPT
 # ==============================================================================
-# 1. Update version in: 
-#    - heimdall/__init__.py (parse_args)
-#    - setup.py (version=...)
-#    - PKGBUILD (pkgver=...)
-# 2. Add an entry to 'debian/changelog' with the new version and changes.
-# 3. Run this script: ./release.sh
-# 
-# The script will:
-# - Verify version consistency across files.
-# - Extract release notes from debian/changelog automatically.
-# - Build binary, deb, and python packages.
-# - Create a GitHub release with assets and notes.
+# Usage: ./release.sh [patch|minor|major|x.y.z] [--test]
+# Example: ./release.sh patch
+#          ./release.sh 1.0.0 --test
+#
+# Requirements: pip install build twine
 # ==============================================================================
 
-# Version Extraction & Verification
-V_INIT=$(grep "version='heimdall " heimdall/__init__.py | cut -d"'" -f2 | awk '{print $2}')
-V_SETUP=$(grep "version=" setup.py | cut -d"'" -f2)
-V_DEB=$(head -n 1 debian/changelog | cut -d'(' -f2 | cut -d'-' -f1)
-V_PKG=$(grep "pkgver=" PKGBUILD | cut -d"=" -f2)
+# 1. Parse Arguments
+BUMP_TYPE=$1
+TEST_MODE=false
+if [[ "$2" == "--test" ]] || [[ "$1" == "--test" ]]; then
+    TEST_MODE=true
+    if [[ "$1" == "--test" ]]; then BUMP_TYPE=$2; fi
+fi
 
-echo "🔍 Verifying versions..."
-echo "  __init__.py: v$V_INIT"
-echo "  setup.py:    v$V_SETUP"
-echo "  changelog:   v$V_DEB"
-echo "  PKGBUILD:    v$V_PKG"
-
-if [[ "$V_INIT" != "$V_SETUP" ]] || [[ "$V_SETUP" != "$V_DEB" ]] || [[ "$V_DEB" != "$V_PKG" ]]; then
-    echo "❌ ERROR: Version mismatch! Please align version numbers in all files."
+if [[ -z "$BUMP_TYPE" ]]; then
+    echo "❌ Usage: ./release.sh [patch|minor|major|x.y.z] [--test]"
     exit 1
 fi
 
-VERSION=$V_SETUP
-echo "🚀 Starting builds for Heimdall v$VERSION..."
+# 2. Check Prerequisites
+PYTHON_CMD="python3"
+TWINE_CMD="twine"
 
-# 1. Clean up old artifacts
-echo "🧹 Cleaning up old artifacts..."
-rm -rf dist/ build/ *.egg-info/ *.spec 2>/dev/null || true
-# Only use sudo if permission denied
-find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-
-# 2. Build Standalone Binary (PyInstaller)
-echo "📦 Building Standalone Binary (PyInstaller)..."
-.venv/bin/pyinstaller --onefile --clean --noconfirm \
-    --name heimdall \
-    --add-data "heimdall/services.json:." \
-    --add-data "heimdall/services.sha256:." \
-    --add-data "heimdall/system-services.json:." \
-    --add-data "heimdall/system-services.sha256:." \
-    --add-data "heimdall/sentinel_rules.json:." \
-    --add-data "heimdall/heimdall.service:." \
-    run.py > /dev/null
-echo "✅ Binary built: dist/heimdall"
-
-# 3. Build Python Package (Wheel & Sdist)
-echo "🐍 Building Python Package (Wheel/Sdist)..."
-.venv/bin/python3 -m build > /dev/null
-echo "✅ Python packages built."
-
-# 4. Build Debian Package (.deb)
-echo "🐧 Building Debian Package (.deb)..."
-# Use -nc to skip clean if permissions are an issue for fakeroot
-dpkg-buildpackage -us -uc -b -nc > /dev/null
-mkdir -p dist/
-mv ../heimdall_${VERSION}-1_all.deb dist/ 2>/dev/null || mv ../heimdall_${VERSION}_all.deb dist/ 2>/dev/null || echo "⚠️ Could not move .deb"
-echo "✅ Debian package built."
-
-# 5. Extract Release Notes from debian/changelog
-echo "📝 Extracting release notes from changelog..."
-# Extracts the first block (from first line until the first line starting with ' --')
-NOTES=$(sed -n '1,/^ --/p' debian/changelog | sed '$d')
-echo "$NOTES" > dist/RELEASE_NOTES_TMP.md
-
-# Summary
-echo ""
-echo "🎉 RELEASE READY! Files in dist/:"
-ls -lh dist/
-
-# 6. Publish to GitHub
-if command -v gh &> /dev/null; then
-    echo "🚀 Publishing to GitHub..."
-    # Check if tag already exists to avoid error (optional)
-    gh release create v$VERSION dist/* --title "Heimdall v$VERSION" --notes-file dist/RELEASE_NOTES_TMP.md || echo "⚠️ Release might already exist."
-    rm dist/RELEASE_NOTES_TMP.md
-    echo "🎉 GITHUB RELEASE COMPLETED!"
-else
-    echo "⚠️ 'gh' CLI not found. Manual upload required."
+if [[ -d ".venv" ]]; then
+    PYTHON_CMD=".venv/bin/python3"
+    TWINE_CMD=".venv/bin/twine"
+elif [[ -d "venv" ]]; then
+    PYTHON_CMD="venv/bin/python3"
+    TWINE_CMD="venv/bin/twine"
 fi
+
+if ! $TWINE_CMD --version &> /dev/null || ! $PYTHON_CMD -m build --help &> /dev/null; then
+    echo "❌ ERROR: 'build' or 'twine' not found. Install them with: pip install --upgrade build twine"
+    exit 1
+fi
+
+if [[ -z "$TWINE_PASSWORD" ]]; then
+    echo "❌ ERROR: TWINE_PASSWORD environment variable set edilmemiş!"
+    echo "Lütfen şu komutu çalıştırın: export TWINE_USERNAME=__token__ && export TWINE_PASSWORD=pypi-..."
+    exit 1
+fi
+export TWINE_USERNAME=${TWINE_USERNAME:-__token__}
+
+# 3. Get Current Version
+CURRENT_VERSION=$(grep "version=" setup.py | cut -d"'" -f2)
+echo "🔍 Current version: $CURRENT_VERSION"
+
+# 4. Calculate New Version
+increment_version() {
+    local version=$1
+    local type=$2
+    local IFS='.'
+    read -ra parts <<< "$version"
+    local major=${parts[0]}
+    local minor=${parts[1]}
+    local patch=${parts[2]}
+
+    case "$type" in
+        major) echo "$((major + 1)).0.0" ;;
+        minor) echo "$major.$((minor + 1)).0" ;;
+        patch) echo "$major.$minor.$((patch + 1))" ;;
+        *) echo "$type" ;; # Direct version
+    esac
+}
+
+VERSION=$(increment_version "$CURRENT_VERSION" "$BUMP_TYPE")
+echo "🚀 Releasing Heimdall v$VERSION..."
+
+# 5. Bump Versions in Files
+echo "📝 Bumping versions in files..."
+sed -i "s/version='heimdall [0-9.]*'/version='heimdall $VERSION'/" heimdall/__init__.py
+sed -i "s/version='[0-9.]*'/version='$VERSION'/" setup.py
+sed -i "s/pkgver=[0-9.]*/pkgver=$VERSION/" PKGBUILD
+
+# Update debian/changelog
+if command -v dch &> /dev/null; then
+    dch -v "${VERSION}-1" "Release v$VERSION"
+else
+    # Manual append if dch not available
+    TIMESTAMP=$(date -R)
+    CHANGELOG_ENTRY="heimdall ($VERSION-1) unstable; urgency=medium\n\n  * Release v$VERSION\n\n -- Serkan Sunel <serkan.sunel@gmail.com>  $TIMESTAMP\n"
+    printf "$CHANGELOG_ENTRY\n$(cat debian/changelog)" > debian/changelog
+fi
+
+# 6. Clean up old artifacts
+echo "🧹 Cleaning up old artifacts..."
+rm -rf dist/ build/ *.egg-info/ 2>/dev/null || true
+
+# 7. Build Python Package (Wheel & Sdist)
+echo "🐍 Building Python Package (Wheel/Sdist)..."
+$PYTHON_CMD -m build
+
+# 8. Build Debian Package (.deb)
+echo "🐧 Building Debian Package (.deb)..."
+if command -v dpkg-buildpackage &> /dev/null; then
+    dpkg-buildpackage -us -uc -b -nc > /dev/null || echo "⚠️ Debian build failed, skipping..."
+    mkdir -p dist/
+    mv ../heimdall_${VERSION}-1_all.deb dist/ 2>/dev/null || mv ../heimdall_${VERSION}_all.deb dist/ 2>/dev/null || true
+else
+    echo "⚠️ 'dpkg-buildpackage' not found. Skipping .deb build."
+fi
+
+# 9. Upload to PyPI
+if [ "$TEST_MODE" = true ]; then
+    echo "🧪 Uploading to TestPyPI..."
+    $TWINE_CMD upload --repository testpypi dist/*
+    PYPI_URL="https://test.pypi.org/project/heimdall/$VERSION/"
+else
+    echo "🚀 Uploading to PyPI..."
+    $TWINE_CMD upload dist/*
+    PYPI_URL="https://pypi.org/project/heimdall/$VERSION/"
+fi
+
+# 10. Git Tag & Push
+echo "🏷️ Creating Git tag v$VERSION..."
+if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+    echo "⚠️ Tag v$VERSION already exists."
+else
+    git commit -am "chore: bump version to $VERSION" || true
+    git tag "v$VERSION"
+    git push origin "v$VERSION"
+    git push origin main
+fi
+
+# 11. GitHub Release (Optional)
+if command -v gh &> /dev/null; then
+    echo "🚀 Creating GitHub Release..."
+    gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes "Release v$VERSION via release.sh" || echo "⚠️ GitHub release might already exist."
+fi
+
+echo ""
+echo "🎉 SUCCESS: Heimdall v$VERSION released!"
+echo "📦 PyPI: $PYPI_URL"

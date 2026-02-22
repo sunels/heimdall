@@ -604,6 +604,39 @@ heimdall/
 
 ---
 
+## 🚀 Release Management (For Maintainers)
+
+Heimdall includes an automated `release.sh` script to manage versioning, builds, and publishing to PyPI, Debian, and GitHub.
+
+### 📦 Prerequisites
+```bash
+# Install build and twine
+pip install --upgrade build twine
+```
+
+### 🔑 Set Credentials
+Before releasing, set your PyPI token:
+```bash
+export TWINE_USERNAME=__token__
+export TWINE_PASSWORD=pypi-YOUR_TOKEN_HERE
+```
+
+### 🚢 Perform Release
+The script automatically bumps versions in all metadata files, builds Wheel/Sdist/Deb, and uploads to PyPI.
+
+```bash
+# Bump patch (0.9.4 -> 0.9.5) and release to PyPI
+./release.sh patch
+
+# Bump minor (0.9.4 -> 1.0.0)
+./release.sh minor
+
+# Release to TestPyPI for verification
+./release.sh patch --test
+```
+
+---
+
 ## 📄 License
 
 MIT License
