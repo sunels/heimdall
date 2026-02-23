@@ -42,6 +42,9 @@
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - 🛡️ **Daemon Mode (Background)**: Non-interactive monitoring with automatic suspicious-outbound detection and mitigation.
 - 🛡️ **Active TUI Protection**: Proactive security enforcement in the TUI when the daemon is inactive (auto-suspends suspicious processes).
+- 📡 **Live Traffic Column**: Real-time per-port network activity with ASCII spark bars (▁▂▃▄▅▆▇█), computed by a background thread (UI never blocks).
+  > **Not:** TRAFFIC sütunu gerçek zamanlı ağ aktivitesini gösterir (background thread ile hesaplanır, UI bloke olmaz).
+- 🖥️ **System Health Panel**: Live CPU/RAM/Swap/Disk/Battery bars + OS/Kernel/Host/DE info in the detail view.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.

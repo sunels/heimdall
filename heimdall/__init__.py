@@ -63,6 +63,108 @@ _script_managed_cache = {} # pid -> (is_managed: bool, timestamp: float)
 SC_MANAGED_TTL = 30.0
 TUI_PROTECTION_HANDLED = set() # (pid, create_time) -> Action Taken (timestamp)
 
+# ═══════════════════════════════════════════════════════════════
+# 📡 TRAFFIC POLLER — Background thread for per-port traffic
+# ═══════════════════════════════════════════════════════════════
+_traffic_lock = threading.Lock()
+_traffic_data = {}  # port(int) -> {"conns": int, "rx_queue": int, "tx_queue": int, "rate": float, "bytes_rate": float}
+_traffic_prev = {}  # previous snapshot for delta calculation
+TRAFFIC_POLL_INTERVAL = 5.0
+
+def _traffic_poller_thread():
+    """Background thread: polls per-pid network activity using /proc/pid/io every TRAFFIC_POLL_INTERVAL seconds."""
+    global _traffic_data, _traffic_prev
+    while True:
+        try:
+            now = time.time()
+            new_data = {}
+            active_pids = set()
+            
+            for proc in psutil.process_iter(['pid', 'io_counters']):
+                try:
+                    pid = str(proc.info['pid'])
+                    active_pids.add(pid)
+                    io = proc.info.get('io_counters')
+                    if io:
+                        # rchar + wchar represents socket and disk IO combined
+                        total_bytes = io.read_chars + io.write_chars
+                        prev = _traffic_prev.get(pid)
+                        rate = (total_bytes - prev) / TRAFFIC_POLL_INTERVAL if prev is not None else 0
+                        
+                        if rate > 0 or prev is not None:
+                            new_data[pid] = {
+                                "rate": max(0, rate),
+                                "activity": max(0, rate)
+                            }
+                        _traffic_prev[pid] = total_bytes
+                except:
+                    pass
+            
+            # Cleanup dead pids
+            dead_pids = [p for p in _traffic_prev if p not in active_pids]
+            for p in dead_pids:
+                _traffic_prev.pop(p, None)
+
+            with _traffic_lock:
+                _traffic_data = new_data
+
+            
+        except Exception as e:
+            debug_log(f"TRAFFIC_POLLER: Error: {e}")
+        
+        time.sleep(TRAFFIC_POLL_INTERVAL)
+
+def get_traffic_for_pid(pid):
+    """Thread-safe getter for traffic data of a specific pid."""
+    with _traffic_lock:
+        return _traffic_data.get(str(pid))
+
+def format_traffic_bar(traffic_info):
+    """Format traffic data as ASCII spark bar + rate text."""
+    if not traffic_info:
+        return "▒▒▒▒▒▒▒▒▒▒    0 B/s", 0  # no data, level 0
+    
+    rate = traffic_info.get("rate", 0)
+    
+    # Activity level mapping for 10-block system health style bar
+    if rate <= 0:
+        filled = 0
+    elif rate < 1024:
+        filled = 1
+    elif rate < 10240:
+        filled = 2
+    elif rate < 102400:
+        filled = 3
+    elif rate < 512000:
+        filled = 4
+    elif rate < 1048576:
+        filled = 5
+    elif rate < 5242880:
+        filled = 6
+    elif rate < 10485760:
+        filled = 7
+    elif rate < 52428800:
+        filled = 8
+    elif rate < 104857600:
+        filled = 9
+    else:
+        filled = 10
+    
+    bar = "█" * filled + "░" * (10 - filled)
+    
+    # Rate text
+    if rate >= 1024 * 1024:
+        rate_text = f"{rate/(1024*1024):.1f}M"
+    elif rate >= 1024:
+        rate_text = f"{rate/1024:.0f}K"
+    else:
+        rate_text = f"{rate:.0f}B"
+    
+    # Needs to fit in exactly 19 chars (bar=10 + space=1 + text=5 + /s=2)
+    display = f"{bar} {rate_text:>5s}/s"
+    return display, filled
+
+
 # System Health cache (refreshed every 5 seconds)
 _system_health_cache = None
 _system_health_ts = 0.0
@@ -4317,8 +4419,15 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
     alert_icons = f"{managed_icon}{risk_flag}{sec_warn}"
     
     # Preformat with widths (adjust to table widths)
-    widths = [10, 8, 18, 28, w - 68]  # same as headers
-    data = [f"{fw_icon} {port}", proto.upper(), usage, f"{status_tag}{proc_icon} {prog}{alert_icons}", f"👤 {user}"]
+    # PORT(10) + TRAFFIC(20) + PROTO(8) + USAGE(18) + PROCESS(28) + USER(rest)
+    traffic_w = 20
+    widths = [10, traffic_w, 8, 18, 28, w - 68 - traffic_w]  # added TRAFFIC column
+    
+    # Get traffic data for this process
+    traffic_info = get_traffic_for_pid(pid)
+    traffic_display, traffic_level = format_traffic_bar(traffic_info)
+    
+    data = [f"{fw_icon} {port}", traffic_display, proto.upper(), usage, f"{status_tag}{proc_icon} {prog}{alert_icons}", f"👤 {user}"]
     
     def pad_visual(text, width):
         """Pad string accounting for double-width characters/emojis."""
@@ -4358,10 +4467,10 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
         pass
 
     # Header
-    headers = ["🌐 PORT", "PROTO", "📊 USAGE [Mem/CPU]", "  🧠 PROCESS", "   👤 USER"]
-    # Calculate widths dynamically to ensure right side is drawn
-    # Fixed widths for first columns, dynamic for USER
-    widths = [10, 8, 18, 28, max(10, w - 66)]
+    headers = ["🌐 PORT", "📡 TRAFFIC", "PROTO", "📊 USAGE [Mem/CPU]", "  🧠 PROCESS", "   👤 USER"]
+    # Calculate widths dynamically
+    traffic_w = 20
+    widths = [10, traffic_w, 8, 18, 28, max(10, w - 66 - traffic_w)]
     x = 1
     
     hdr_attr = curses.color_pair(CP_HEADER) | curses.A_BOLD
@@ -4400,13 +4509,42 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
         
         pre_row_str = get_preformatted_table_row(rows[idx], cache, firewall_status, w)
         
+        # Check for BLINK: high traffic + CRIT sentinel finding
+        blink = False
+        port_val = rows[idx][0]
+        pid_val = rows[idx][4]
+        traffic_info = get_traffic_for_pid(pid_val)
+        if traffic_info and traffic_info.get('activity', 0) > 1048576: # > 1MB/s
+            findings = _security_audit_cache.get(str(port_val), [])
+            if findings and any(f['level'] == 'CRITICAL' for f in findings):
+                blink = True
+        
+        if blink and not is_selected:
+            attr = attr | curses.A_BLINK
+        
         try:
-            # Write row content, ensuring it fits within borders
-            # Reduce max_len to w-4 to account for wide characters (emojis) taking up extra visual space
             max_len = max(1, w - 4)
             win.addstr(i+3, 1, pre_row_str[:max_len].ljust(max_len), attr)
             
-            # 🔧 REPAIR BORDERS: Force redraw vertical lines to fix any overflow damage
+            # 📡 Color the TRAFFIC column separately based on level
+            traffic_display, traffic_level = format_traffic_bar(traffic_info)
+            traffic_x = 11  # After PORT column (width 10 + 1 border)
+            if traffic_level >= 8:
+                t_color = curses.color_pair(CP_WARN) | curses.A_BOLD
+            elif traffic_level >= 4:
+                t_color = curses.color_pair(CP_WARN)
+            elif traffic_level >= 2:
+                t_color = curses.color_pair(CP_ACCENT)
+            else:
+                t_color = curses.color_pair(CP_TEXT) | curses.A_DIM
+            if is_selected:
+                t_color = curses.color_pair(CP_ACCENT) | curses.A_REVERSE
+            try:
+                win.addstr(i+3, traffic_x, traffic_display[:traffic_w], t_color)
+            except curses.error:
+                pass
+            
+            # 🔧 REPAIR BORDERS
             win.addch(i+3, 0, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
             win.addch(i+3, w-1, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
         except:
@@ -6345,6 +6483,11 @@ def main(stdscr, args=None):
     ipc_thread = threading.Thread(target=start_ipc_server, daemon=True)
     ipc_thread.start()
 
+    # Start Traffic Poller thread
+    traffic_thread = threading.Thread(target=_traffic_poller_thread, daemon=True)
+    traffic_thread.start()
+    debug_log("TRAFFIC_POLLER: Background thread started.")
+
     rows = parse_ss_cached()
     cache = {}
     firewall_status = {}
@@ -6397,10 +6540,16 @@ def main(stdscr, args=None):
             bar_w = 22
             main_w = w - bar_w
             
-            table_win = stdscr.derwin(table_h, main_w//2, 0, 0)
+            # Open Files pane widening based on feedback
+            of_w = min(60, max(45, main_w // 3))
+            if main_w < 100:
+                of_w = 35
+            table_w = main_w - of_w
+            
+            table_win = stdscr.derwin(table_h, table_w, 0, 0)
             draw_table(table_win, rows, selected, offset, cache, firewall_status)
 
-            open_files_win = stdscr.derwin(table_h, main_w - main_w//2, 0, main_w//2)
+            open_files_win = stdscr.derwin(table_h, of_w, 0, table_w)
             try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
             except: pass
             pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"

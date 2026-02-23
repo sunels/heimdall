@@ -145,7 +145,11 @@ fi
 # 11. GitHub Release (Optional)
 if command -v gh &> /dev/null; then
     echo "🚀 Creating GitHub Release..."
-    gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes "Release v$VERSION via release.sh" || echo "⚠️ GitHub release might already exist."
+    if [ -f "RELEASE_NOTES.md" ]; then
+        gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes-file "RELEASE_NOTES.md" || echo "⚠️ GitHub release might already exist."
+    else
+        gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes "Release v$VERSION via release.sh" || echo "⚠️ GitHub release might already exist."
+    fi
 fi
 
 echo ""
