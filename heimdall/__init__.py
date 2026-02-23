@@ -1197,7 +1197,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 0.9.8')
+    parser.add_argument("--version", action="version", version='heimdall 0.9.9')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
