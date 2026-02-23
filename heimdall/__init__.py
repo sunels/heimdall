@@ -25,6 +25,7 @@ import signal
 import socket
 import select
 from concurrent.futures import ThreadPoolExecutor
+import platform
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -55,11 +56,196 @@ ACTION_STATUS_MSG = ""
 ACTION_STATUS_EXP = 0.0
 SCANNING_STATUS_EXP = 0.0
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
-PENDING_IPC_ALERT = None
-PENDING_IPC_RESULT = {} # id -> bool
+PENDING_ALERTS = [] # Global queue for both Daemon IPC and Local TUI Alerts
+PENDING_IPC_RESULT = {} # id -> (allow, kill_parent)
 
 _script_managed_cache = {} # pid -> (is_managed: bool, timestamp: float)
 SC_MANAGED_TTL = 30.0
+TUI_PROTECTION_HANDLED = set() # (pid, create_time) -> Action Taken (timestamp)
+
+# System Health cache (refreshed every 5 seconds)
+_system_health_cache = None
+_system_health_ts = 0.0
+SYSTEM_HEALTH_TTL = 5.0
+
+def get_system_health():
+    """Get system health metrics from psutil. Cached for SYSTEM_HEALTH_TTL seconds."""
+    global _system_health_cache, _system_health_ts
+    now = time.time()
+    if _system_health_cache and (now - _system_health_ts) < SYSTEM_HEALTH_TTL:
+        return _system_health_cache
+    
+    health = {}
+    try:
+        # CPU
+        health['cpu_pct'] = psutil.cpu_percent(interval=0)
+        health['cpu_count'] = psutil.cpu_count(logical=True)
+        
+        # Memory
+        mem = psutil.virtual_memory()
+        health['mem_pct'] = mem.percent
+        health['mem_used_gb'] = round(mem.used / (1024**3), 1)
+        health['mem_total_gb'] = round(mem.total / (1024**3), 1)
+        
+        # Swap
+        swap = psutil.swap_memory()
+        health['swap_pct'] = swap.percent
+        health['swap_used_gb'] = round(swap.used / (1024**3), 1)
+        health['swap_total_gb'] = round(swap.total / (1024**3), 1)
+        
+        # Disk
+        disk = psutil.disk_usage('/')
+        health['disk_pct'] = disk.percent
+        health['disk_used_gb'] = round(disk.used / (1024**3), 1)
+        health['disk_total_gb'] = round(disk.total / (1024**3), 1)
+        
+        # Uptime
+        try:
+            with open('/proc/uptime') as f:
+                up_secs = int(float(f.read().split()[0]))
+            days = up_secs // 86400
+            hours = (up_secs % 86400) // 3600
+            mins = (up_secs % 3600) // 60
+            if days > 0:
+                health['uptime'] = f"{days}d {hours}h {mins}m"
+            elif hours > 0:
+                health['uptime'] = f"{hours}h {mins}m"
+            else:
+                health['uptime'] = f"{mins}m"
+        except:
+            health['uptime'] = "-"
+        
+        # Battery
+        try:
+            bat = psutil.sensors_battery()
+            if bat:
+                health['battery_pct'] = round(bat.percent)
+                health['battery_plugged'] = bat.power_plugged
+            else:
+                health['battery_pct'] = None
+        except:
+            health['battery_pct'] = None
+        
+        # Local IP
+        try:
+            addrs = psutil.net_if_addrs()
+            local_ip = "-"
+            for iface, addr_list in addrs.items():
+                if iface == 'lo': continue
+                for addr in addr_list:
+                    if addr.family.name == 'AF_INET' and not addr.address.startswith('127.'):
+                        local_ip = f"{addr.address} ({iface})"
+                        break
+                if local_ip != "-": break
+            health['local_ip'] = local_ip
+        except:
+            health['local_ip'] = "-"
+        
+        # Hostname
+        try:
+            health['hostname'] = socket.gethostname()
+        except:
+            health['hostname'] = "-"
+        
+        # Load Average
+        try:
+            load1, load5, load15 = os.getloadavg()
+            health['load_avg'] = f"{load1:.1f} / {load5:.1f} / {load15:.1f}"
+        except:
+            health['load_avg'] = "-"
+        
+        # OS (from /etc/os-release)
+        try:
+            os_name = "-"
+            with open('/etc/os-release') as f:
+                for line in f:
+                    if line.startswith('PRETTY_NAME='):
+                        os_name = line.split('=', 1)[1].strip().strip('"')
+                        break
+            arch = platform.machine()
+            health['os'] = f"{os_name} {arch}"
+        except:
+            health['os'] = "-"
+        
+        # Host (from DMI)
+        try:
+            product = "-"
+            family = ""
+            dmi_product = '/sys/devices/virtual/dmi/id/product_name'
+            dmi_family = '/sys/devices/virtual/dmi/id/product_family'
+            if os.path.exists(dmi_product):
+                with open(dmi_product) as f:
+                    product = f.read().strip()
+            if os.path.exists(dmi_family):
+                with open(dmi_family) as f:
+                    family = f.read().strip()
+            if family and family != product and family not in ('To be filled by O.E.M.', 'Default string', ''):
+                health['host'] = f"{product} ({family})"
+            else:
+                health['host'] = product
+        except:
+            health['host'] = "-"
+        
+        # Kernel
+        try:
+            health['kernel'] = f"Linux {platform.release()}"
+        except:
+            health['kernel'] = "-"
+        
+        # Shell
+        try:
+            shell_path = os.environ.get('SHELL', '-')
+            shell_name = os.path.basename(shell_path)
+            # Try to get version
+            try:
+                shell_ver_raw = subprocess.check_output([shell_path, '--version'], stderr=subprocess.DEVNULL, timeout=1).decode().split('\n')[0]
+                # Extract version number
+                import re as _re
+                ver_match = _re.search(r'(\d+\.\d+\.\d+)', shell_ver_raw)
+                if ver_match:
+                    health['shell'] = f"{shell_name} {ver_match.group(1)}"
+                else:
+                    health['shell'] = shell_name
+            except:
+                health['shell'] = shell_name
+        except:
+            health['shell'] = "-"
+        
+        # DE / WM
+        try:
+            de = os.environ.get('XDG_CURRENT_DESKTOP', os.environ.get('DESKTOP_SESSION', '-'))
+            session_type = os.environ.get('XDG_SESSION_TYPE', '-')  # x11, wayland
+            health['de'] = de
+            health['wm_type'] = session_type.upper()
+        except:
+            health['de'] = "-"
+            health['wm_type'] = "-"
+        
+        # Packages (fast file-based count)
+        try:
+            pkg_parts = []
+            # dpkg
+            dpkg_status = '/var/lib/dpkg/status'
+            if os.path.exists(dpkg_status):
+                with open(dpkg_status) as f:
+                    dpkg_count = sum(1 for line in f if line.startswith('Package: '))
+                pkg_parts.append(f"{dpkg_count} (dpkg)")
+            # snap
+            snap_dir = '/snap'
+            if os.path.isdir(snap_dir):
+                snap_count = sum(1 for d in os.listdir(snap_dir) if os.path.isdir(os.path.join(snap_dir, d)) and d not in ('bin', 'core', 'snapd'))
+                if snap_count > 0:
+                    pkg_parts.append(f"{snap_count} (snap)")
+            health['packages'] = ', '.join(pkg_parts) if pkg_parts else "-"
+        except:
+            health['packages'] = "-"
+    
+    except Exception as e:
+        debug_log(f"SYSTEM_HEALTH: Error: {e}")
+    
+    _system_health_cache = health
+    _system_health_ts = now
+    return health
 
 def is_managed_by_script(pid):
     """Fast check if a PID is part of a script-managed hierarchy."""
@@ -94,7 +280,7 @@ def is_managed_by_script(pid):
 
 def start_ipc_server():
     """Run a simple Unix Domain Socket server for Daemon alerting."""
-    global PENDING_IPC_ALERT
+    global PENDING_ALERTS
     if os.path.exists(IPC_SOCKET_PATH):
         try: os.remove(IPC_SOCKET_PATH)
         except: pass
@@ -113,7 +299,8 @@ def start_ipc_server():
                             alert = json.loads(data_raw.decode('utf-8'))
                             if alert.get("type") == "ALERT":
                                 alert_id = f"{alert.get('pid')}_{time.time()}"
-                                PENDING_IPC_ALERT = {**alert, "id": alert_id}
+                                with CONFIG_LOCK:
+                                    PENDING_ALERTS.append({**alert, "id": alert_id})
                                 request_list_refresh()
                                 
                                 # Wait for result from UI thread
@@ -146,6 +333,8 @@ def draw_ipc_alert_modal(stdscr, alert):
     win.box()
     
     title = "🚨 DAEMON SECURITY ALERT 🚨"
+    if alert.get("local"):
+        title = "🚨 ACTIVE TUI PROTECTION 🚨"
     win.addstr(1, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     
     win.addstr(3, 3, f"PID  : {alert['pid']}", curses.A_BOLD)
@@ -226,6 +415,90 @@ def save_config():
 # --------------------------------------------------
 IPC_SOCKET_PATH = "/tmp/heimdall_tui.ipc"
 PID_FILE_PATH = "/tmp/heimdall.pid"
+
+def is_daemon_running():
+    """Check if Heimdall Daemon is active by reading the PID file."""
+    try:
+        if os.path.exists(PID_FILE_PATH):
+            with open(PID_FILE_PATH, 'r') as f:
+                d_pid = int(f.read().strip())
+                # Verify process still exists and is probably 'heimdall'
+                if psutil.pid_exists(d_pid):
+                    return True
+    except: pass
+    return False
+
+def check_active_tui_protection(pid, port, prog, user, findings):
+    """
+    Active TUI Protection: Mimics daemon behavior if daemon is inactive.
+    Detects suspicious activity, suspends process, and cues Modal.
+    """
+    global PENDING_ALERTS, TUI_PROTECTION_HANDLED
+    
+    if is_daemon_running():
+        return # Daemon is in charge, we stay silent to avoid mess.
+
+    if not pid or pid == "-" or not str(pid).isdigit(): return
+    pid_int = int(pid)
+    
+    is_suspicious = any(f['level'] in ['HIGH', 'CRITICAL'] for f in findings)
+    if not is_suspicious: return
+    
+    # Avoid duplicate handling for the same process instance
+    try:
+        p = psutil.Process(pid_int)
+        ctime = p.create_time()
+        handle_key = (pid_int, ctime)
+        if handle_key in TUI_PROTECTION_HANDLED:
+            return
+    except: return
+
+    # 🚨 SUSPEND IMMEDIATELY (Safety first)
+    try:
+        os.kill(pid_int, signal.SIGSTOP)
+        debug_log(f"TUI-PROTECT: SUSPENDED {pid} ({prog}) for investigation.")
+    except: return
+    
+    # Queue for TUI Main Loop to show Modal
+    cmdline = " ".join(p.cmdline())
+    remote_display = f"PORT {port}"
+    alert_id = f"LOCAL_{pid}_{time.time()}"
+    
+    with CONFIG_LOCK:
+        PENDING_ALERTS.append({
+            "id": alert_id,
+            "pid": pid,
+            "prog": prog,
+            "user": user,
+            "remote": remote_display,
+            "cmdline": cmdline,
+            "local": True
+        })
+    TUI_PROTECTION_HANDLED.add(handle_key)
+
+def apply_tui_protection_action(stdscr, alert, result):
+    """Execute the user's decision from the Active TUI Protection modal."""
+    allow, kill_parent = result
+    pid = int(alert['pid'])
+    prog = alert['prog']
+    
+    if allow:
+        try:
+            os.kill(pid, signal.SIGCONT)
+            debug_log(f"TUI-PROTECT: ALLOWED {pid} ({prog}). Resumed.")
+            show_message(stdscr, f"Allowed {prog} - Resumed")
+        except: pass
+    else:
+        try:
+            if kill_parent:
+                debug_log(f"TUI-PROTECT: Executing tree strike for {pid} ({prog}).")
+                perform_tree_strike(pid)
+                show_message(stdscr, f"Struck Process Tree: {prog}", duration=5.0)
+            else:
+                os.kill(pid, signal.SIGKILL)
+                debug_log(f"TUI-PROTECT: Killed suspicious process {pid} ({prog}).")
+                show_message(stdscr, f"Killed Suspicious: {prog}")
+        except: pass
 
 class DaemonManager:
     def __init__(self):
@@ -822,7 +1095,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 0.9.7')
+    parser.add_argument("--version", action="version", version='heimdall 0.9.8')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -1451,7 +1724,11 @@ def splash_screen(stdscr, rows, cache):
         # Security audit check (uses cached user from above)
         cached_user = cache.get(port, {}).get("user", "-")
         pid_val = row[4] if len(row) > 4 else "-"
-        _security_audit_cache[str(port)] = perform_security_heuristics(pid_val, port, prog_name, cached_user)
+        findings = perform_security_heuristics(pid_val, port, prog_name, cached_user)
+        _security_audit_cache[str(port)] = findings
+        
+        # ACTIVE TUI PROTECTION Check (Mimic Daemon when needed)
+        check_active_tui_protection(pid_val, port, prog_name, cached_user, findings)
 
         cache[port]["preloaded"] = True
 
@@ -2540,7 +2817,11 @@ def compute_risk_for_all_ports(rows, cache=None):
             username = get_process_user(pid) if pid and pid.isdigit() else "-"
         
         # Store full findings list
-        _security_audit_cache[str(port)] = perform_security_heuristics(pid, port, prog, username)
+        findings = perform_security_heuristics(pid, port, prog, username)
+        _security_audit_cache[str(port)] = findings
+        
+        # ACTIVE TUI PROTECTION Check
+        check_active_tui_protection(pid, port, prog, username, findings)
 
 def get_runtime_classification(pid, prog):
     if not pid or not pid.isdigit(): return "Unknown"
@@ -3179,7 +3460,8 @@ def draw_status_indicator(stdscr):
     
     # 🌀 Progressing icon: Blue Braille Circle (mavi noktalar)
     spinner_frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
-    s_frame = spinner_frames[int(now * 12) % len(spinner_frames)]
+    # Sync spinner speed (approx 8Hz) with loop timeout (120ms) for smoothness
+    s_frame = spinner_frames[int(now * 8) % len(spinner_frames)]
     
     msg = ""
     is_active = False
@@ -3199,9 +3481,9 @@ def draw_status_indicator(stdscr):
         is_active = True
     # Priority 3: Auto-Scan Heartbeat
     elif now < SCANNING_STATUS_EXP:
-        msg = "Scanning..."
+        msg = "🛡️ HEIMDALL: Active System Scan..."
         is_active = True
-        status_attr = curses.color_pair(CP_TEXT) | curses.A_DIM
+        status_attr = curses.color_pair(CP_ACCENT) | curses.A_BOLD
         
     if is_active:
         # Format: [ ⣾ ] Message...
@@ -3216,6 +3498,9 @@ def draw_status_indicator(stdscr):
             
             # 2. Overlay the spinner with the requested blue color
             stdscr.addstr(h - 1, start_x + 1, s_frame, spinner_attr)
+            
+            # 3. Ensure the update is sent to the buffer for doupdate()
+            stdscr.noutrefresh()
         except: pass
 
 def draw_period_modal(stdscr):
@@ -4161,114 +4446,200 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
     conn_panel_x = w - conn_panel_w - 1
 
     if conn_info:
-        row_y = 3
-        def safe_add(y, x, txt, attr=None):
-            if attr is None:
-                attr = curses.color_pair(CP_TEXT)
-            elif not (attr & curses.A_COLOR):
-                # If no color pair is specified in attr, default to CP_TEXT background/foreground
-                attr |= curses.color_pair(CP_TEXT)
+        # ═══════════════════════════════════════════════════════════════
+        # Build right-panel (Column 2) content as virtual lines,
+        # then render with scroll support.
+        # ═══════════════════════════════════════════════════════════════
+        rp_lines = []  # list of tuples: (type, ...) 
+        T = curses.color_pair(CP_TEXT)
+        A = curses.color_pair(CP_ACCENT)
+        W = curses.color_pair(CP_WARN)
+        H_ATTR = curses.A_BOLD | curses.A_UNDERLINE
 
-            if y < h - 1:
-                try:
-                    win.addstr(y, x, txt[:w - x - 1], attr)
-                except curses.error:
-                    pass
+        def rp(txt, attr=None):
+            rp_lines.append(("TEXT", txt, attr if attr else T))
+        def rp_blank():
+            rp_lines.append(("TEXT", "", T))
 
-        # 🔴 Connection Visibility
-        safe_add(row_y, conn_panel_x, "🔴 Connection Visibility", curses.A_BOLD | curses.A_UNDERLINE)
-        row_y += 2
-        safe_add(row_y, conn_panel_x, f"Active Connections : {conn_info['active_connections']}")
-        row_y += 1
-        safe_add(row_y, conn_panel_x, f"Top IP : {conn_info['top_ip']} ({conn_info['top_ip_count']})")
-        row_y += 1
-        safe_add(row_y, conn_panel_x, "IPs:")
-        row_y += 1
+        # ── 🔴 Connection Visibility ──
+        rp("🔴 Connection Visibility", H_ATTR)
+        rp_blank()
+        rp(f"Active Connections : {conn_info['active_connections']}")
+        rp(f"Top IP : {conn_info['top_ip']} ({conn_info['top_ip_count']})")
+        rp("IPs:")
         for ip, cnt in conn_info["all_ips"].most_common(5):
-            if row_y >= h - 1:
-                break
-            safe_add(row_y, conn_panel_x, f"{ip} : {cnt}")
-            row_y += 1
+            rp(f"  {ip} : {cnt}")
+        rp_blank()
 
-        row_y += 1
-        # 🔥 PROCESS REALITY CHECK
-        if row_y < h - 1:
-            safe_add(row_y, conn_panel_x, "🔥 Process Reality Check (DEBUG)", curses.A_BOLD | curses.A_UNDERLINE)
-            row_y += 1
-        
+        # ── 🔥 Process Reality Check ──
+        rp("🔥 Process Reality Check (DEBUG)", H_ATTR)
         pid = conn_info.get("pid")
         if pid and pid.isdigit():
-            # Show process priority (nice value)
             nice_val = get_process_nice(pid)
             nice_text = f"{nice_val} (Normal)" if nice_val == "0" else (f"{nice_val} (High)" if int(nice_val) < 0 else f"{nice_val} (Low)")
-            safe_add(row_y, conn_panel_x, f"Priority (Nice)    : {nice_text}")
-            row_y += 1
-
-            # Show OOM Score
+            rp(f"Priority (Nice)    : {nice_text}")
             oom_val = get_oom_score_adj(pid)
             oom_text = f"{oom_val} (Neutral)" if oom_val == "0" else (f"{oom_val} (Protected)" if int(oom_val) < 0 else f"{oom_val} (Vulnerable)")
-            safe_add(row_y, conn_panel_x, f"OOM Score Adj      : {oom_text}")
-            row_y += 1
-            
-            # Show full command line
+            rp(f"OOM Score Adj      : {oom_text}")
             cmdline = get_full_cmdline(pid)
-            safe_add(row_y, conn_panel_x, "📜 Command Line:")
-            row_y += 1
-            # Wrap cmdline if it's too long
-            wrapped_cmd = textwrap.wrap(cmdline, conn_panel_w - 4)
-            for l in wrapped_cmd[:3]: # Limit to 3 lines
-                if row_y >= h - 1: break
-                safe_add(row_y, conn_panel_x, f"  {l}")
-                row_y += 1
-            row_y += 1
+            rp("📜 Command Line:")
+            wrapped_cmd = textwrap.wrap(cmdline, conn_panel_w // 2 - 4)
+            for l in wrapped_cmd[:3]:
+                rp(f"  {l}")
+            rp_blank()
 
-            # use cached wrappers to avoid running heavy /proc ops during scroll
+            # Process Tree
             chain = get_process_parent_chain_cached(pid)
             tree = format_process_tree(chain)
             for line in tree:
-                if row_y >= h - 1:
-                    break
-                safe_add(row_y, conn_panel_x, line)
-                row_y += 1
+                rp(line)
+            rp_blank()
 
-            # FILE DESCRIPTOR PRESSURE (use cached)
-            row_y += 1
-            if row_y < h - 1:
-                safe_add(row_y, conn_panel_x, "🔥 RESOURCE PRESSURE (OPS)", curses.A_BOLD | curses.A_UNDERLINE)
-                row_y += 1
-            if row_y < h - 1:
-                safe_add(row_y, conn_panel_x, "🔥 4. File Descriptor Pressure")
-                row_y += 1
-            if row_y < h - 1:
-                safe_add(row_y, conn_panel_x, "📂 File Descriptors :")
-                row_y += 1
-
+            # File Descriptor Pressure
+            rp("🔥 RESOURCE PRESSURE (OPS)", H_ATTR)
+            rp("🔥 4. File Descriptor Pressure")
+            rp("📂 File Descriptors :")
             fd_info = get_fd_pressure_cached(pid)
             for key in ["open", "limit", "usage"]:
-                if row_y >= h - 1:
-                    break
-                safe_add(row_y, conn_panel_x, f"  {key.capitalize()} : {fd_info[key]}")
-                row_y += 1
-            if row_y < h - 1:
-                safe_add(row_y, conn_panel_x, f"  Risk  : {fd_info.get('risk','-')}")
-                row_y += 1
-            row_y += 1
+                rp(f"  {key.capitalize()} : {fd_info[key]}")
+            rp(f"  Risk  : {fd_info.get('risk','-')}")
+            rp_blank()
 
-            # RUNTIME CLASSIFICATION (use cached)
-            if pid and pid.isdigit() and row_y < h - 1:
-                runtime = detect_runtime_type_cached(pid)
-                safe_add(row_y, conn_panel_x, "6️⃣ RUNTIME CLASSIFICATION (SMART)", curses.A_BOLD | curses.A_UNDERLINE)
-                row_y += 1
-                safe_add(row_y, conn_panel_x, f"🧩 Runtime :")
-                row_y += 1
-                safe_add(row_y, conn_panel_x, f"  Type : {runtime['type']}")
-                row_y += 1
-                safe_add(row_y, conn_panel_x, f"  Mode : {runtime['mode']}")
-                row_y += 1
-                safe_add(row_y, conn_panel_x, f"  GC   : {runtime['gc']}")
-                row_y += 1
+            # Runtime Classification
+            runtime = detect_runtime_type_cached(pid)
+            rp("6️⃣ RUNTIME CLASSIFICATION (SMART)", H_ATTR)
+            rp(f"🧩 Runtime :")
+            rp(f"  Type : {runtime['type']}")
+            rp(f"  Mode : {runtime['mode']}")
+            rp(f"  GC   : {runtime['gc']}")
         else:
-            safe_add(row_y, conn_panel_x, "<no pid>")
+            rp("<no pid>")
+
+        # ═══════════════════════════════════════════════════════════════
+        # RENDER Column 2 (Connection/Process info) with scroll
+        # ═══════════════════════════════════════════════════════════════
+        visible_rows = h - 4  # rows 3..h-2
+        total_rp = len(rp_lines)
+        rp_scroll = scroll
+        # Column 2 takes left half of the right panel area
+        col2_max_w = conn_panel_w // 2
+
+        for vi in range(visible_rows):
+            ri = rp_scroll + vi
+            if ri >= total_rp:
+                break
+            draw_y = 3 + vi
+            if draw_y >= h - 1:
+                break
+
+            entry = rp_lines[ri]
+            if entry[0] == "TEXT":
+                _, txt, attr = entry
+                try:
+                    win.addstr(draw_y, conn_panel_x, txt[:col2_max_w], attr)
+                except curses.error:
+                    pass
+
+        # ═══════════════════════════════════════════════════════════════
+        # 🖥️ COLUMN 3: SYSTEM HEALTH (Live) — Independent, top-right
+        # Positioned to the right of Connection Visibility, near shortcuts bar
+        # ═══════════════════════════════════════════════════════════════
+        health_panel_x = conn_panel_x + col2_max_w + 1
+        health_avail_w = w - health_panel_x - 1
+        
+        if health_avail_w >= 20:  # Only render if enough space
+            # Draw vertical separator line between Column 2 and Column 3
+            sep_x = health_panel_x - 1
+            for sy in range(3, h - 1):
+                try:
+                    win.addch(sy, sep_x, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
+                except curses.error:
+                    pass
+            
+            health = get_system_health()
+            if health:
+                hy = 1  # Same level as "❓ Why It Exists" header
+                
+                def health_add(y, txt, attr=None):
+                    if attr is None:
+                        attr = T
+                    if y < h - 1:
+                        try:
+                            win.addstr(y, health_panel_x, txt[:health_avail_w], attr)
+                        except curses.error:
+                            pass
+                
+                def health_bar(y, icon, label, pct, detail=""):
+                    if y >= h - 1: return
+                    bar_width = min(10, health_avail_w - 30)
+                    if bar_width < 4: bar_width = 4
+                    pct_clamped = max(0, min(100, int(pct)))
+                    filled = int(bar_width * pct_clamped / 100)
+                    bar = "█" * filled + "░" * (bar_width - filled)
+                    if pct_clamped >= 90:
+                        bar_color = W | curses.A_BOLD
+                    elif pct_clamped >= 70:
+                        bar_color = W
+                    else:
+                        bar_color = A
+                    
+                    lbl = f" {icon} {label:<7s}"
+                    pct_text = f" {pct_clamped:3d}%"
+                    try:
+                        win.addstr(y, health_panel_x, lbl, T)
+                        cx = health_panel_x + len(lbl)
+                        win.addstr(y, cx, bar, bar_color)
+                        cx += bar_width
+                        win.addstr(y, cx, pct_text, T)
+                        if detail:
+                            cx += len(pct_text)
+                            win.addstr(y, cx, f" {detail}", T | curses.A_DIM)
+                    except curses.error:
+                        pass
+                
+                health_add(hy, "🖥️ System Health (Live)", curses.color_pair(CP_HEADER) | curses.A_BOLD)
+                hy = 3  # Bars start below the hline separator
+                
+                health_bar(hy, "🔥", "CPU", health.get('cpu_pct', 0), f"({health.get('cpu_count', '?')} cores)")
+                hy += 1
+                health_bar(hy, "🧠", "Memory", health.get('mem_pct', 0), f"({health.get('mem_used_gb', '?')}/{health.get('mem_total_gb', '?')}G)")
+                hy += 1
+                health_bar(hy, "💾", "Swap", health.get('swap_pct', 0), f"({health.get('swap_used_gb', '?')}/{health.get('swap_total_gb', '?')}G)")
+                hy += 1
+                health_bar(hy, "💿", "Disk /", health.get('disk_pct', 0), f"({health.get('disk_used_gb', '?')}/{health.get('disk_total_gb', '?')}G)")
+                hy += 1
+                
+                bat_pct = health.get('battery_pct')
+                if bat_pct is not None:
+                    plugged = health.get('battery_plugged', False)
+                    bat_icon = "⚡Chg" if plugged else "🔋Dis"
+                    health_bar(hy, "🔋", "Battery", bat_pct, bat_icon)
+                    hy += 1
+                
+                hy += 1
+                health_add(hy, f" ⏱  Uptime : {health.get('uptime', '-')}")
+                hy += 1
+                health_add(hy, f" 🌐 IP     : {health.get('local_ip', '-')}")
+                hy += 1
+                health_add(hy, f" 📊 Load   : {health.get('load_avg', '-')}")
+                hy += 1
+                health_add(hy, f" 🏠 Host   : {health.get('hostname', '-')}")
+                hy += 2
+                
+                # ── System Info ──
+                health_add(hy, "📋 System Info", curses.A_BOLD | curses.A_UNDERLINE)
+                hy += 1
+                health_add(hy, f" 🐧 OS     : {health.get('os', '-')}")
+                hy += 1
+                health_add(hy, f" 💻 Host   : {health.get('host', '-')}")
+                hy += 1
+                health_add(hy, f" 🔩 Kernel : {health.get('kernel', '-')}")
+                hy += 1
+                health_add(hy, f" 📦 Pkgs   : {health.get('packages', '-')}")
+                hy += 1
+                health_add(hy, f" 🐚 Shell  : {health.get('shell', '-')}")
+                hy += 1
+                health_add(hy, f" 🖥️  DE     : {health.get('de', '-')} ({health.get('wm_type', '-')})")
 
     # 🔹 Detail lines (LEFT PANE) - prewrapped and iconified
     for i in range(max_rows):
@@ -6011,7 +6382,7 @@ def main(stdscr, args=None):
         if not show_detail:
             auto_interval = CONFIG.get("auto_scan_interval", 3.0)
             if auto_interval > 0 and time.time() - last_auto_scan_time > auto_interval:
-                SCANNING_STATUS_EXP = time.time() + 1.0
+                SCANNING_STATUS_EXP = time.time() + 3.5
                 request_list_refresh()
 
         h, w = stdscr.getmaxyx()
@@ -6098,12 +6469,20 @@ def main(stdscr, args=None):
 
         draw_status_indicator(stdscr)
 
-        # 🚨 Handle Pending IPC Alerts from Daemon
-        if PENDING_IPC_ALERT:
-            alert = PENDING_IPC_ALERT
-            PENDING_IPC_ALERT = None
+        # 🚨 Handle Pending Alerts (Daemon IPC or Local TUI Protection)
+        while PENDING_ALERTS:
+            with CONFIG_LOCK:
+                alert = PENDING_ALERTS.pop(0)
+            
             result = draw_ipc_alert_modal(stdscr, alert)
-            PENDING_IPC_RESULT[alert["id"]] = result
+            
+            if alert.get("local"):
+                # Handle local TUI protection action
+                apply_tui_protection_action(stdscr, alert, result)
+            else:
+                # Fallback to normal Daemon IPC result routing
+                PENDING_IPC_RESULT[alert["id"]] = result
+            
             # Force redraw after modal
             stdscr.touchwin()
             stdscr.noutrefresh()
@@ -6192,6 +6571,7 @@ def main(stdscr, args=None):
                 table_h -=1
             elif k == ord('r'):
                 # force real refresh and clear caches
+                SCANNING_STATUS_EXP = time.time() + 3.5
                 rows = parse_ss()
                 _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
                 _table_row_cache.clear(); _risk_level_cache.clear(); _security_audit_cache.clear()

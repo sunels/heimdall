@@ -41,6 +41,7 @@
   - ℹ️ **Intelligence (i)**: Explain systemd terminology and clarify `alias` / `static` states.
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - 🛡️ **Daemon Mode (Background)**: Non-interactive monitoring with automatic suspicious-outbound detection and mitigation.
+- 🛡️ **Active TUI Protection**: Proactive security enforcement in the TUI when the daemon is inactive (auto-suspends suspicious processes).
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
@@ -233,16 +234,8 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
  
 Choose the installation method that fits your workflow.
  
-### 📦 Option 1: Standalone Binary (Recommended)
-*No dependencies required. Works on any modern Linux.*
- 
-1. Download the latest `heimdall` binary from [**GitHub Releases**](https://github.com/sunels/heimdall/releases).
-2. Make it executable and run:
- 
-```bash
-chmod +x heimdall
-sudo ./heimdall
-```
+#### 🔄 Update
+To update, simply download the latest binary and replace the old one.
  
 ---
  
@@ -252,9 +245,15 @@ sudo ./heimdall
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases) layer:
  
 ```bash
-sudo dpkg -i heimdall_0.8.0-1_all.deb
+sudo dpkg -i heimdall_0.9.7-1_all.deb
 # If dependencies are missing:
 sudo apt update && sudo apt install -f
+```
+
+#### 🔄 Update
+Download the new `.deb` file and run the same command:
+```bash
+sudo dpkg -i heimdall_0.9.7-1_all.deb
 ```
  
 ---
@@ -267,7 +266,13 @@ sudo apt update && sudo apt install -f
 rpmbuild -ba heimdall.rpm.spec
 
 # Install the generated RPM
-sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.8.0-1.noarch.rpm
+sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.9.7-1.noarch.rpm
+```
+
+#### 🔄 Update
+Rebuild and reinstall the RPM:
+```bash
+sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-0.9.7-1.noarch.rpm
 ```
  
 ---
@@ -277,6 +282,13 @@ sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.8.0-1.noarch.rpm
 
 ```bash
 # Build and install using the provided PKGBUILD
+makepkg -si
+```
+
+#### 🔄 Update
+Pull the latest changes and rebuild:
+```bash
+git pull origin main
 makepkg -si
 ```
 
@@ -292,14 +304,15 @@ You can install directly from PyPI:
 pip3 install heimdall-linux
 ```
 
-Or download the `.whl` package from [**Releases**](https://github.com/sunels/heimdall/releases) and install:
- 
+#### 🔄 Update
+To upgrade to the latest version via PyPI:
 ```bash
-# Install the downloaded wheel file
-pip3 install heimdall-0.9.5-py3-none-any.whl
- 
-# Run
-sudo heimdall
+sudo pip3 install --upgrade heimdall-linux --break-system-packages
+```
+
+Or install from the latest wheel:
+```bash
+pip3 install heimdall-0.9.7-py3-none-any.whl
 ```
 *(Note: Requires `witr` installed separately)*
  
@@ -319,6 +332,12 @@ pip3 install -e .
 
 # Run directly using the wrapper script:
 sudo python3 run.py
+```
+
+#### 🔄 Update
+Update the source code:
+```bash
+git pull origin main
 ```
 
 ## 🛡️ Daemon Mode (Background Protection)
@@ -384,7 +403,13 @@ The moment a suspicious process (like a hidden `nc` listener) tries to open a po
 If you are working in another terminal, Heimdall sends a **wall broadcast** to all TTYs and a **native desktop notification**, ensuring you never miss a security event even if the TUI is closed.
 
 <img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-20.png" alt="Broadcast alert" width="100%"/>
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-21.png" alt="Desktop notification" width="100%"/>
+
+---
+
+### 5. Active TUI Protection (Proactive Intervention)
+When the Daemon is not running, the Heimdall TUI takes over security enforcement. It instantly **suspends** any suspicious process detected during a scan and prompts you via a high-priority modal to decide its fate.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-21.png" alt="Active TUI Protection Modal" width="100%"/>
 
 ---
 
