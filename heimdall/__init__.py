@@ -1305,7 +1305,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 1.0.1')
+    parser.add_argument("--version", action="version", version='heimdall 1.0.2')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -6522,7 +6522,21 @@ def generate_full_system_dump(stdscr, rows, cache):
         add_line(f"║ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<55}  ║")
         add_line("╚" + "═" * 78 + "╝\n")
 
-        add_line("🛡️  HEIMDALL SENTINEL: SECURITY EXECUTIVE SUMMARY")
+        # 1. NVD Vulnerability Summary (Global)
+        add_line("🔓  NVD VULNERABILITY EXECUTIVE SUMMARY")
+        add_line("=" * 48)
+        with VULN_LOCK:
+            if not VULN_PENDING:
+                add_line("  ✅ No pending vulnerabilities detected in system packages.")
+            else:
+                add_line(f"  ❗ {len(VULN_PENDING)} SYSTEM VULNERABILITIES DETECTED:")
+                for v in VULN_PENDING:
+                    add_line(f"     - {v['cve_id']} [{v['severity']}]: {v['pkg']}")
+        add_line("-" * 48)
+        add_line()
+
+        # 2. Sentinel Behavioral Summary
+        add_line("🛡️  HEIMDALL SENTINEL: BEHAVIORAL AUDIT SUMMARY")
         add_line("=" * 48)
         add_line("Legend: ☢️ Backdoor | 🧪 Interpreter | 🎭 Masquerade | 💀 Deleted")
         add_line("-" * 48)

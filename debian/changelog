@@ -1,8 +1,11 @@
+heimdall (1.0.2-1) unstable; urgency=medium
+
+  * NEW: Added Global NVD Vulnerability Summary to the top of System Dumps.
+  * FIXED: Improved report structure for better security executive summary.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 25 Feb 2026 01:25:00 +0200
+
 heimdall (1.0.1-1) unstable; urgency=medium
-
-  * Release v1.0.1: Hotfix for Full Inspection Dump crash.
-
- -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 25 Feb 2026 01:15:00 +0200
 
 heimdall (1.0.0-1) unstable; urgency=medium
 

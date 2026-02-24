@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='heimdall-linux',
-    version='1.0.1',
+    version='1.0.2',
     description='Interactive curses-based port and process viewer (using witr)',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
