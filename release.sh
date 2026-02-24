@@ -61,8 +61,11 @@ if [[ -z "$TWINE_PASSWORD" ]]; then
 fi
 export TWINE_USERNAME=${TWINE_USERNAME:-__token__}
 
-# 3. Get Current Version
-CURRENT_VERSION=$(grep "version=" setup.py | cut -d"'" -f2)
+# 3. Get Current Version (Prefers Git tags, falls back to file)
+CURRENT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+if [ -z "$CURRENT_VERSION" ]; then
+    CURRENT_VERSION=$(cat heimdall/VERSION 2>/dev/null || echo "1.0.2")
+fi
 echo "🔍 Current version: $CURRENT_VERSION"
 
 # 4. Calculate New Version
@@ -86,10 +89,9 @@ increment_version() {
 VERSION=$(increment_version "$CURRENT_VERSION" "$BUMP_TYPE")
 echo "🚀 Releasing Heimdall v$VERSION..."
 
-# 5. Bump Versions in Files
-echo "📝 Bumping versions in files..."
-sed -i "s/version='heimdall [0-9.]*'/version='heimdall $VERSION'/" heimdall/__init__.py
-sed -i "s/version='[0-9.]*'/version='$VERSION'/" setup.py
+# 5. Update Version Files (No source code edits!)
+echo "📝 Updating version metadata..."
+echo "$VERSION" > heimdall/VERSION
 sed -i "s/pkgver=[0-9.]*/pkgver=$VERSION/" PKGBUILD
 
 # Update debian/changelog

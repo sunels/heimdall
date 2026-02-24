@@ -1303,9 +1303,17 @@ def check_witr_exists():
         print("Error: 'witr' command not found. Please install 'witr' and ensure it is in your PATH.")
         sys.exit(1)
 
+def _get_app_version():
+    try:
+        v_file = os.path.join(os.path.dirname(__file__), "VERSION")
+        with open(v_file) as f:
+            return f.read().strip()
+    except:
+        return "1.0.2"
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 1.0.2')
+    parser.add_argument("--version", action="version", version=f'heimdall {_get_app_version()}')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
