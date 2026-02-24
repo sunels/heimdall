@@ -1,22 +1,16 @@
-# 🚀 Heimdall v0.9.9: The Traffic Intelligence Update
+# Release Notes – Heimdall v1.0.0 (The Security Excellence Update) 🛡️🚀
 
-**This release introduces major real-time capabilities to Heimdall, bringing a powerful new Live Traffic column and deep structural layout improvements** — all while maintaining extreme performance with 0 blockings in the TUI!
+## Highlights
+- **📩 Background Vulnerability Scanner (NVD)**: Real-time system-wide CVE monitoring. Automatically matched with your installed packages via NVD API 2.0.
+- **🔓 Deep Security Audit Integration**: Security vulnerabilities are now directly visible in the `Inspect (i)` modal and `Full System Dump (d)` at the process level.
+- **🏷️ Smart Runtime Classification**: Advanced tech-stack detection. Identifies Java (Spring Boot), Node.js (Electron), Python (WSGI/ASGI), Go, Rust, PHP, and more.
+- **🌍 Sudo-Aware Browser Support**: Opening links from a root-level TUI session now gracefully drops privileges to launch the browser in your user desktop.
+- **📦 Smarter Package Matching**: Improved string-distance and substring matching to bridge the gap between NVD package names and local Ubuntu/Debian names.
 
-### ✨ What's New
-- **📡 Live Traffic Column (Background Polled):** 
-  - Real-time network activity (Read/Write Bytes) is now integrated directly into the main table as an ASCII spark bar (`███████░░░` / `3.2M/s`).
-  - **Tree-Aware I/O & UDP Tracking:** Uses deeper kernel I/O metrics (`/proc/pid/io`) alongside active connections to reliably track all activity — easily detecting heavy UDP tasks like high-res YouTube video streams, BitTorrent, and QUIC connections which often evaded traditional port-state polling.
-  - **Sentinel Integration:** If Heimdall Sentinel finds a CRITICAL risk factor and it matches very high traffic flow simultaneously, the table row will actively *blink* to immediately warn you!
-  - **Zero UI Blocking:** Powered by an intelligent background thread and a thread-safe caching system (`_traffic_poller_thread`). Your interactive inputs, scrolls, and animations remain instantly responsive.
+## Bug Fixes & Improvements
+- **NVD API Compliance**: Fixed 404/Bad Request errors by enforcing strict 120-day lookup windows.
+- **UI Polish**: Added blinking alert indicators and refined 'System Health' pane rendering.
+- **Stability**: Fixed a `TypeError` in the detail window's health rendering.
+- **Performance**: Optimized background polling to ensure zero UI lag during NVD fetches.
 
-- **📊 Wider Intelligence Panels:** 
-  - Following user feedback, the *Open Files* panel has been dynamically widened and the overall horizontal real estate scaling has been perfected to give complete visibility to process paths, while fitting the newly injected 20-character Traffic column seamlessly.
-
-- **📸 Updated Visual Assets:** 
-  - `README.md` and `screenshots/` have been updated with the brand new UI look and documentation tags regarding the Live Traffic tracking.
-
-### 🐛 Under the Hood
-- Overhauled main grid dimensions for adaptive resizing without line cut-offs.
-- Improved resource cleanup for phantom threads and short-lived background sockets during auto-scanning.
-
-*Enjoy unparalleled visibility with Heimdall!* 🛡️
+This major release transforms Heimdall from a process viewer into a proactive security inspection desktop for Linux.

@@ -26,6 +26,17 @@ import socket
 import select
 from concurrent.futures import ThreadPoolExecutor
 import platform
+import queue
+try:
+    import yaml
+except ImportError:
+    yaml = None
+try:
+    import requests as _requests_lib
+except ImportError:
+    _requests_lib = None
+import webbrowser
+from pathlib import Path
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -39,12 +50,92 @@ def debug_log(msg):
     except:
         pass
 
+def safe_open_url(url):
+    """Open a URL in the browser, dropping root privileges if running under sudo."""
+    try:
+        # Check if running under sudo
+        sudo_user = os.environ.get("SUDO_USER")
+        if os.getuid() == 0 and sudo_user:
+            # Try to run as the original user using sudo -u
+            # We use xdg-open which is standard for Linux desktops
+            subprocess.Popen(
+                ["sudo", "-u", sudo_user, "xdg-open", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        else:
+            # Normal or no sudo info, use webbrowser
+            webbrowser.open(url)
+    except Exception as e:
+        debug_log(f"URL_OPEN_ERROR: {e}")
+
+def get_matched_cves(pkg_name):
+    """Retrieve all pending CVE alerts that match the given package name."""
+    if not pkg_name or pkg_name == "-":
+        return []
+    with VULN_LOCK:
+        matches = []
+        for alert in VULN_PENDING:
+            val_pkg = alert.get("pkg", "").lower()
+            match_pkg = pkg_name.lower()
+            if val_pkg == match_pkg or val_pkg in match_pkg or match_pkg in val_pkg:
+                matches.append(alert)
+        return matches
+
+# ═══════════════════════════════════════════════════════════════
+# Persistent config helpers – ignored CVE list
+# ═══════════════════════════════════════════════════════════════
+def _load_vuln_config():
+    """Read or create the persistent config file (ignored CVEs and last check)."""
+    global VULN_CONFIG_DATA
+    try:
+        if not VULN_CONFIG_PATH.parent.exists():
+            VULN_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if VULN_CONFIG_PATH.is_file() and yaml:
+            with open(VULN_CONFIG_PATH, "r") as f:
+                VULN_CONFIG_DATA = yaml.safe_load(f) or {}
+            
+            # Ensure defaults
+            if "ignored_cves" not in VULN_CONFIG_DATA:
+                VULN_CONFIG_DATA["ignored_cves"] = []
+            if "last_check_timestamp" not in VULN_CONFIG_DATA:
+                VULN_CONFIG_DATA["last_check_timestamp"] = 0
+            if "last_check_status" not in VULN_CONFIG_DATA:
+                VULN_CONFIG_DATA["last_check_status"] = "none"
+            if "pending_vulns" not in VULN_CONFIG_DATA:
+                VULN_CONFIG_DATA["pending_vulns"] = []
+            
+            # Populate VULN_PENDING from persistent storage
+            with VULN_LOCK:
+                VULN_PENDING[:] = VULN_CONFIG_DATA["pending_vulns"]
+        else:
+            VULN_CONFIG_DATA = {
+                "ignored_cves": [],
+                "last_check_timestamp": 0,
+                "last_check_status": "none",
+                "pending_vulns": []
+            }
+            if yaml:
+                _save_vuln_config()
+    except Exception:
+        VULN_CONFIG_DATA = {"ignored_cves": [], "last_check_timestamp": 0, "last_check_status": "none"}
+
+def _save_vuln_config():
+    """Write the in-memory config back to disk."""
+    try:
+        if yaml:
+            with open(VULN_CONFIG_PATH, "w") as f:
+                yaml.safe_dump(VULN_CONFIG_DATA, f)
+    except Exception:
+        pass
+
 CONFIG = {
     "auto_update_services": True,
     "update_interval_minutes": 30,
     "auto_scan_interval": 3.0,
     "daemon_enabled": False,
-    "alert_timeout": 30
+    "alert_timeout": 30,
+    "vuln_scan_interval_hours": 0.5
 }
 SERVICES_DB = {}
 SYSTEM_SERVICES_DB = {}
@@ -55,6 +146,12 @@ UPDATE_STATUS_MSG = ""
 ACTION_STATUS_MSG = ""
 ACTION_STATUS_EXP = 0.0
 SCANNING_STATUS_EXP = 0.0
+VULN_STATUS_MSG = ""
+VULN_STATUS_COLOR = 0
+VULN_NEXT_CHECK_TIME = 0.0
+VULN_IS_FETCHING = False
+VULN_LAST_NEW_COUNT = 0
+SERVICE_SYNC_ERROR = False
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
 PENDING_ALERTS = [] # Global queue for both Daemon IPC and Local TUI Alerts
 PENDING_IPC_RESULT = {} # id -> (allow, kill_parent)
@@ -62,6 +159,15 @@ PENDING_IPC_RESULT = {} # id -> (allow, kill_parent)
 _script_managed_cache = {} # pid -> (is_managed: bool, timestamp: float)
 SC_MANAGED_TTL = 30.0
 TUI_PROTECTION_HANDLED = set() # (pid, create_time) -> Action Taken (timestamp)
+
+# ═══════════════════════════════════════════════════════════════
+# 🛡️ VULNERABILITY SCANNER — Background NVD checker globals
+# ═══════════════════════════════════════════════════════════════
+VULN_QUEUE = queue.Queue()           # alerts from background thread
+VULN_LOCK = threading.Lock()         # protect VULN_PENDING list
+VULN_PENDING = []                    # list of dicts {cve_id, desc, severity, pkg, link}
+VULN_CONFIG_PATH = Path(os.path.expanduser("~/.config/heimdall")) / "vuln_settings.yaml"
+VULN_CONFIG_DATA = {"ignored_cves": [], "pending_vulns": []}
 
 # ═══════════════════════════════════════════════════════════════
 # 📡 TRAFFIC POLLER — Background thread for per-port traffic
@@ -484,8 +590,8 @@ def draw_ipc_alert_modal(stdscr, alert):
             break
             
     return allow, kill_parent
-SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.json"
-SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/services.sha256"
+SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/services.json"
+SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/services.sha256"
 SYSTEM_SERVICES_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/system-services.json"
 SYSTEM_SERVICES_SHA_URL = "https://raw.githubusercontent.com/sunels/heimdall/main/heimdall/system-services.sha256"
 
@@ -855,6 +961,7 @@ def update_services_bg():
         ]
         
         for filename, url, sha_url, db_name in targets:
+            SERVICE_SYNC_ERROR = False
             UPDATE_STATUS_MSG = f"Syncing {filename}..."
             debug_log(f"UPDATER: Checking {filename}...")
             start_time = time.time()
@@ -894,6 +1001,7 @@ def update_services_bg():
                                 
                             debug_log(f"UPDATER: Applied {len(data)} definitions to {db_name}.")
             except Exception as e:
+                SERVICE_SYNC_ERROR = True
                 debug_log(f"UPDATER: Error updating {filename}: {e}")
                 
         UPDATE_STATUS_MSG = "Sync complete! ✅"
@@ -1197,7 +1305,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 0.9.9')
+    parser.add_argument("--version", action="version", version='heimdall 1.0.0')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -2984,10 +3092,28 @@ def build_inspect_content(pid, port, prog, username):
 
     lines.append(("", CP_TEXT))
 
-    # 3. Runtime Classification
+    lines.append(("", CP_TEXT))
+
+    # 3. Vulnerability Status (CVE)
+    lines.append(("🔓 VULNERABILITY ANALYSIS (NVD)", CP_ACCENT))
+    pkg_name = info.get("package", "-")
+    cves = get_matched_cves(pkg_name)
+    if not cves:
+        lines.append(("  ✅ No known NVD vulnerabilities for this package.", CP_TEXT))
+    else:
+        lines.append((f"  ❗ FOUND {len(cves)} MATCHING VULNERABILITIES:", CP_WARN))
+        for cve in cves:
+            lines.append((f"    ● {cve['cve_id']} [{cve['severity']}]", CP_WARN))
+            # Just one line of desc for brevity
+            lines.append((f"      {cve['desc'][:65]}...", CP_TEXT))
+    
+    lines.append(("", CP_TEXT))
+
+    # 4. Runtime Classification
     lines.append(("🏷️ CLASSIFICATION", CP_ACCENT))
-    classification = get_runtime_classification(pid, prog)
-    lines.append((f"  Type        : {classification}", CP_TEXT))
+    runtime_info = detect_runtime_type_cached(pid)
+    lines.append((f"  Runtime     : {runtime_info['type']}", CP_TEXT))
+    lines.append((f"  Stack Mode  : {runtime_info['mode']}", CP_TEXT))
     lines.append(("", CP_TEXT))
     
     # 4. Basic Process Info
@@ -3047,12 +3173,13 @@ def build_inspect_content(pid, port, prog, username):
 
     lines.append(("", CP_TEXT))
 
-    # 9. Sentinel Legend (Footer)
     lines.append(("🛡️ SENTINEL ICON LEGEND", CP_ACCENT))
     lines.append(("  ☢️ Backdoor  🧪 Script Listener  🎭 Masquerade", CP_TEXT))
     lines.append(("  💀 Deleted Bin  📂 Suspicious Dir  🌐 Public IP", CP_TEXT))
     lines.append(("  🛡️ Root Privilege  🌲 Shell Lineage", CP_TEXT))
     
+    lines.append(("", CP_TEXT))
+
     lines.append(("", CP_TEXT))
 
     # 10. Connection Visibility
@@ -3720,9 +3847,18 @@ def draw_settings_modal(stdscr):
         win.addstr(2, 4, "[s] Auto Update Settings (Services)", curses.color_pair(CP_TEXT))
         win.addstr(3, 4, "[r] Background Scan Interval (UI)", curses.color_pair(CP_TEXT))
         win.addstr(4, 4, "[d] Daemon Mode (Background)", curses.color_pair(CP_TEXT))
+        win.addstr(5, 4, "[v] Vulnerability Scanner (NVD API Key)", curses.color_pair(CP_TEXT))
+        win.addstr(6, 4, "[i] Vuln. Scan Interval", curses.color_pair(CP_TEXT))
         
         daemon_status = "ON" if CONFIG.get("daemon_enabled") else "OFF"
         win.addstr(4, bw - 10, f"[{daemon_status}]", curses.color_pair(CP_ACCENT) if daemon_status == "ON" else curses.A_DIM)
+        
+        api_key = CONFIG.get("nvd_api_key")
+        key_status = "SET" if api_key else "MISSING"
+        win.addstr(5, bw - 10, f"[{key_status}]", curses.color_pair(CP_ACCENT) if api_key else curses.color_pair(CP_WARN))
+
+        vuln_interval = CONFIG.get("vuln_scan_interval_hours", 1.0)
+        win.addstr(6, bw - 10, f"[{vuln_interval}h]", curses.color_pair(CP_TEXT) | curses.A_BOLD)
 
         footer = " [q/ESC] Close "
         win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_TEXT))
@@ -3736,7 +3872,76 @@ def draw_settings_modal(stdscr):
             draw_auto_scan_settings_modal(stdscr)
         elif k == ord('d'):
             draw_daemon_settings_modal(stdscr)
+        elif k == ord('v'):
+            draw_vuln_settings_modal(stdscr)
+        elif k == ord('i'):
+            draw_vuln_interval_settings_modal(stdscr)
             
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_vuln_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 12, 65
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    title = " 📩 Vulnerability Scanner Settings "
+    editing = False
+    input_buf = CONFIG.get("nvd_api_key", "") or ""
+
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        win.addstr(2, 4, "Automated NVD background scanning is always active.")
+        win.addstr(3, 4, "Use an API Key to increase rate limits (50 req / 30s).")
+        
+        win.addstr(5, 4, "NVD API Key: ")
+        key_disp = input_buf if editing else (("*" * len(input_buf)) if input_buf else "(not set)")
+        attr = curses.A_REVERSE | curses.A_BOLD if editing else curses.A_NORMAL
+        color = curses.color_pair(CP_ACCENT) if editing else curses.color_pair(CP_TEXT)
+        
+        max_k = bw - 20
+        win.addstr(5, 18, key_disp[-max_k:], color | attr)
+        
+        if editing:
+            win.addstr(7, 4, "[ENTER] Save  [ESC] Cancel", curses.color_pair(CP_WARN) | curses.A_BOLD)
+        else:
+            win.addstr(7, 4, "[e] Edit Key  [c] Clear  [ENTER/q] Close", curses.A_DIM)
+        
+        win.refresh()
+        k = win.getch()
+        
+        if editing:
+            if k == 27: # ESC
+                editing = False
+                input_buf = CONFIG.get("nvd_api_key", "") or ""
+            elif k in (10, 13, curses.KEY_ENTER):
+                with CONFIG_LOCK:
+                    CONFIG["nvd_api_key"] = input_buf if input_buf else None
+                save_config()
+                editing = False
+                show_message(stdscr, "✅ NVD API Key saved.")
+            elif k in (8, 127, curses.KEY_BACKSPACE, 263):
+                input_buf = input_buf[:-1]
+            elif 32 <= k <= 126:
+                input_buf += chr(k)
+        else:
+            if k in (curses.KEY_ENTER, 10, 13, ord('q'), 27):
+                break
+            elif k == ord('e'):
+                editing = True
+            elif k == ord('c'):
+                with CONFIG_LOCK:
+                    CONFIG["nvd_api_key"] = None
+                save_config()
+                input_buf = ""
+                show_message(stdscr, "🗑️ NVD API Key cleared.")
+
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
 
@@ -3827,6 +4032,125 @@ def draw_auto_scan_settings_modal(stdscr):
                 CONFIG["auto_scan_interval"] = options[idx][0]
             save_config()
             show_message(stdscr, f"Auto-Scan set to {options[idx][1]}")
+            break
+            
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_vuln_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 12, 65
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    title = " 📩 Vulnerability Scanner Settings "
+    editing = False
+    input_buf = CONFIG.get("nvd_api_key", "") or ""
+
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        win.addstr(2, 4, "Automated NVD background scanning is always active.")
+        win.addstr(3, 4, "Use an API Key to increase rate limits (50 req / 30s).")
+        
+        win.addstr(5, 4, "NVD API Key: ")
+        key_disp = input_buf if editing else (("*" * len(input_buf)) if input_buf else "(not set)")
+        attr = curses.A_REVERSE | curses.A_BOLD if editing else curses.A_NORMAL
+        color = curses.color_pair(CP_ACCENT) if editing else curses.color_pair(CP_TEXT)
+        
+        max_k = bw - 20
+        win.addstr(5, 18, key_disp[-max_k:], color | attr)
+        
+        if editing:
+            win.addstr(7, 4, "[ENTER] Save  [ESC] Cancel", curses.color_pair(CP_WARN) | curses.A_BOLD)
+        else:
+            win.addstr(7, 4, "[e] Edit Key  [c] Clear  [ENTER/q] Close", curses.A_DIM)
+        
+        win.refresh()
+        k = win.getch()
+        
+        if editing:
+            if k == 27: # ESC
+                editing = False
+                input_buf = CONFIG.get("nvd_api_key", "") or ""
+            elif k in (10, 13, curses.KEY_ENTER):
+                with CONFIG_LOCK:
+                    CONFIG["nvd_api_key"] = input_buf if input_buf else None
+                save_config()
+                editing = False
+                show_message(stdscr, "✅ NVD API Key saved.")
+            elif k in (8, 127, curses.KEY_BACKSPACE, 263):
+                input_buf = input_buf[:-1]
+            elif 32 <= k <= 126:
+                input_buf += chr(k)
+        else:
+            if k in (curses.KEY_ENTER, 10, 13, ord('q'), 27):
+                break
+            elif k == ord('e'):
+                editing = True
+            elif k == ord('c'):
+                with CONFIG_LOCK:
+                    CONFIG["nvd_api_key"] = None
+                save_config()
+                input_buf = ""
+                show_message(stdscr, "🗑️ NVD API Key cleared.")
+
+    win.erase(); win.refresh(); del win
+    stdscr.touchwin()
+
+def draw_vuln_interval_settings_modal(stdscr):
+    h, w = stdscr.getmaxyx()
+    bh, bw = 14, 55
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    options = [
+        (0.08, "5 Minutes (Very Aggressive)"),
+        (0.25, "15 Minutes (Aggressive)"),
+        (0.5,  "30 Minutes (Standard)"),
+        (1.0,  "1 Hour (Relaxed)"),
+        (4.0,  "4 Hours (Very Relaxed)"),
+        (24.0, "Daily (24 Hours)"),
+        (168.0, "Weekly")
+    ]
+    
+    idx = 0
+    curr = CONFIG.get("vuln_scan_interval_hours", 1.0)
+    for i, opt in enumerate(options):
+        if opt[0] == curr:
+            idx = i
+            break
+            
+    title = " 🕓 Vuln. Scan Interval "
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_WARN) | curses.A_BOLD)
+        
+        for i, (val, label) in enumerate(options):
+            attr = curses.A_REVERSE | curses.A_BOLD if i == idx else curses.A_NORMAL
+            win.addstr(2 + i, 4, f" {label:<45} ", attr)
+            
+        win.addstr(bh - 2, 4, "[ENTER] Select  [q/ESC] Cancel", curses.A_DIM)
+        
+        win.refresh()
+        k = win.getch()
+        if k == ord('q') or k == 27: break
+        elif k == curses.KEY_UP:
+            idx = (idx - 1) % len(options)
+        elif k == curses.KEY_DOWN:
+            idx = (idx + 1) % len(options)
+        elif k in (curses.KEY_ENTER, 10, 13):
+            with CONFIG_LOCK:
+                CONFIG["vuln_scan_interval_hours"] = options[idx][0]
+            save_config()
+            show_message(stdscr, f"✅ Scan interval set to {options[idx][0]}h")
             break
             
     win.erase(); win.refresh(); del win
@@ -4451,7 +4775,7 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
     _table_row_cache[key] = (row_str, now)
     return row_str
 
-def draw_table(win, rows, selected, offset, cache, firewall_status):
+def draw_table(win, rows, selected, offset, cache, firewall_status, is_active=False):
     win.erase()
     try:
         win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -4459,10 +4783,11 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
     h, w = win.getmaxyx()
     
     # Border with theme color
+    b_color = curses.color_pair(CP_ACCENT) | curses.A_BOLD if is_active else curses.color_pair(CP_BORDER)
     try:
-        win.attron(curses.color_pair(CP_BORDER))
+        win.attron(b_color)
         win.box()
-        win.attroff(curses.color_pair(CP_BORDER))
+        win.attroff(b_color)
     except:
         pass
 
@@ -4545,15 +4870,15 @@ def draw_table(win, rows, selected, offset, cache, firewall_status):
                 pass
             
             # 🔧 REPAIR BORDERS
-            win.addch(i+3, 0, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
-            win.addch(i+3, w-1, curses.ACS_VLINE, curses.color_pair(CP_BORDER))
+            win.addch(i+3, 0, curses.ACS_VLINE, b_color)
+            win.addch(i+3, w-1, curses.ACS_VLINE, b_color)
         except:
             pass
             
     win.noutrefresh()
 
 
-def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
+def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None, is_active=False):
     win.erase()
     try:
         win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -4562,10 +4887,11 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
     h, w = win.getmaxyx()
     
     # Border
+    b_color = curses.color_pair(CP_ACCENT) | curses.A_BOLD if is_active else curses.color_pair(CP_BORDER)
     try:
-        win.attron(curses.color_pair(CP_BORDER))
+        win.attron(b_color)
         win.box()
-        win.attroff(curses.color_pair(CP_BORDER))
+        win.attroff(b_color)
     except:
         win.box()
         
@@ -4698,12 +5024,12 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
             if health:
                 hy = 1  # Same level as "❓ Why It Exists" header
                 
-                def health_add(y, txt, attr=None):
+                def health_add(y, txt, attr=None, x_offset=0):
                     if attr is None:
                         attr = T
                     if y < h - 1:
                         try:
-                            win.addstr(y, health_panel_x, txt[:health_avail_w], attr)
+                            win.addstr(y, health_panel_x + x_offset, txt[:max(0, health_avail_w - x_offset)], attr)
                         except curses.error:
                             pass
                 
@@ -4775,9 +5101,52 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
                 hy += 1
                 health_add(hy, f" 📦 Pkgs   : {health.get('packages', '-')}")
                 hy += 1
+                
                 health_add(hy, f" 🐚 Shell  : {health.get('shell', '-')}")
                 hy += 1
                 health_add(hy, f" 🖥️  DE     : {health.get('de', '-')} ({health.get('wm_type', '-')})")
+                hy += 2
+                
+                # ── Vulnerability Scan Status (Bottom) ──
+                v_title = "🛡️ NVD Check Status"
+                if VULN_IS_FETCHING:
+                    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][int(time.time() * 10) % 10]
+                    v_title += f" [ {spinner} PULLING... ]"
+                health_add(hy, v_title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+                hy += 1
+                
+                last_ts = VULN_CONFIG_DATA.get("last_check_timestamp", 0)
+                last_status = VULN_CONFIG_DATA.get("last_check_status", "none")
+                if last_ts > 0:
+                    dt_str = time.strftime("%H:%M:%S", time.localtime(last_ts))
+                    new_str = f" (+{VULN_LAST_NEW_COUNT} new)" if VULN_LAST_NEW_COUNT > 0 else ""
+                    health_add(hy, f"  Last: {dt_str} ({last_status}){new_str}", curses.color_pair(CP_ACCENT))
+                    hy += 1
+                
+                # Countdown timer
+                now_t = time.time()
+                if VULN_NEXT_CHECK_TIME > now_t:
+                    diff = int(VULN_NEXT_CHECK_TIME - now_t)
+                    m, s = divmod(diff, 60)
+                    cd_str = f"  Next: {m:02d}:{s:02d}"
+                    health_add(hy, cd_str, curses.A_DIM)
+                    
+                    # 📩 Alert Icon inside the Panel if pending CVEs
+                    if len(VULN_PENDING) > 0:
+                        alert_txt = f" 📩 {len(VULN_PENDING)} Alerts "
+                        if int(time.time()) % 2 == 0:
+                            health_add(hy, alert_txt, curses.color_pair(CP_WARN) | curses.A_REVERSE | curses.A_BOLD, x_offset=12)
+                        else:
+                            health_add(hy, alert_txt, curses.color_pair(CP_WARN) | curses.A_BOLD, x_offset=12)
+                    hy += 1
+                
+                if SERVICE_SYNC_ERROR:
+                    health_add(hy, "  ⚠ Sync Error: services.json", curses.color_pair(CP_WARN))
+                    hy += 1
+                
+                if VULN_STATUS_MSG and "miss" in VULN_STATUS_MSG.lower():
+                    health_add(hy, "  ⚠ API Key Missing!", curses.color_pair(CP_WARN) | curses.A_BOLD)
+                    hy += 1
 
     # 🔹 Detail lines (LEFT PANE) - prewrapped and iconified
     for i in range(max_rows):
@@ -4793,7 +5162,7 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None):
             
     win.noutrefresh()
 
-def draw_open_files(win, pid, prog, files, scroll=0):
+def draw_open_files(win, pid, prog, files, scroll=0, is_active=False):
     win.erase()
     try:
         win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -4801,10 +5170,11 @@ def draw_open_files(win, pid, prog, files, scroll=0):
     h, w = win.getmaxyx()
     
     # Border
+    b_color = curses.color_pair(CP_ACCENT) | curses.A_BOLD if is_active else curses.color_pair(CP_BORDER)
     try:
-        win.attron(curses.color_pair(CP_BORDER))
+        win.attron(b_color)
         win.box()
-        win.attroff(curses.color_pair(CP_BORDER))
+        win.attroff(b_color)
     except:
         win.box()
 
@@ -4833,7 +5203,7 @@ def draw_open_files(win, pid, prog, files, scroll=0):
             
     win.noutrefresh()
 
-def draw_help_bar(stdscr, show_detail):
+def draw_help_bar(stdscr, active_pane=0):
     h, w = stdscr.getmaxyx()
     # Fixed width for the vertical help bar
     bar_w = 22
@@ -4861,33 +5231,27 @@ def draw_help_bar(stdscr, show_detail):
         except: pass
 
         # Short labels for vertical fit
-        shortcuts = []
-        if not show_detail:
-            snap = " 🔄 [r Refresh]" if SNAPSHOT_MODE else ""
-            shortcuts = [
-                (" 🔍 [i Inspect]", curses.color_pair(CP_ACCENT)),
-                (" 📋 [d Full Inspect]", curses.color_pair(CP_ACCENT)),
-                (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
-                (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
-                (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
-                (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
-                (" 🔥 [f Firewall]", curses.color_pair(CP_ACCENT)),
-                (" 🛠  [a Actions]", curses.color_pair(CP_ACCENT)),
-                (" ⚙️  [z Services]", curses.color_pair(CP_ACCENT)),
-                (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
-                (" 📂 [←→ Files]", curses.color_pair(CP_ACCENT)),
-                (" ⇱⇲ [Tab Maximize]", curses.color_pair(CP_ACCENT)),
-                (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
-                (" 🧭 [↑↓ Select]", curses.color_pair(CP_ACCENT)),
-            ]
-            if SNAPSHOT_MODE:
-                shortcuts.insert(0, (snap, curses.color_pair(CP_ACCENT)))
-        else:
-            shortcuts = [
-                (" 🧭 ↑↓ Scroll", curses.color_pair(CP_TEXT)),
-                (" [Tab] Restore", curses.color_pair(CP_ACCENT)),
-                (" ❌ Quit ", curses.color_pair(CP_WARN) | curses.A_BOLD),
-            ]
+        snap = " 🔄 [r Refresh]" if SNAPSHOT_MODE else ""
+        shortcuts = [
+            (" ⇱⇲ [Ret Maximize]", curses.color_pair(CP_ACCENT)),
+            (" ♻️  [Tab Cycles]", curses.color_pair(CP_ACCENT)),
+            (" 🔍 [i Inspect]", curses.color_pair(CP_ACCENT)),
+            (" 📋 [d Full Inspect]", curses.color_pair(CP_ACCENT)),
+            (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
+            (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
+            (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
+            (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
+            (" 🔥 [f Firewall]", curses.color_pair(CP_ACCENT)),
+            (" 🛠  [a Actions]", curses.color_pair(CP_ACCENT)),
+            (" ⚙️  [z Services]", curses.color_pair(CP_ACCENT)),
+            (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
+            (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
+            (" 🧭 [↑↓ Select]", curses.color_pair(CP_ACCENT)),
+            (" 📩 [n Vulns]", curses.color_pair(CP_ACCENT)),
+        ]
+        if SNAPSHOT_MODE:
+            shortcuts.insert(0, (snap, curses.color_pair(CP_ACCENT)))
+
         y = 2
         for text, attr in shortcuts:
             if y >= h - 1: break
@@ -4896,7 +5260,6 @@ def draw_help_bar(stdscr, show_detail):
                 continue
             
             try:
-                # Use plain addstr without bracket-separation logic to maintain original look
                 bar_win.addstr(y, 1, text[:bar_w-2], attr if attr else curses.color_pair(CP_TEXT))
             except: pass
             y += 1
@@ -4915,18 +5278,18 @@ def draw_help_bar(stdscr, show_detail):
                 # Legend Title
                 legend_title = " SENTINEL LEGEND "
                 bar_win.addstr(y, max(1, (bar_w - len(legend_title)) // 2), legend_title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
-                y += 1
+                y += 2  # Leaving a blank line here
                 
                 legend_items = [
-                    ("🚩 Risk (DB)", CP_WARN),
-                    ("☢️  Backdoor", CP_WARN),
-                    ("🎭 Masquerade", CP_WARN),
-                    ("💀 Deleted", CP_WARN),
-                    ("🧪 Script Ln", CP_ACCENT),
-                    ("📂 /tmp Path", CP_ACCENT),
-                    ("🌐 Public Int", CP_ACCENT),
-                    ("🛡️  Root Priv", CP_ACCENT),
-                    ("🌲 Shell Prnt", CP_ACCENT)
+                    (" 🚩 Risk (DB)", CP_WARN),
+                    (" ☢️  Backdoor", CP_WARN),
+                    (" 🎭 Masquerade", CP_WARN),
+                    (" 💀 Deleted", CP_WARN),
+                    (" 🧪 Script Ln", CP_ACCENT),
+                    (" 📂 /tmp Path", CP_ACCENT),
+                    (" 🌐 Public Int", CP_ACCENT),
+                    (" 🛡️  Root Priv", CP_ACCENT),
+                    (" 🌲 Shell Prnt", CP_ACCENT)
                 ]
                 
                 for item_text, pair_id in legend_items:
@@ -4936,7 +5299,7 @@ def draw_help_bar(stdscr, show_detail):
             except: pass
 
         bar_win.noutrefresh()
-    except:
+    except curses.error:
         pass
 
 # -------------------------
@@ -6030,61 +6393,87 @@ def get_fd_pressure(pid):
 def detect_runtime_type(pid):
     """
     Detect runtime environment from PID.
-    Returns dict:
-    {
-        "type": "-",
-        "mode": "-",
-        "gc": "-"
-    }
+    Checks cmdline, environment, and library dependencies if possible.
     """
-    runtime = {"type": "-", "mode": "-", "gc": "-"}
+    runtime = {"type": "Native / Binary", "mode": "Direct", "gc": "Manual"}
     if not pid or not pid.isdigit():
         return runtime
     try:
-        # cmdline
-        with open(f"/proc/{pid}/cmdline", "r") as f:
-            cmdline = f.read().replace("\0", " ").lower()
+        pid_int = int(pid)
+        p = None
+        cmdline = ""
+        if psutil:
+            try:
+                p = psutil.Process(pid_int)
+                cmdline = " ".join(p.cmdline()).lower()
+            except: pass
+        
+        if not cmdline:
+            with open(f"/proc/{pid}/cmdline", "r") as f:
+                cmdline = f.read().replace("\0", " ").lower()
 
-        # environ
+        # 1. Environment variables (Internal)
         env = {}
         try:
             with open(f"/proc/{pid}/environ", "r") as f:
                 for e in f.read().split("\0"):
                     if "=" in e:
-                        k,v = e.split("=",1)
+                        k, v = e.split("=", 1)
                         env[k] = v
-        except Exception:
-            pass
+        except: pass
 
-        # Java detection
-        if "java" in cmdline:
+        # 2. Container Detection
+        if os.path.exists(f"/proc/{pid}/cgroup"):
+            with open(f"/proc/{pid}/cgroup", "r") as f:
+                cg = f.read()
+                if "/docker/" in cg or "/kube" in cg:
+                    runtime["mode"] = "Containerized"
+
+        # 3. Stack Detection
+        # java
+        if "java" in cmdline or "jvm" in cmdline:
             runtime["type"] = "Java"
+            runtime["gc"] = "JVM Management"
             if "spring-boot" in cmdline or "springboot" in cmdline:
-                runtime["mode"] = "Spring Boot Server"
+                runtime["mode"] = "Spring Boot / Microservice"
             else:
-                runtime["mode"] = "Server" if "-jar" in cmdline else "App"
-            # detect GC type from JAVA_OPTS or cmdline
-            gc_match = re.search(r"-XX:\+Use([A-Za-z0-9]+)GC", cmdline)
-            if not gc_match:
-                gc_match = re.search(r"GC=([A-Za-z0-9]+)", " ".join(env.get("JAVA_OPTS","").split()))
-            runtime["gc"] = gc_match.group(1) if gc_match else "Unknown"
-        elif "node" in cmdline or "nodejs" in cmdline:
-            runtime["type"] = "Node"
-            runtime["mode"] = "Server"
+                runtime["mode"] = "Server" if "-jar" in cmdline else "Standard App"
+        
+        # node
+        elif "node" in cmdline:
+            runtime["type"] = "Node.js"
+            runtime["gc"] = "V8 Scavenger/Mark-Sweep"
+            runtime["mode"] = "Event-driven Server"
+            if "electron" in cmdline:
+                runtime["type"] = "Electron (Node + Chromium)"
+                runtime["mode"] = "Desktop App"
+
+        # python
         elif "python" in cmdline:
             runtime["type"] = "Python"
-            runtime["mode"] = "Script"
+            runtime["gc"] = "Ref Counting + Cycle GC"
+            runtime["mode"] = "Interpreted Script"
+            if "gunicorn" in cmdline or "uvicorn" in cmdline or "flask" in cmdline:
+                runtime["mode"] = "WSGI/ASGI Web Server"
+
+        # go
+        elif "go-" in cmdline or (p and "go" in p.name().lower()):
+            runtime["type"] = "Go (Golang)"
+            runtime["gc"] = "Tcmalloc-based / Concurrent"
+            runtime["mode"] = "Statically Linked Binary"
+
+        # php
+        elif "php" in cmdline:
+            runtime["type"] = "PHP"
+            runtime["mode"] = "FastCGI / CLI"
+
+        # nginx
         elif "nginx" in cmdline:
             runtime["type"] = "Nginx"
-            runtime["mode"] = "Server"
-        elif "postgres" in cmdline or "postmaster" in cmdline:
-            runtime["type"] = "Postgres"
-            runtime["mode"] = "DB Server"
-        elif "go" in cmdline:
-            runtime["type"] = "Go"
+            runtime["mode"] = "Reverse Proxy / Web Server"
 
-    except Exception:
-        pass
+    except Exception as e:
+        debug_log(f"DETECT_RUNTIME ERROR (PID {pid}): {e}")
 
     _runtime_cache[str(pid)] = runtime
     return runtime
@@ -6252,10 +6641,22 @@ def generate_full_system_dump(stdscr, rows, cache):
             if pid and pid.isdigit():
                 add_line("   🔥 Process Reality Check:")
                 findings = perform_security_heuristics(pid, port, prog, user)
-                if findings:
-                    add_line("     🛡️ SENTINEL AUDIT:")
-                    for find in findings:
-                        add_line(f"       [{find['level']}] {find['msg']}")
+                if tree:
+                    add_line("     Process Tree:")
+                    for l in tree:
+                        add_line(f"       {l}")
+                
+                # ── Vulnerability Audit ──
+                pkg_name = info.get("package", "-")
+                cves = get_matched_cves(pkg_name)
+                if cves:
+                    add_line(f"     🔓 VULNERABILITY AUDIT: {len(cves)} MATCHES")
+                    for cve in cves:
+                        add_line(f"       - {cve['cve_id']} [{cve['severity']}]: {cve['desc'][:100]}...")
+                
+                add_line("     🛡️ SENTINEL AUDIT:")
+                for find in findings:
+                    add_line(f"       [{find['level']}] {find['msg']}")
                 cmd = get_full_cmdline(pid)
                 add_line(f"     Command: {cmd}")
                 
@@ -6347,6 +6748,174 @@ def generate_full_system_dump(stdscr, rows, cache):
     except Exception as e:
         show_message(stdscr, f"❌ Inspection failed: {str(e)}")
         time.sleep(2)
+# --------------------------------------------------
+# User Details Overlay
+# --------------------------------------------------
+_user_info_cache = {}  # username -> (data_dict, timestamp)
+_user_info_lock = threading.Lock()
+USER_INFO_TTL = 30.0
+
+def _fetch_user_info_worker(username):
+    try:
+        data = {"_loading": False, "username": username}
+        
+        # 1. Properties
+        try:
+            import pwd
+            pw = pwd.getpwnam(username)
+            data["uid"] = str(pw.pw_uid)
+            data["home"] = pw.pw_dir
+            data["shell"] = pw.pw_shell
+        except:
+            data["uid"] = "?"
+            data["home"] = "?"
+            data["shell"] = "?"
+
+        # 2. Last Login
+        try:
+            last_out = subprocess.check_output(["last", "-n", "1", username], text=True, stderr=subprocess.DEVNULL)
+            last_line = last_out.splitlines()[0] if last_out.strip() else ""
+            if last_line and not last_line.startswith("wtmp begins"):
+                parts = last_line.split()
+                if len(parts) >= 4:
+                    data["last_login"] = " ".join(parts[3:])
+                else:
+                    data["last_login"] = last_line
+            else:
+                data["last_login"] = "No recent login"
+        except:
+            data["last_login"] = "Unknown"
+
+        # 3. CPU sum
+        try:
+            ps_out = subprocess.check_output(["ps", "-u", username, "-o", "%cpu="], text=True, stderr=subprocess.DEVNULL)
+            cpu_pct = sum(float(l.strip()) for l in ps_out.splitlines() if l.strip())
+            core_count = psutil.cpu_count() or 1
+            data["cpu"] = cpu_pct / core_count
+            data["cores"] = core_count
+        except:
+            data["cpu"] = 0.0
+            data["cores"] = 1
+
+        # 4. Recent commands (try bash_history or journal)
+        cmds = []
+        try:
+            hist_file = os.path.join(data.get("home", ""), ".bash_history")
+            if os.path.exists(hist_file) and os.access(hist_file, os.R_OK):
+                with open(hist_file, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                cmds = [l.strip() for l in lines if l.strip()]
+            else:
+                if data["uid"] != "?":
+                    j_out = subprocess.check_output(
+                        ["journalctl", f"_UID={data['uid']}", "-n", "10", "--no-pager", "-o", "cat"],
+                        text=True, stderr=subprocess.DEVNULL
+                    )
+                    cmds = [l.strip() for l in j_out.splitlines() if l.strip()]
+        except:
+            pass
+        
+        data["commands"] = cmds[-10:] if cmds else []
+
+        with _user_info_lock:
+            _user_info_cache[username] = (data, time.time())
+    except Exception as e:
+        debug_log(f"USER_INFO_ERROR: {e}")
+        with _user_info_lock:
+            _user_info_cache[username] = ({"_loading": False, "error": str(e)}, time.time())
+
+def get_user_info_cached(username):
+    if not username or username == "-":
+        return None
+    now = time.time()
+    with _user_info_lock:
+        entry = _user_info_cache.get(username)
+        if entry:
+            data, ts = entry
+            if now - ts < USER_INFO_TTL:
+                return data
+            if data.get("_loading"):
+                return data
+        
+        _user_info_cache[username] = ({"_loading": True, "username": username}, now)
+    
+    threading.Thread(target=_fetch_user_info_worker, args=(username,), daemon=True).start()
+    return {"_loading": True, "username": username}
+
+def draw_user_subpane(win, user_data, is_active=False):
+    win.erase()
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    h, w = win.getmaxyx()
+    if h < 2 or w < 10: return
+
+    b_color = curses.color_pair(CP_ACCENT) | curses.A_BOLD if is_active else curses.color_pair(CP_BORDER)
+    try:
+        win.attron(b_color)
+        win.box()
+        win.attroff(b_color)
+    except: pass
+
+    is_root = user_data.get("username", "") == "root"
+    title_icon = "🔴" if is_root else "👤"
+    title_attr = curses.color_pair(CP_WARN) | curses.A_BOLD if is_root else curses.color_pair(CP_HEADER) | curses.A_BOLD
+    title = f" User Profile: {title_icon} {user_data.get('username', '?')} "
+    try: win.addstr(0, max(1, (w - len(title)) // 2), title[:w-2], title_attr)
+    except: pass
+
+    if user_data.get("_loading"):
+        try: win.addstr(h//2, max(1, (w - 10)//2), "Loading...", curses.color_pair(CP_ACCENT) | curses.A_BLINK)
+        except: pass
+        win.noutrefresh()
+        return
+
+    pad = 2
+    y = 1
+    
+    # Header info
+    info_str = f"UID: {user_data.get('uid', '?')} | {user_data.get('home', '?')}"
+    shell_str = f"🐚 {os.path.basename(user_data.get('shell', ''))}"
+    try: 
+        win.addstr(y, pad, info_str[:max(1, w-pad-len(shell_str)-2)], curses.color_pair(CP_TEXT) | curses.A_BOLD)
+        win.addstr(y, max(pad, w-len(shell_str)-pad), shell_str, curses.color_pair(CP_ACCENT))
+    except: pass
+    y += 1
+    
+    try: win.addstr(y, pad, f"Last: {user_data.get('last_login', '?')[:w-pad-10]}", curses.color_pair(CP_TEXT) | curses.A_DIM)
+    except: pass
+    y += 1
+    
+    # CPU
+    cpu = user_data.get('cpu', 0.0)
+    cores = user_data.get('cores', 1)
+    cpu_str = f"🔥 Total CPU: {cpu:.1f}% ({cores} cores)"
+    cpu_attr = curses.color_pair(CP_WARN) | curses.A_BLINK if cpu > 50.0 else curses.color_pair(CP_TEXT)
+    try: win.addstr(y, pad, cpu_str[:w-pad-1], cpu_attr)
+    except: pass
+    y += 1
+    
+    try: win.hline(y, 1, curses.ACS_HLINE, w-2, curses.color_pair(CP_BORDER))
+    except: pass
+    y += 1
+    
+    try: win.addstr(y, pad, "⌨️  Recent Commands:", curses.color_pair(CP_HEADER))
+    except: pass
+    y += 1
+
+    cmds = user_data.get("commands", [])
+    if not cmds:
+        try: win.addstr(y, pad, "No history available", curses.color_pair(CP_TEXT) | curses.A_DIM)
+        except: pass
+    else:
+        for cmd in cmds:
+            if y >= h - 1: break
+            try: win.addstr(y, pad, f"> {cmd}"[:w-pad-1], curses.color_pair(CP_TEXT))
+            except: pass
+            y += 1
+
+    win.noutrefresh()
+
+
 # --------------------------------------------------
 # Main Loop
 # --------------------------------------------------
@@ -6520,12 +7089,43 @@ def main(stdscr, args=None):
 
     last_auto_scan_time = time.time()
     
+    # Runtime state variables
+    open_files_scroll = 0
+    h, w = stdscr.getmaxyx()
+    table_h = h // 2
+    offset = 0
+    selected = 0
+    
+    # 0: Table, 1: Open Files, 2: User Profile, 3: Detail Info
+    active_pane = 0 
+    maximized_pane = None
+    
     while True:
+        # ------------------------------------------------------------------
+        # Pull vulnerability alerts from background thread (non-blocking)
+        # ------------------------------------------------------------------
+        while not VULN_QUEUE.empty():
+            try:
+                _vuln_alert = VULN_QUEUE.get_nowait()
+                with VULN_LOCK:
+                    # Check if already exists
+                    if any(a["cve_id"] == _vuln_alert["cve_id"] for a in VULN_PENDING):
+                        continue
+                    if _vuln_alert["cve_id"] in VULN_CONFIG_DATA.get("ignored_cves", []):
+                        continue
+                    
+                    VULN_PENDING.append(_vuln_alert)
+                    # Persist immediately
+                    VULN_CONFIG_DATA["pending_vulns"] = list(VULN_PENDING)
+                    _save_vuln_config()
+            except queue.Empty:
+                break
+
         # Periodic background refresh (Auto-scan)
         if not show_detail:
             auto_interval = CONFIG.get("auto_scan_interval", 3.0)
             if auto_interval > 0 and time.time() - last_auto_scan_time > auto_interval:
-                SCANNING_STATUS_EXP = time.time() + 3.5
+                SCANNING_STATUS_EXP = time.time() + 1.5
                 request_list_refresh()
 
         h, w = stdscr.getmaxyx()
@@ -6536,32 +7136,18 @@ def main(stdscr, args=None):
         if any(runtime_filters.values()):
             rows = [r for r in rows if matches_filter(r, runtime_filters, cache)]
 
-        if not show_detail and rows:
+        if rows:
             bar_w = 22
             main_w = w - bar_w
             
-            # Open Files pane widening based on feedback
+            # Sub-pane sizes
             of_w = min(60, max(45, main_w // 3))
             if main_w < 100:
                 of_w = 35
             table_w = main_w - of_w
+            user = cache.get(rows[selected][0] if selected>=0 and selected<len(rows) else "-", {}).get("user", "-")
+            req_user_pane_h = 10
             
-            table_win = stdscr.derwin(table_h, table_w, 0, 0)
-            draw_table(table_win, rows, selected, offset, cache, firewall_status)
-
-            open_files_win = stdscr.derwin(table_h, of_w, 0, table_w)
-            try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
-            except: pass
-            pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
-            prog = rows[selected][3] if selected>=0 and selected < len(rows) else "-"
-            # use cached open-files to avoid expensive /proc reads on every keypress
-            files = get_open_files_cached(pid)
-            draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll)
-
-            detail_win = stdscr.derwin(h-table_h, main_w, table_h, 0)
-            try: detail_win.bkgd(' ', curses.color_pair(CP_TEXT))
-            except: pass
-
             # debounce heavy detail fetch: only update cached_wrapped_lines / conn_info when selection stable
             now = time.time()
             selection_changed = (selected != last_selected)
@@ -6570,6 +7156,9 @@ def main(stdscr, args=None):
                 last_selected = selected
 
             selection_stable = (now - last_selected_change_time) >= SELECT_STABLE_TTL
+            
+            pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
+            prog = rows[selected][3] if selected>=0 and selected < len(rows) else "-"
 
             if selected>=0 and rows:
                 port = rows[selected][0]
@@ -6586,35 +7175,96 @@ def main(stdscr, args=None):
                         cached_total_lines = len(cached_wrapped_icon_lines)
                         cached_conn_info = get_connections_info_cached(port)
                         cached_conn_info["port"] = port
-                        cached_conn_info["pid"] = rows[selected][4]
+                        cached_conn_info["pid"] = pid
                     else:
                         # show quick placeholder until stable or until preloaded
                         placeholder = ["Waiting for selection to stabilize..."]
                         cached_wrapped_icon_lines = placeholder
                         cached_total_lines = len(placeholder)
-                        cached_conn_info = {"active_connections": 0, "top_ip": "-", "top_ip_count": 0, "all_ips": Counter(), "port": port, "pid": rows[selected][4]}
+                        from collections import Counter
+                        cached_conn_info = {"active_connections": 0, "top_ip": "-", "top_ip_count": 0, "all_ips": Counter(), "port": port, "pid": pid}
+                
+                port_cache = cache.get(port, {})
                 # Check if window resized significantly, rewrap if needed
                 prewrapped_width = port_cache.get("prewrapped_width", 0)
-                if abs(w - prewrapped_width) > 10:  # Threshold for rewrap
+                if abs(main_w - prewrapped_width) > 10:  # Threshold for rewrap
                     lines = port_cache.get("lines", [])
-                    sel_prog = rows[selected][3] if selected >= 0 and selected < len(rows) else None
-                    cached_wrapped_icon_lines = prepare_witr_content(lines, w - 4, prog=sel_prog, port=port, pid=pid)
+                    cached_wrapped_icon_lines = prepare_witr_content(lines, main_w - 4, prog=prog, port=port, pid=pid)
                     if port in cache:
                         cache[port]["wrapped_icon_lines"] = cached_wrapped_icon_lines
-                        cache[port]["prewrapped_width"] = w
+                        cache[port]["prewrapped_width"] = main_w
                     cached_total_lines = len(cached_wrapped_icon_lines)
-                draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
             else:
-                draw_detail(detail_win, [], scroll=0, conn_info=None)
+                cached_wrapped_icon_lines = []
+                cached_conn_info = None
 
-            draw_help_bar(stdscr, show_detail)
+            # Render maximized logic
+            if maximized_pane is not None:
+                max_win = stdscr.derwin(h, main_w, 0, 0) # Maximize to main_w to preserve right panel
+                try: max_win.bkgd(' ', curses.color_pair(CP_TEXT))
+                except: pass
+                
+                if maximized_pane == 0:
+                    draw_table(max_win, rows, selected, offset, cache, firewall_status, is_active=True)
+                elif maximized_pane == 1:
+                    pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
+                    prog = rows[selected][3] if selected>=0 and selected < len(rows) else "-"
+                    files = get_open_files_cached(pid)
+                    draw_open_files(max_win, pid, prog, files, scroll=open_files_scroll, is_active=True)
+                elif maximized_pane == 2:
+                    if user != "-":
+                        user_data = get_user_info_cached(user)
+                        if user_data:
+                            draw_user_subpane(max_win, user_data, is_active=True)
+                elif maximized_pane == 3:
+                    # fetch logic for detail
+                    draw_detail(max_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info, is_active=True)
+                
+                # Add ESC to exit maximize hint
+                try:
+                    esc_msg = " 🔍 MAXIMIZED VIEW — Press [ESC] or [Enter] to Restore ✨ "
+                    max_win.addstr(h - 1, max(1, (main_w - len(esc_msg)) // 2), esc_msg, curses.color_pair(CP_TEXT) | curses.A_BOLD | curses.A_REVERSE)
+                    max_win.noutrefresh()
+                except:
+                    pass
+                
+            else:
+                # Normal Layout
+                table_win = stdscr.derwin(table_h, table_w, 0, 0)
+                draw_table(table_win, rows, selected, offset, cache, firewall_status, is_active=(active_pane == 0))
 
-        elif show_detail:
-            bar_w = 22
-            main_w = w - bar_w
-            detail_win = stdscr.derwin(h, main_w, 0, 0)
-            draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info)
-            draw_help_bar(stdscr, show_detail)
+                if table_h >= 15 and user != "-":
+                    files_h = table_h - req_user_pane_h
+                    open_files_win = stdscr.derwin(files_h, of_w, 0, table_w)
+                    user_win = stdscr.derwin(req_user_pane_h, of_w, files_h, table_w)
+                elif user != "-":
+                    files_h = table_h
+                    open_files_win = stdscr.derwin(files_h, of_w, 0, table_w)
+                    user_win = stdscr.derwin(min(req_user_pane_h, files_h), of_w, files_h - min(req_user_pane_h, files_h), table_w)
+                else:
+                    files_h = table_h
+                    open_files_win = stdscr.derwin(files_h, of_w, 0, table_w)
+                    user_win = None
+
+                try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
+                except: pass
+                
+                files = get_open_files_cached(pid)
+                draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll, is_active=(active_pane == 1))
+
+                if user_win:
+                    user_data = get_user_info_cached(user)
+                    if user_data:
+                        draw_user_subpane(user_win, user_data, is_active=(active_pane == 2))
+
+                detail_win = stdscr.derwin(h-table_h, main_w, table_h, 0)
+                try: detail_win.bkgd(' ', curses.color_pair(CP_TEXT))
+                except: pass
+                draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info, is_active=(active_pane == 3))
+            
+            draw_help_bar(stdscr, active_pane)
+
+        # Vulnerability alerts are now handled inside draw_detail (System Health)
 
         draw_status_indicator(stdscr)
 
@@ -6694,6 +7344,24 @@ def main(stdscr, args=None):
         if k == -1:
             continue
 
+        if k == 27: # ESC
+            stdscr.nodelay(True)
+            next_k = stdscr.getch()
+            stdscr.nodelay(False)
+            if next_k == -1:
+                if maximized_pane is not None:
+                    maximized_pane = None
+                continue
+            elif next_k == ord('c'):
+                CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
+                save_theme_preference(CURRENT_THEME_INDEX)
+                apply_current_theme(stdscr)
+                rows = parse_ss_cached()
+                splash_screen(stdscr, rows, cache)
+                continue
+            else:
+                k = next_k
+
         if k == ord('q'):
             # Cleanup IPC
             try:
@@ -6701,114 +7369,536 @@ def main(stdscr, args=None):
                     os.remove(IPC_SOCKET_PATH)
             except: pass
             break
-        if show_detail:
-            if k == curses.KEY_UP and detail_scroll>0:
+
+        elif k == ord('v') or k == ord('n'):
+            _open_vuln_modal(stdscr)
+            continue
+            
+        if k == 9 or k == KEY_TAB:
+            active_pane = (active_pane + 1) % 4
+            
+        elif k == 10 or k == curses.KEY_ENTER:
+            if maximized_pane is None:
+                maximized_pane = active_pane
+            else:
+                maximized_pane = None
+                
+        elif k == curses.KEY_UP:
+            if active_pane == 0 and selected > 0:
+                selected -= 1
+            elif active_pane == 1 and open_files_scroll > 0:
+                open_files_scroll -= 1
+            elif active_pane == 3 and detail_scroll > 0:
                 detail_scroll -= 1
-            elif k == curses.KEY_DOWN and detail_scroll < max(0,cached_total_lines-(h-3)):
+                
+        elif k == curses.KEY_DOWN:
+            if active_pane == 0 and selected < len(rows) - 1:
+                selected += 1
+            elif active_pane == 1:
+                open_files_scroll += 1
+            elif active_pane == 3 and detail_scroll < max(0, cached_total_lines - (h - 3)):
                 detail_scroll += 1
-            elif k == KEY_TAB:
-                show_detail = False
-                detail_scroll = 0
-        else:
-            if k == curses.KEY_UP and selected>0:
-                selected -=1
-            elif k == curses.KEY_DOWN and selected<len(rows)-1:
-                selected +=1
-            elif k == KEY_SEP_UP and table_h<max(6, h-2):
-                table_h +=1
-            elif k == KEY_SEP_DOWN and table_h>6:
-                table_h -=1
-            elif k == ord('r'):
-                # force real refresh and clear caches
-                SCANNING_STATUS_EXP = time.time() + 3.5
-                rows = parse_ss()
-                _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
-                _table_row_cache.clear(); _risk_level_cache.clear(); _security_audit_cache.clear()
-                cache.clear()
-                splash_screen(stdscr, rows, cache)
-                # risk levels are re-populated inside splash_screen per-port
-                if selected>=len(rows):
-                    selected = len(rows)-1
-                offset=0
-            elif k == KEY_TAB:
-                show_detail = True
-                detail_scroll =0
-            elif k == curses.KEY_RIGHT:
-                open_files_scroll +=1
-            elif k == curses.KEY_LEFT and open_files_scroll>0:
-                open_files_scroll -=1
-            elif k == ord('s') and selected>=0 and rows:
+                
+        # Main Table commands are restricted to when active_pane == 0
+        if active_pane == 0:
+            if k == KEY_SEP_UP and table_h < max(6, h - 2):
+                table_h += 1
+            elif k == KEY_SEP_DOWN and table_h > 6:
+                table_h -= 1
+            elif k == ord('s') and selected >= 0 and rows:
                 port, proto, pidprog, prog, pid = rows[selected]
                 confirm = confirm_dialog(stdscr, f"{pidprog} ({port}) stop?")
                 if confirm:
                     stop_process_or_service(pid, prog, stdscr)
                     request_list_refresh()
             elif k == ord('a'):
-                # open Action Center modal
                 handle_action_center_input(stdscr, rows, selected, cache, firewall_status)
-            elif k == ord('F'):
-                # open Filter modal
-                draw_filter_modal(stdscr, runtime_filters)
-                request_list_refresh()
             elif k == ord('z'):
-                # open System Services Manager
                 handle_services_modal(stdscr)
                 request_list_refresh()
-
             elif k == ord('i') and selected >= 0 and rows:
-                # Open Inspection/Information modal
                 port, proto, pidprog, prog, pid = rows[selected]
-                # get username from cache if available
                 user = cache.get(port, {}).get("user", "unknown")
                 show_inspect_modal(stdscr, port, prog, pid, user)
-            elif k == ord('d'):
-                # Generate Full System Dump
-                generate_full_system_dump(stdscr, rows, cache)
-            elif k == ord('p'):
-                # Settings modal (changed from 'S' to 'p')
-                draw_settings_modal(stdscr)
             elif k == KEY_FIREWALL and selected >= 0 and rows:
                 port = rows[selected][0]
                 toggle_firewall(port, stdscr, firewall_status)
-            elif k == ord('c'):
-                # Switch theme (Colorize)
-                CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
-                save_theme_preference(CURRENT_THEME_INDEX)
-                apply_current_theme(stdscr)
-                # Show feedback
-                t_name = THEMES[CURRENT_THEME_INDEX]['name']
-                try:
-                    h, w = stdscr.getmaxyx()
-                    msg = f" Theme: {t_name} "
-                    stdscr.addstr(h//2, (w-len(msg))//2, msg, curses.A_REVERSE | curses.A_BOLD)
-                    stdscr.refresh()
-                    time.sleep(0.5)
-                except: pass
-                # Force redraw
-                rows = parse_ss_cached()
-                splash_screen(stdscr, rows, cache)
-                continue
-            elif k == 27:  # Potential ALT key (ESC) sequence
-                stdscr.nodelay(True)
-                next_k = stdscr.getch()
-                stdscr.nodelay(False)  # restore loop timeout later
-                stdscr.timeout(120)    # restore explicit timeout
-
-                if next_k == ord('c'):
-                    # Trigger the same logic as direct 'c'
-                    CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
-                    save_theme_preference(CURRENT_THEME_INDEX)
-                    apply_current_theme(stdscr)
-                    rows = parse_ss_cached()
-                    splash_screen(stdscr, rows, cache)
-                    continue
-
+                
+        # Global hotkeys
+        if k == ord('r'):
+            # force real refresh and clear caches
+            SCANNING_STATUS_EXP = time.time() + 1.5
+            rows = parse_ss()
+            _parse_cache.clear(); _witr_cache.clear(); _conn_cache.clear()
+            _table_row_cache.clear(); _risk_level_cache.clear(); _security_audit_cache.clear()
+            cache.clear()
+            splash_screen(stdscr, rows, cache)
             if selected >= len(rows):
                 selected = len(rows) - 1
-            if selected < 0 and rows:
-                selected = 0
+            offset = 0
+            
+        elif k == ord('F'):
+            draw_filter_modal(stdscr, runtime_filters)
+            request_list_refresh()
+            
+        elif k == ord('d'):
+            generate_full_system_dump(stdscr, rows, cache)
+            
+        elif k == ord('p'):
+            draw_settings_modal(stdscr)
+            
+        elif k == ord('c'):
+            CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
+            save_theme_preference(CURRENT_THEME_INDEX)
+            apply_current_theme(stdscr)
+            t_name = THEMES[CURRENT_THEME_INDEX]['name']
+            try:
+                h, w = stdscr.getmaxyx()
+                msg = f" Theme: {t_name} "
+                stdscr.addstr(h//2, (w-len(msg))//2, msg, curses.A_REVERSE | curses.A_BOLD)
+                stdscr.refresh()
+                time.sleep(0.5)
+            except: pass
+            rows = parse_ss_cached()
+            splash_screen(stdscr, rows, cache)
+            continue
 
             offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🛡️ VULNERABILITY SCANNER — Background NVD checker thread
+# ═══════════════════════════════════════════════════════════════
+class VulnerabilityChecker(threading.Thread):
+    """Background daemon: polls NVD every hour, matches local pkgs, pushes alerts."""
+    POLL_INTERVAL = 3600  # 1 hour
+
+    def __init__(self, api_key=None):
+        super().__init__(daemon=True, name="VulnChecker")
+        self.api_key = api_key
+
+    @staticmethod
+    def _local_packages():
+        """Return set of installed package names (lower-cased) via dpkg or rpm."""
+        pkgs = set()
+        # Try Debian/Ubuntu
+        try:
+            out = subprocess.check_output(
+                ["dpkg", "-l"], text=True, stderr=subprocess.DEVNULL
+            )
+            pkgs.update({ln.split()[1].lower().split(":")[0] for ln in out.splitlines() if ln.startswith("ii")})
+        except Exception:
+            pass
+        
+        # Try RedHat/Fedora/CentOS
+        try:
+            out = subprocess.check_output(
+                ["rpm", "-qa", "--queryformat", "%{NAME}\n"], text=True, stderr=subprocess.DEVNULL
+            )
+            pkgs.update({ln.strip().lower() for ln in out.splitlines() if ln.strip()})
+        except Exception:
+            pass
+
+        return pkgs
+
+    def _fetch_cves(self):
+        """Query NVD for recent HIGH/CRITICAL CVEs (last 30 days)."""
+        global VULN_STATUS_MSG
+        if not _requests_lib:
+            return [], "error"
+        
+        # Pull API key dynamically from CONFIG
+        api_key = CONFIG.get("nvd_api_key")
+        if not api_key:
+            VULN_STATUS_MSG = "⚠ NVD API Key missing – Vulnerability scanning limited. Set key in Settings (p → v)"
+        
+        base = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        # 120 days ago (NVD API 2.0 has a 120-day MAX range limit)
+        now_ts = time.time()
+        start = now_ts - 120 * 24 * 3600
+        pub_start = time.strftime("%Y-%m-%dT%H:%M:%S.000", time.gmtime(start))
+        pub_end   = time.strftime("%Y-%m-%dT%H:%M:%S.000", time.gmtime(now_ts))
+        
+        severities = ["CRITICAL", "HIGH"]
+        all_vulns = []
+        status = "success"
+        
+        for sev in severities:
+            params = {
+                "pubStartDate": pub_start,
+                "pubEndDate": pub_end,
+                "resultsPerPage": 100,
+                "cvssV3Severity": sev,
+            }
+            headers = {}
+            if api_key:
+                headers["apiKey"] = api_key
+            try:
+                r = _requests_lib.get(base, params=params, headers=headers, timeout=20)
+                if r.status_code in (403, 429):
+                    status = "rate_limit"
+                    break
+                r.raise_for_status()
+                all_vulns.extend(r.json().get("vulnerabilities", []))
+                # Add a small delay between requests if no API key
+                if not api_key:
+                    time.sleep(6) 
+            except Exception as e:
+                err_msg = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    err_msg += f" (Code: {e.response.status_code}, Body: {e.response.text[:100]})"
+                debug_log(f"VULN_CHECKER: NVD fetch error ({sev}): {err_msg}")
+                VULN_STATUS_MSG = f"⚠ NVD Error: {err_msg[:40]}..."
+                status = "error"
+                break
+        
+        if status == "rate_limit":
+            VULN_STATUS_MSG = "⚠ NVD Rate limit reached – Vulnerability scanning paused. Add API Key in Settings (p → v)"
+        elif api_key and status == "success":
+            VULN_STATUS_MSG = ""
+
+        return all_vulns, status
+
+    @staticmethod
+    def _cpe_to_pkg(cpe):
+        """Naive: cpe:2.3:a:vendor:product:version → product (lower)."""
+        try:
+            parts = cpe.split(":")
+            if len(parts) >= 5:
+                return parts[4].lower()
+        except Exception:
+            pass
+        return None
+
+    def run(self):
+        global VULN_STATUS_MSG, VULN_NEXT_CHECK_TIME, VULN_IS_FETCHING, VULN_LAST_NEW_COUNT
+        # Initial brief delay to let TUI initialize
+        time.sleep(3)
+        backoff_sec = 0
+        
+        while True:
+            try:
+                now = time.time()
+                last_check = VULN_CONFIG_DATA.get("last_check_timestamp", 0)
+                interval_hours = CONFIG.get("vuln_scan_interval_hours", 0.5)
+                interval_sec = max(300, int(interval_hours * 3600))
+                
+                VULN_NEXT_CHECK_TIME = last_check + interval_sec
+
+                # 1. Skip logic: If last check was too recent (unless we have 0 alerts, then refresh once)
+                if last_check > 0 and (now - last_check) < interval_sec and len(VULN_PENDING) > 0:
+                    mins_ago = int((now - last_check) // 60)
+                    VULN_STATUS_MSG = f"Last NVD scan: {mins_ago}m ago (skipped)"
+                    debug_log(f"VULN_CHECKER: Skipping scan, last one was {mins_ago}m ago.")
+                    time.sleep(1)
+                    continue
+
+                local = self._local_packages()
+                if not local:
+                    VULN_NEXT_CHECK_TIME = time.time() + 300
+                    time.sleep(300) 
+                    continue
+
+                # 2. Perform Fetch
+                VULN_IS_FETCHING = True
+                vulns, status = self._fetch_cves()
+                VULN_IS_FETCHING = False
+                
+                VULN_CONFIG_DATA["last_check_timestamp"] = int(time.time())
+                VULN_CONFIG_DATA["last_check_status"] = status
+                _save_vuln_config()
+
+                if status == "rate_limit":
+                    backoff_sec = min(3600, (backoff_sec * 3 if backoff_sec > 0 else 300))
+                    VULN_NEXT_CHECK_TIME = time.time() + backoff_sec
+                    time.sleep(backoff_sec)
+                    continue
+                
+                backoff_sec = 0 
+                VULN_LAST_NEW_COUNT = 0
+
+                if status == "success":
+                    debug_log(f"VULN_CHECKER: Fetched {len(vulns)} CVEs from NVD.")
+                    for entry in vulns:
+                        try:
+                            cve_item = entry.get("cve", {})
+                            cve_id = cve_item.get("id")
+                            if not cve_id or cve_id in VULN_CONFIG_DATA.get("ignored_cves", []):
+                                continue
+
+                            # Already matched in VULN_PENDING?
+                            with VULN_LOCK:
+                                if any(a["cve_id"] == cve_id for a in VULN_PENDING):
+                                    continue
+
+                            # Match logic...
+                            desc = ""
+                            # ... description loop ...
+                            for d in cve_item.get("descriptions", []):
+                                if d.get("lang") == "en":
+                                    desc = d.get("value", "")[:200]
+                                    break
+
+                            # Severity from CVSS v3.1 or v3.0
+                            severity = "UNKNOWN"
+                            metrics = entry.get("metrics", cve_item.get("metrics", {}))
+                            for metric_key in ("cvssMetricV31", "cvssMetricV30"):
+                                for m in metrics.get(metric_key, []):
+                                    s = m.get("cvssData", {}).get("baseSeverity")
+                                    if s:
+                                        severity = s
+                                        break
+                                if severity != "UNKNOWN":
+                                    break
+
+                            # Match CPEs against local packages
+                            matched_pkg = None
+                            for conf in cve_item.get("configurations", []):
+                                for node in conf.get("nodes", []):
+                                    for cpe_obj in node.get("cpeMatch", []):
+                                        pkg = self._cpe_to_pkg(cpe_obj.get("criteria", ""))
+                                        if pkg:
+                                            if pkg in local:
+                                                matched_pkg = pkg
+                                                break
+                                            # Substring match (e.g. inetutils in inetutils-telnetd)
+                                            # Only if pkg is long enough to avoid false positives
+                                            if len(pkg) > 3:
+                                                for lp in local:
+                                                    if pkg in lp:
+                                                        matched_pkg = lp
+                                                        break
+                                                if matched_pkg: break
+                                    if matched_pkg:
+                                        break
+                                if matched_pkg:
+                                    break
+
+                            if not matched_pkg:
+                                continue
+                            
+                            debug_log(f"VULN_CHECKER: MATCH FOUND! {cve_id} -> {matched_pkg}")
+
+                            # References link
+                            refs = cve_item.get("references", [])
+                            link = refs[0].get("url") if refs else f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+
+                            alert = {
+                                "cve_id": cve_id,
+                                "desc": desc,
+                                "severity": severity,
+                                "pkg": matched_pkg,
+                                "link": link,
+                            }
+                            VULN_QUEUE.put(alert)
+                            VULN_LAST_NEW_COUNT += 1
+                        except Exception:
+                            continue
+
+                debug_log(f"VULN_CHECKER: Scan complete (Status: {status}). Queue size: {VULN_QUEUE.qsize()}")
+            except Exception as e:
+                debug_log(f"VULN_CHECKER: Error in run loop: {e}")
+
+            time.sleep(interval_sec)
+
+
+
+def _open_vuln_modal(stdscr):
+    """Top-level modal: lists pending CVEs."""
+    if not VULN_PENDING:
+        h, w = stdscr.getmaxyx()
+        msg = " ✅ No pending CVE alerts "
+    if not VULN_PENDING:
+        h, w = stdscr.getmaxyx()
+        last_ts = VULN_CONFIG_DATA.get("last_check_timestamp", 0)
+        dt_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts)) if last_ts > 0 else "Never"
+        msg = f" ✅ No vulnerabilities found (Last Scan: {dt_str}) "
+        try:
+            stdscr.addstr(h // 2, (w - len(msg)) // 2, msg, curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_REVERSE)
+            stdscr.refresh()
+            time.sleep(2.0)
+        except curses.error:
+            pass
+        return
+
+    sel = 0
+    scroll = 0
+    while True:
+        h, w = stdscr.getmaxyx()
+        win_h = min(len(VULN_PENDING) + 6, h - 4)
+        win_w = min(w - 4, 120)
+        start_y = max(1, (h - win_h) // 2)
+        start_x = max(1, (w - win_w) // 2)
+
+        try:
+            win = curses.newwin(win_h, win_w, start_y, start_x)
+        except curses.error:
+            break
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+        win.box()
+
+        # Title
+        title = " 📩 Pending Vulnerabilities "
+        footer = " [↑↓] Navigate  [Enter] Details  [i] Ignore  [Esc] Close "
+        try:
+            win.addstr(0, max(1, (win_w - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            win.addstr(win_h - 1, max(1, (win_w - len(footer)) // 2), footer, curses.color_pair(CP_TEXT) | curses.A_DIM)
+        except curses.error:
+            pass
+
+        visible_rows = win_h - 4
+        for vi in range(visible_rows):
+            idx = scroll + vi
+            if idx >= len(VULN_PENDING):
+                break
+            a = VULN_PENDING[idx]
+            sev_icon = "🔴" if a["severity"] in ("CRITICAL", "HIGH") else "🟡"
+            line = f" {sev_icon} {a['cve_id']}  {a['pkg']:<20s}  {a['desc'][:win_w-45]}"
+            attr = curses.color_pair(CP_ACCENT) | curses.A_REVERSE if idx == sel else curses.color_pair(CP_TEXT)
+            try:
+                win.addstr(vi + 2, 1, line[:win_w - 2].ljust(win_w - 2), attr)
+            except curses.error:
+                pass
+
+        win.refresh()
+
+        k = stdscr.getch()
+        if k in (27, ord('q')):
+            break
+        elif k == curses.KEY_UP and sel > 0:
+            sel -= 1
+            if sel < scroll:
+                scroll = sel
+        elif k == curses.KEY_DOWN and sel < len(VULN_PENDING) - 1:
+            sel += 1
+            if sel >= scroll + visible_rows:
+                scroll = sel - visible_rows + 1
+        elif k in (10, curses.KEY_ENTER):
+            if VULN_PENDING:
+                _open_vuln_detail(stdscr, VULN_PENDING[sel])
+                # Refresh: remove ignored
+                with VULN_LOCK:
+                    VULN_PENDING[:] = [a for a in VULN_PENDING if a["cve_id"] not in VULN_CONFIG_DATA.get("ignored_cves", [])]
+                    VULN_CONFIG_DATA["pending_vulns"] = list(VULN_PENDING)
+                    _save_vuln_config()
+                if sel >= len(VULN_PENDING):
+                    sel = max(0, len(VULN_PENDING) - 1)
+                if not VULN_PENDING:
+                    break
+        elif k == ord('i'):
+            # Quick ignore from list
+            if VULN_PENDING:
+                cve = VULN_PENDING[sel]
+                VULN_CONFIG_DATA.setdefault("ignored_cves", []).append(cve["cve_id"])
+                _save_vuln_config()
+                with VULN_LOCK:
+                    VULN_PENDING[:] = [a for a in VULN_PENDING if a["cve_id"] not in VULN_CONFIG_DATA.get("ignored_cves", [])]
+                    VULN_CONFIG_DATA["pending_vulns"] = list(VULN_PENDING)
+                    _save_vuln_config()
+                if sel >= len(VULN_PENDING):
+                    sel = max(0, len(VULN_PENDING) - 1)
+                if not VULN_PENDING:
+                    break
+
+    # Cleanup
+    stdscr.touchwin()
+    stdscr.noutrefresh()
+    curses.doupdate()
+
+
+def _open_vuln_detail(stdscr, alert):
+    """Detail view for a single CVE with Ignore / Open actions."""
+    h, w = stdscr.getmaxyx()
+    win_h = min(22, h - 4)
+    win_w = min(90, w - 4)
+    start_y = max(1, (h - win_h) // 2)
+    start_x = max(1, (w - win_w) // 2)
+
+    try:
+        win = curses.newwin(win_h, win_w, start_y, start_x)
+    except curses.error:
+        return
+    win.bkgd(' ', curses.color_pair(CP_TEXT))
+    win.box()
+
+    # Header
+    sev_color = curses.color_pair(CP_WARN) | curses.A_BOLD if alert["severity"] in ("CRITICAL", "HIGH") else curses.color_pair(CP_ACCENT) | curses.A_BOLD
+    try:
+        win.addstr(1, 2, f"🔒 {alert['cve_id']}", curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        sev_txt = f" [{alert['severity']}] "
+        win.addstr(1, win_w - len(sev_txt) - 2, sev_txt, sev_color)
+    except curses.error:
+        pass
+
+    # Separator
+    try:
+        win.hline(2, 1, curses.ACS_HLINE, win_w - 2, curses.color_pair(CP_BORDER))
+    except curses.error:
+        pass
+
+    # Body
+    y = 3
+    try:
+        win.addstr(y, 2, "Description:", curses.A_UNDERLINE | curses.A_BOLD)
+    except curses.error:
+        pass
+    y += 1
+    for line in textwrap.wrap(alert["desc"], win_w - 6):
+        if y >= win_h - 6:
+            break
+        try:
+            win.addstr(y, 4, line, curses.color_pair(CP_TEXT))
+        except curses.error:
+            pass
+        y += 1
+
+    y += 1
+    try:
+        win.addstr(y, 2, f"📦 Affected package: ", curses.A_BOLD)
+        win.addstr(y, 23, alert["pkg"], curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+    except curses.error:
+        pass
+    y += 1
+    try:
+        fix_cmd = f"sudo apt update && sudo apt install --only-upgrade {alert['pkg']}"
+        win.addstr(y, 2, f"🔧 Fix: ", curses.A_BOLD)
+        win.addstr(y, 10, fix_cmd[:win_w - 12], curses.color_pair(CP_TEXT))
+    except curses.error:
+        pass
+
+    # Buttons
+    btn_y = win_h - 2
+    ignore_lbl = " [i] Ignore "
+    open_lbl = " [o] Open in Browser "
+    esc_lbl = " [Esc] Close "
+    try:
+        win.addstr(btn_y, 2, ignore_lbl, curses.color_pair(CP_WARN) | curses.A_BOLD | curses.A_REVERSE)
+        win.addstr(btn_y, 2 + len(ignore_lbl) + 2, open_lbl, curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_REVERSE)
+        win.addstr(btn_y, win_w - len(esc_lbl) - 2, esc_lbl, curses.color_pair(CP_TEXT) | curses.A_DIM)
+    except curses.error:
+        pass
+
+    win.refresh()
+
+    while True:
+        k = stdscr.getch()
+        if k in (27, ord('q')):
+            break
+        elif k == ord('i'):
+            VULN_CONFIG_DATA.setdefault("ignored_cves", []).append(alert["cve_id"])
+            _save_vuln_config()
+            break
+        elif k == ord('o'):
+            try:
+                safe_open_url(alert["link"])
+            except Exception:
+                pass
+            # Keep modal open so user can also ignore
+
+    # Cleanup
+    stdscr.touchwin()
+    stdscr.noutrefresh()
+    curses.doupdate()
 
 
 def check_and_show_terminal_size_then_exit():
@@ -6859,7 +7949,15 @@ def cli_entry():
     
     if args.no_update:
         CONFIG["auto_update_services"] = False
-        
+
+    # Load persistent ignored-CVE config
+    _load_vuln_config()
+    # Start background vulnerability scanner (optional API key from CONFIG)
+    _vuln_api_key = CONFIG.get("nvd_api_key")
+    _vuln_thread = VulnerabilityChecker(api_key=_vuln_api_key)
+    _vuln_thread.start()
+    debug_log("VULN_CHECKER: Background vulnerability scanner started.")
+
     curses.wrapper(main, args)
 
 

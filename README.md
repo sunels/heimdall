@@ -42,8 +42,9 @@
 - 🌳 **Precision Kill Tree**: Nuclear termination for script loops that protects your terminal.
 - 🛡️ **Daemon Mode (Background)**: Non-interactive monitoring with automatic suspicious-outbound detection and mitigation.
 - 🛡️ **Active TUI Protection**: Proactive security enforcement in the TUI when the daemon is inactive (auto-suspends suspicious processes).
-- 📡 **Live Traffic Column**: Real-time per-port network activity with ASCII spark bars (▁▂▃▄▅▆▇█), computed by a background thread (UI never blocks).
-  > **Not:** TRAFFIC sütunu gerçek zamanlı ağ aktivitesini gösterir (background thread ile hesaplanır, UI bloke olmaz).
+- 📩 **Background Vulnerability Scanner (v)**: Polls the NVD API for HIGH/CRITICAL CVEs matching installed packages. Press `n` or `v` to view pending alerts, `i` to ignore, `o` to open in browser.
+- 🔓 **Deep Vulnerability Audit**: Injected into both the `Inspect (i)` modal and the `Full System Dump (d)`, showing exactly which CVEs affect each running process.
+- 🏷️ **Smart Runtime Classification**: Detects the underlying technology stack (Java/Spring Boot, Node.js/Electron, Python, Go, Rust, PHP, etc.) and execution mode (Native, Containerized, Interpreted).
 - 🖥️ **System Health Panel**: Live CPU/RAM/Swap/Disk/Battery bars + OS/Kernel/Host/DE info in the detail view.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
@@ -164,6 +165,16 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 📩 Vulnerability Scanner — Integrated NVD Security Feed (n)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-22.png" alt="heimdall vulnerability list" width="100%"/>
+
+---
+
+### 🔓 Deep Inspect — Unified Security & Smart Runtime Audit (i)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-23.png" alt="heimdall deep audit vulnerability runtime" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -175,7 +186,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | + / - | Resize table height |
 | → / ← | Scroll open files |
 | r | Refresh port list |
-| Tab | Switch to detail view |
+| Tab/Enter | Tab ile panel gezin, Enter ile maximize et. |
 | s | Stop selected process / service |
 | f | Toggle firewall for selected port |
 | a | Actions (open Action Center modal) |
@@ -693,3 +704,26 @@ MIT License
   - First launch may take a little longer (splash progress shows updates), but subsequent scrolling is instant because data is read from in-memory caches.
   - The UI operates on a read-only "snapshot" taken at startup — no heavy system commands are executed while you scroll. If you need fresh data, press `r` to refresh (re-takes the snapshot).
 - You can tune caching TTL constants in the source (USAGE_TTL, FILES_TTL, PARSE_TTL, WITR_TTL, CONN_TTL) to balance freshness vs. UI responsiveness.
+
+## 📩 Background Vulnerability Scanner
+
+Heimdall now includes a background thread that periodically checks your installed system packages for known vulnerabilities (CVEs) using the **NVD (National Vulnerability Database)** API.
+
+### 🔍 How it Works
+1. **Detection**: Vulnerability scan starts automatically at startup. It adheres strictly to your configured interval and respects the last successful scan time stored in `~/.heimdall/config.yaml` to avoid redundant API calls on restarts.
+2. **Rate Limit Protection**: Built-in exponential backoff handles NVD API rate limits (429 errors) gracefully, pausing and retrying as needed.
+3. **Matching**: It compares these CVEs against the list of locally installed packages (via `dpkg` or `rpm`).
+4. **Alerting**: If a match is found, a blinking **📩 icon** with the total count appears in the TUI bottom bar.
+5. **Warnings**: If no API Key is set or rate limits are reached, a warning and "Last NVD Check" status is displayed in the **System Health / Detail Inspect** section.
+6. **Management**: Press **`v`** to open the Vulnerability List. From there, you can view deep details, open the official NVD link in your browser, or **Ignore** the CVE if it doesn't apply to your environment.
+
+### ⚙️ Persistence & Config
+- **Ignored CVEs**: When you ignore a CVE, it is persistently saved to `~/.heimdall/config.yaml`. These will not be shown again in future scans.
+- **NVD API Key**: By default, the scanner uses the public NVD API, which is rate-limited. If you have an NVD API key, you can add it to your `~/.config/heimdall/config.json`:
+  ```json
+  {
+    "nvd_api_key": "your-api-key-here"
+  }
+  ```
+  *(Coming soon: Configure directly from the Settings modal)*
+
