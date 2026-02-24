@@ -1,3 +1,15 @@
+heimdall (1.0.3-1) unstable; urgency=medium
+
+  * Release v1.0.3
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 25 Feb 2026 01:32:06 +0200
+
+heimdall (1.0.3-1) unstable; urgency=medium
+
+  * Release v1.0.3
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 25 Feb 2026 01:28:57 +0200
+
 heimdall (1.0.2-1) unstable; urgency=medium
 
   * NEW: Added Global NVD Vulnerability Summary to the top of System Dumps.
