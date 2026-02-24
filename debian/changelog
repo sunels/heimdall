@@ -1,13 +1,10 @@
+heimdall (1.0.1-1) unstable; urgency=medium
+
+  * Release v1.0.1: Hotfix for Full Inspection Dump crash.
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 25 Feb 2026 01:15:00 +0200
+
 heimdall (1.0.0-1) unstable; urgency=medium
-
-  * THE SECURITY EXCELLENCE UPDATE:
-    - NEW: HEIMDALL SECURITY HUB (NVD Integration) - Proactive vulnerability scanning.
-    - NEW: DEEP SECURITY AUDIT - CVE analysis injected into Inspect and Full Dump.
-    - NEW: SMART RUNTIME CLASSIFICATION - Advanced Java/Node/Go/Rust/Python stack detection.
-    - IMPROVED: Sudo-aware browser launching for security analysts.
-    - FIXED: NVD API rate limits and matching logic for Ubuntu packages.
-
- -- Serkan Sunel <serkan.sunel@gmail.com>  Wed, 25 Feb 2026 01:10:00 +0200
 
 heimdall (0.9.9-1) unstable; urgency=medium
 

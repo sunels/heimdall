@@ -1305,7 +1305,7 @@ def check_witr_exists():
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version='heimdall 1.0.0')
+    parser.add_argument("--version", action="version", version='heimdall 1.0.1')
     parser.add_argument('--no-update', action='store_true', help='Disable background service updates')
     parser.add_argument('--port', type=int, help='Filter view by specific Port')
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
@@ -6637,14 +6637,10 @@ def generate_full_system_dump(stdscr, rows, cache):
                 add_line("     (Analysis unavailable)")
             add_line()
 
-                # ── Process Reality Check ──
+            # ── Process Reality Check ──
             if pid and pid.isdigit():
                 add_line("   🔥 Process Reality Check:")
                 findings = perform_security_heuristics(pid, port, prog, user)
-                if tree:
-                    add_line("     Process Tree:")
-                    for l in tree:
-                        add_line(f"       {l}")
                 
                 # ── Vulnerability Audit ──
                 pkg_name = info.get("package", "-")
