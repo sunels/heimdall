@@ -37,6 +37,7 @@ except ImportError:
     _requests_lib = None
 import webbrowser
 from pathlib import Path
+import math
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -69,18 +70,42 @@ def safe_open_url(url):
     except Exception as e:
         debug_log(f"URL_OPEN_ERROR: {e}")
 
-def get_matched_cves(pkg_name):
-    """Retrieve all pending CVE alerts that match the given package name."""
-    if not pkg_name or pkg_name == "-":
+def get_matched_cves(target, prog_name=None):
+    """Retrieve matched CVEs for a PID, Process Name, or Package Name."""
+    if not target or target == "-":
         return []
+    
+    target_str = str(target).lower()
+    prog_str = str(prog_name).lower() if prog_name else ""
+    matches = []
+    seen_cves = set()
+
     with VULN_LOCK:
-        matches = []
         for alert in VULN_PENDING:
-            val_pkg = alert.get("pkg", "").lower()
-            match_pkg = pkg_name.lower()
-            if val_pkg == match_pkg or val_pkg in match_pkg or match_pkg in val_pkg:
+            cve_id = alert.get("cve_id")
+            if cve_id in seen_cves: continue
+            
+            p_match = False
+            # 1. Direct PID match (Highest confidence)
+            alert_pid = alert.get("pid")
+            if alert_pid and str(alert_pid) == target_str:
+                p_match = True
+            
+            # 2. Package name match
+            vuln_pkg = alert.get("pkg", "").lower()
+            if vuln_pkg and (target_str == vuln_pkg or vuln_pkg == prog_str):
+                p_match = True
+                
+            # 3. Fuzzy match (as fallback)
+            if not p_match and vuln_pkg:
+                if vuln_pkg in prog_str or (prog_str and prog_str in vuln_pkg):
+                    p_match = True
+
+            if p_match:
                 matches.append(alert)
-        return matches
+                seen_cves.add(cve_id)
+                
+    return matches
 
 # ═══════════════════════════════════════════════════════════════
 # Persistent config helpers – ignored CVE list
@@ -175,7 +200,7 @@ VULN_CONFIG_DATA = {"ignored_cves": [], "pending_vulns": []}
 _traffic_lock = threading.Lock()
 _traffic_data = {}  # port(int) -> {"conns": int, "rx_queue": int, "tx_queue": int, "rate": float, "bytes_rate": float}
 _traffic_prev = {}  # previous snapshot for delta calculation
-TRAFFIC_POLL_INTERVAL = 5.0
+TRAFFIC_POLL_INTERVAL = 1.0
 
 def _traffic_poller_thread():
     """Background thread: polls per-pid network activity using /proc/pid/io every TRAFFIC_POLL_INTERVAL seconds."""
@@ -192,24 +217,27 @@ def _traffic_poller_thread():
                     active_pids.add(pid)
                     io = proc.info.get('io_counters')
                     if io:
-                        # rchar + wchar represents socket and disk IO combined
+                        # rchar + wchar represents socket and disk IO combined (Network Heuristic)
                         total_bytes = io.read_chars + io.write_chars
-                        prev = _traffic_prev.get(pid)
-                        rate = (total_bytes - prev) / TRAFFIC_POLL_INTERVAL if prev is not None else 0
+                        prev_entry = _traffic_prev.get(pid)
                         
-                        if rate > 0 or prev is not None:
-                            new_data[pid] = {
-                                "rate": max(0, rate),
-                                "activity": max(0, rate)
-                            }
-                        _traffic_prev[pid] = total_bytes
+                        if prev_entry:
+                            dt = now - prev_entry['ts']
+                            if dt > 0:
+                                rate = (total_bytes - prev_entry['bytes']) / dt
+                                new_data[pid] = {
+                                    "rate": max(0, rate),
+                                    "activity": max(0, rate)
+                                }
+                        
+                        _traffic_prev[pid] = {'bytes': total_bytes, 'ts': now}
                 except:
                     pass
             
-            # Cleanup dead pids
-            dead_pids = [p for p in _traffic_prev if p not in active_pids]
-            for p in dead_pids:
-                _traffic_prev.pop(p, None)
+            # Cleanup dead pids to prevent memory leaks
+            for p in list(_traffic_prev.keys()):
+                if p not in active_pids:
+                    _traffic_prev.pop(p, None)
 
             with _traffic_lock:
                 _traffic_data = new_data
@@ -226,49 +254,66 @@ def get_traffic_for_pid(pid):
         return _traffic_data.get(str(pid))
 
 def format_traffic_bar(traffic_info):
-    """Format traffic data as ASCII spark bar + rate text."""
+    """
+    Format traffic data as a high-density throughput meter.
+    Uses Logarithmic Scaling (Option C) to capture wide dynamic range (1B/s to 1GB/s).
+    
+    Why Logarithmic? Network traffic is bursty and exponential. Linear scales either 
+    bottom out at 0 or saturate immediately. Log scale provides visual feedback 
+    for tiny heartbeats while still showing the gravity of massive downloads.
+    """
     if not traffic_info:
-        return "▒▒▒▒▒▒▒▒▒▒    0 B/s", 0  # no data, level 0
-    
-    rate = traffic_info.get("rate", 0)
-    
-    # Activity level mapping for 10-block system health style bar
+        return "▏         " + "    0 B/s", 0
+
+    rate = float(traffic_info.get("rate", 0))
     if rate <= 0:
-        filled = 0
-    elif rate < 1024:
-        filled = 1
-    elif rate < 10240:
-        filled = 2
-    elif rate < 102400:
-        filled = 3
-    elif rate < 512000:
-        filled = 4
-    elif rate < 1048576:
-        filled = 5
-    elif rate < 5242880:
-        filled = 6
-    elif rate < 10485760:
-        filled = 7
-    elif rate < 52428800:
-        filled = 8
-    elif rate < 104857600:
-        filled = 9
-    else:
-        filled = 10
+        return "▏         " + "    0 B/s", 0
+
+    # 1. Scaling Strategy: Logarithmic (Option C)
+    # Range: 1 B/s (0) to ~100MB/s (8.0 on log10 scale)
+    # 10 chars * 8 sub-blocks = 80 units of resolution
+    log_v = math.log10(rate) if rate >= 1 else 0
+    max_log = 8.0  # 100 MB/s is "full" saturation
     
-    bar = "█" * filled + "░" * (10 - filled)
+    percent = min(1.0, log_v / max_log)
+    total_width = 10
+    total_subblocks = total_width * 8
+    num_subblocks = int(percent * total_subblocks)
     
-    # Rate text
-    if rate >= 1024 * 1024:
-        rate_text = f"{rate/(1024*1024):.1f}M"
+    # 2. Build High-Density Bar
+    full_blocks = num_subblocks // 8
+    partial_idx = num_subblocks % 8
+    
+    # Unicode partial blocks
+    partials = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]
+    
+    bar = "█" * full_blocks
+    if full_blocks < total_width:
+        bar += partials[partial_idx]
+        bar += " " * (total_width - full_blocks - 1)
+        
+    # 3. Formatted Rate Text
+    if rate >= 1024**3:
+        rate_text = f"{rate/(1024**3):.1f}G"
+    elif rate >= 1024**2:
+        rate_text = f"{rate/(1024**2):.1f}M"
     elif rate >= 1024:
-        rate_text = f"{rate/1024:.0f}K"
+        rate_text = f"{rate/1024:.1f}K"
     else:
-        rate_text = f"{rate:.0f}B"
+        rate_text = f"{int(rate)}B"
+
+    # 4. Optional Directionality Hint (Heuristic based on rchar vs wchar)
+    # We use io_counters.read_chars as RX and write_chars as TX
+    # Since we only get total 'rate' here, we'd need separate rates for better hint.
+    # For now, we'll keep it simple: if rate > 0, show a stable activity indicator.
+    hint = "▼" if rate > 0 else " " # Assuming download-heavy for most listening ports
+
+    # Precise 18-char layout (10 bar + 1 space + 5 text + 2 suffix)
+    display = f"{bar} {rate_text:>5s}/s{hint}"
     
-    # Needs to fit in exactly 19 chars (bar=10 + space=1 + text=5 + /s=2)
-    display = f"{bar} {rate_text:>5s}/s"
-    return display, filled
+    # Return numerical intensity (0-10) for coloring logic
+    intensity = int(percent * 10)
+    return display, intensity
 
 
 # System Health cache (refreshed every 5 seconds)
@@ -1151,6 +1196,10 @@ CP_ACCENT = 2   # Secondary highlights, key shortcuts
 CP_TEXT = 3     # Normal body text
 CP_WARN = 4     # Warnings, errors, critical items
 CP_BORDER = 5   # Borders, separators
+CP_TRAFFIC_LOW = 6
+CP_TRAFFIC_MID = 7
+CP_TRAFFIC_HIGH = 8
+CP_TRAFFIC_BURST = 9
 
 THEMES = [
     {
@@ -1161,7 +1210,11 @@ THEMES = [
             CP_ACCENT: (curses.COLOR_CYAN, -1),
             CP_TEXT: (curses.COLOR_WHITE, -1),
             CP_WARN: (curses.COLOR_YELLOW, -1),
-            CP_BORDER: (curses.COLOR_BLUE, -1)
+            CP_BORDER: (curses.COLOR_BLUE, -1),
+            CP_TRAFFIC_LOW: (curses.COLOR_CYAN, -1),
+            CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
+            CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
         },
         # Precise 256-color map (FG, BG)
         "colors_256": {
@@ -1169,7 +1222,11 @@ THEMES = [
             CP_ACCENT: (45, 234),    # Turquoise2
             CP_TEXT: (255, 234),     # White
             CP_WARN: (226, 234),     # Yellow
-            CP_BORDER: (33, 234)     # Blue border
+            CP_BORDER: (33, 234),    # Blue border
+            CP_TRAFFIC_LOW: (244, 234),   # Dim Grey
+            CP_TRAFFIC_MID: (76, 234),    # Green
+            CP_TRAFFIC_HIGH: (214, 234),  # Orange
+            CP_TRAFFIC_BURST: (196, 234)  # Red
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1180,14 +1237,22 @@ THEMES = [
             CP_ACCENT: (curses.COLOR_RED, -1),
             CP_TEXT: (curses.COLOR_WHITE, -1),
             CP_WARN: (curses.COLOR_RED, -1),
-            CP_BORDER: (curses.COLOR_YELLOW, -1)
+            CP_BORDER: (curses.COLOR_YELLOW, -1),
+            CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
+            CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
+            CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (214, 235),   # Orange1 on Black/Grey (Gruvbox BG)
             CP_ACCENT: (167, 235),   # IndianRed
             CP_TEXT: (223, 235),     # Bisque/Cream
             CP_WARN: (208, 235),     # OrangeRed
-            CP_BORDER: (246, 235)    # Grey border
+            CP_BORDER: (246, 235),   # Grey border
+            CP_TRAFFIC_LOW: (240, 235),
+            CP_TRAFFIC_MID: (142, 235),
+            CP_TRAFFIC_HIGH: (172, 235),
+            CP_TRAFFIC_BURST: (167, 235)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1198,14 +1263,22 @@ THEMES = [
             CP_ACCENT: (curses.COLOR_CYAN, -1),
             CP_TEXT: (curses.COLOR_WHITE, -1),
             CP_WARN: (curses.COLOR_YELLOW, -1),
-            CP_BORDER: (curses.COLOR_BLUE, -1)
+            CP_BORDER: (curses.COLOR_BLUE, -1),
+            CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
+            CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
+            CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (135, 234),   # MediumPurple on DarkBG
             CP_ACCENT: (45, 234),    # Cyan
             CP_TEXT: (189, 234),     # Light Grey-Blue
             CP_WARN: (220, 234),     # Gold
-            CP_BORDER: (63, 234)     # SlateBlue
+            CP_BORDER: (63, 234),    # SlateBlue
+            CP_TRAFFIC_LOW: (60, 234),
+            CP_TRAFFIC_MID: (120, 234),
+            CP_TRAFFIC_HIGH: (215, 234),
+            CP_TRAFFIC_BURST: (203, 234)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1216,14 +1289,22 @@ THEMES = [
             CP_ACCENT: (curses.COLOR_RED, -1),
             CP_TEXT: (curses.COLOR_WHITE, -1),
             CP_WARN: (curses.COLOR_YELLOW, -1),
-            CP_BORDER: (curses.COLOR_CYAN, -1)
+            CP_BORDER: (curses.COLOR_CYAN, -1),
+            CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
+            CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
+            CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (117, 235),   # SkyBlue on DeepDark
             CP_ACCENT: (210, 235),   # Salmon/Flamingo
             CP_TEXT: (254, 235),     # White-ish
             CP_WARN: (228, 235),     # Yellow
-            CP_BORDER: (103, 235)    # SlateGray
+            CP_BORDER: (103, 235),   # SlateGray
+            CP_TRAFFIC_LOW: (242, 235),
+            CP_TRAFFIC_MID: (114, 235),
+            CP_TRAFFIC_HIGH: (216, 235),
+            CP_TRAFFIC_BURST: (204, 235)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1234,14 +1315,22 @@ THEMES = [
             CP_ACCENT: (curses.COLOR_MAGENTA, -1),
             CP_TEXT: (curses.COLOR_WHITE, -1),
             CP_WARN: (curses.COLOR_RED, -1),
-            CP_BORDER: (curses.COLOR_WHITE, -1)
+            CP_BORDER: (curses.COLOR_WHITE, -1),
+            CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
+            CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
+            CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (39, 236),    # DeepSkyBlue on DarkGreyBlue
             CP_ACCENT: (170, 236),   # Orchid
             CP_TEXT: (253, 236),     # Very Light Grey
             CP_WARN: (203, 236),     # IndianRed
-            CP_BORDER: (59, 236)     # Grey59
+            CP_BORDER: (59, 236),    # Grey59
+            CP_TRAFFIC_LOW: (241, 236),
+            CP_TRAFFIC_MID: (114, 236),
+            CP_TRAFFIC_HIGH: (208, 236),
+            CP_TRAFFIC_BURST: (197, 236)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     }
@@ -3716,7 +3805,14 @@ def draw_status_indicator(stdscr):
     elif UPDATE_STATUS_MSG:
         msg = UPDATE_STATUS_MSG
         is_active = True
-    # Priority 3: Auto-Scan Heartbeat
+    # Priority 3: Vulnerability Intel Background Refresh (Part 3.2)
+    elif VULN_IS_FETCHING or VULN_STATUS_MSG:
+        # Show specific message if fetching, else show general status
+        msg = VULN_STATUS_MSG if VULN_STATUS_MSG else "🛡️ Checking Vulnerability Intelligence..."
+        is_active = True
+        status_attr = curses.color_pair(CP_ACCENT) | curses.A_BOLD
+
+    # Priority 4: Auto-Scan Heartbeat
     elif now < SCANNING_STATUS_EXP:
         msg = "🛡️ HEIMDALL: Active System Scan..."
         is_active = True
@@ -4746,9 +4842,13 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
         else:
             sec_warn = f" {best_finding['icon']}"
     
+    # 🔓 Vulnerability matching icon (Pulsing potential in future, static for now)
+    vulns = get_matched_cves(pid, prog_name=prog)
+    vuln_icon = " 🔓" if any(v.get('severity') in ('CRITICAL', 'HIGH') for v in vulns) else ""
+    
     # Combine icons after process name
     managed_icon = " 🌲" if is_managed_by_script(str(pid)) else ""
-    alert_icons = f"{managed_icon}{risk_flag}{sec_warn}"
+    alert_icons = f"{managed_icon}{risk_flag}{sec_warn}{vuln_icon}"
     
     # Preformat with widths (adjust to table widths)
     # PORT(10) + TRAFFIC(20) + PROTO(8) + USAGE(18) + PROCESS(28) + USER(rest)
@@ -4771,7 +4871,7 @@ def get_preformatted_table_row(row, cache, firewall_status, w):
             # Double-width check
             # Added more sentinel icons to the double-width list
             if (unicodedata.east_asian_width(char) in ('W', 'F') or 
-                char in ('⚡', '⛔', '👑', '🧑', '🚩', '⚠️', '⏸', '🔗', '💀', '☢️', '🧪', '🎭', '🌲', '🌐', '🛡️', '📝', '🎨', '⚙️', '🔍', '📂', '🎯')):
+                char in ('⚡', '⛔', '👑', '🧑', '🚩', '⚠️', '⏸', '🔗', '💀', '☢️', '🧪', '🎭', '🌲', '🌐', '🛡️', '📝', '🎨', '⚙️', '🔍', '📂', '🎯', '🔓')):
                 vis_len += 2
             else:
                 vis_len += 1
@@ -4842,10 +4942,14 @@ def draw_table(win, rows, selected, offset, cache, firewall_status, is_active=Fa
         
         pre_row_str = get_preformatted_table_row(rows[idx], cache, firewall_status, w)
         
+        # 🛡️ SECURITY RISK AUDIT (Part 4.2)
+        pid_val = rows[idx][4]
+        port_val = rows[idx][0]
+        vulns = get_matched_cves(pid_val, prog_name=rows[idx][3])
+        is_high_risk = any(v.get('severity') in ('CRITICAL', 'HIGH') for v in vulns)
+        
         # Check for BLINK: high traffic + CRIT sentinel finding
         blink = False
-        port_val = rows[idx][0]
-        pid_val = rows[idx][4]
         traffic_info = get_traffic_for_pid(pid_val)
         if traffic_info and traffic_info.get('activity', 0) > 1048576: # > 1MB/s
             findings = _security_audit_cache.get(str(port_val), [])
@@ -4859,21 +4963,31 @@ def draw_table(win, rows, selected, offset, cache, firewall_status, is_active=Fa
             max_len = max(1, w - 4)
             win.addstr(i+3, 1, pre_row_str[:max_len].ljust(max_len), attr)
             
-            # 📡 Color the TRAFFIC column separately based on level
-            traffic_display, traffic_level = format_traffic_bar(traffic_info)
+            # Sub-highlight risky ports (Part 4.2)
+            if is_high_risk and not is_selected:
+                port_str = pre_row_str[:10]
+                win.addstr(i+3, 1, port_str, curses.color_pair(CP_WARN) | curses.A_BOLD)
+            
+            # 📡 Color the TRAFFIC column separately based on intensity (semantic mapping)
+            traffic_display, traffic_intensity = format_traffic_bar(traffic_info)
             traffic_x = 11  # After PORT column (width 10 + 1 border)
-            if traffic_level >= 8:
-                t_color = curses.color_pair(CP_WARN) | curses.A_BOLD
-            elif traffic_level >= 4:
-                t_color = curses.color_pair(CP_WARN)
-            elif traffic_level >= 2:
-                t_color = curses.color_pair(CP_ACCENT)
+            
+            if traffic_intensity >= 8:
+                t_attr = curses.color_pair(CP_TRAFFIC_BURST) | curses.A_BOLD
+            elif traffic_intensity >= 5:
+                t_attr = curses.color_pair(CP_TRAFFIC_HIGH)
+            elif traffic_intensity >= 2:
+                t_attr = curses.color_pair(CP_TRAFFIC_MID)
+            elif traffic_intensity > 0:
+                t_attr = curses.color_pair(CP_TRAFFIC_LOW)
             else:
-                t_color = curses.color_pair(CP_TEXT) | curses.A_DIM
+                t_attr = curses.color_pair(CP_TEXT) | curses.A_DIM
+
             if is_selected:
-                t_color = curses.color_pair(CP_ACCENT) | curses.A_REVERSE
+                t_attr = curses.color_pair(CP_ACCENT) | curses.A_REVERSE
+            
             try:
-                win.addstr(i+3, traffic_x, traffic_display[:traffic_w], t_color)
+                win.addstr(i+3, traffic_x, traffic_display[:traffic_w], t_attr)
             except curses.error:
                 pass
             
@@ -5131,21 +5245,25 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None, is_active=Fal
                     health_add(hy, f"  Last: {dt_str} ({last_status}){new_str}", curses.color_pair(CP_ACCENT))
                     hy += 1
                 
-                # Countdown timer
                 now_t = time.time()
                 if VULN_NEXT_CHECK_TIME > now_t:
                     diff = int(VULN_NEXT_CHECK_TIME - now_t)
                     m, s = divmod(diff, 60)
-                    cd_str = f"  Next: {m:02d}:{s:02d}"
-                    health_add(hy, cd_str, curses.A_DIM)
+                    health_add(hy, f"  Next: {m:02d}:{s:02d}", curses.A_DIM)
+                    hy += 1
+                
+                # 🔥 Actionable Alerts (High Urgency)
+                if len(VULN_PENDING) > 0:
+                    v_count = len(VULN_PENDING)
+                    icon = "🔥"
+                    # Pulse ONLY the icon (True blink: appear/disappear)
+                    icon_attr = curses.color_pair(CP_WARN) | curses.A_BOLD
                     
-                    # 📩 Alert Icon inside the Panel if pending CVEs
-                    if len(VULN_PENDING) > 0:
-                        alert_txt = f" 📩 {len(VULN_PENDING)} Alerts "
-                        if int(time.time()) % 2 == 0:
-                            health_add(hy, alert_txt, curses.color_pair(CP_WARN) | curses.A_REVERSE | curses.A_BOLD, x_offset=12)
-                        else:
-                            health_add(hy, alert_txt, curses.color_pair(CP_WARN) | curses.A_BOLD, x_offset=12)
+                    # Blink at 2Hz for high visibility
+                    if int(time.time() * 2) % 2 == 0:
+                        health_add(hy, f"  {icon}", icon_attr)
+                    
+                    health_add(hy, f" {v_count} Active Security Advisories", curses.color_pair(CP_WARN) | curses.A_BOLD, x_offset=4)
                     hy += 1
                 
                 if SERVICE_SYNC_ERROR:
@@ -5240,6 +5358,9 @@ def draw_help_bar(stdscr, active_pane=0):
 
         # Short labels for vertical fit
         snap = " 🔄 [r Refresh]" if SNAPSHOT_MODE else ""
+        vuln_count = len(VULN_PENDING)
+        vuln_label = f" 📩 [n Vulns] ({vuln_count})" if vuln_count > 0 else " 📩 [n Vulns]"
+        
         shortcuts = [
             (" ⇱⇲ [Ret Maximize]", curses.color_pair(CP_ACCENT)),
             (" ♻️  [Tab Cycles]", curses.color_pair(CP_ACCENT)),
@@ -5255,7 +5376,7 @@ def draw_help_bar(stdscr, active_pane=0):
             (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
             (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
             (" 🧭 [↑↓ Select]", curses.color_pair(CP_ACCENT)),
-            (" 📩 [n Vulns]", curses.color_pair(CP_ACCENT)),
+            (vuln_label, curses.color_pair(CP_WARN) if vuln_count > 0 else curses.color_pair(CP_ACCENT)),
         ]
         if SNAPSHOT_MODE:
             shortcuts.insert(0, (snap, curses.color_pair(CP_ACCENT)))
@@ -6535,11 +6656,12 @@ def generate_full_system_dump(stdscr, rows, cache):
         add_line("=" * 48)
         with VULN_LOCK:
             if not VULN_PENDING:
-                add_line("  ✅ No pending vulnerabilities detected in system packages.")
+                add_line("  ✅ No high-risk vulnerabilities detected (Score > 7.0).")
             else:
-                add_line(f"  ❗ {len(VULN_PENDING)} SYSTEM VULNERABILITIES DETECTED:")
-                for v in VULN_PENDING:
-                    add_line(f"     - {v['cve_id']} [{v['severity']}]: {v['pkg']}")
+                add_line(f"  ❗ {len(VULN_PENDING)} RISKY VULNERABILITIES DETECTED:")
+                for v in sorted(VULN_PENDING, key=lambda x: x.get('score', 0), reverse=True):
+                    kev = " [KEV]" if v.get('is_kev') else ""
+                    add_line(f"     - {v['cve_id']} [{v['severity']} / {float(v.get('score',0.0)):.1f}]{kev}: {v['pkg']} v{v.get('version','?')}")
         add_line("-" * 48)
         add_line()
 
@@ -6584,7 +6706,7 @@ def generate_full_system_dump(stdscr, rows, cache):
         for idx, row in enumerate(rows):
             port, proto, pidprog, prog, pid = row
             
-            # --- UPDATE UI ---
+            # ... UPDATE UI ...
             if win:
                 try:
                     win.erase()
@@ -6664,13 +6786,14 @@ def generate_full_system_dump(stdscr, rows, cache):
                 add_line("   🔥 Process Reality Check:")
                 findings = perform_security_heuristics(pid, port, prog, user)
                 
-                # ── Vulnerability Audit ──
-                pkg_name = info.get("package", "-")
-                cves = get_matched_cves(pkg_name)
+                # ── Vulnerability Audit (High Confidence PID Matching) ──
+                cves = get_matched_cves(pid)
                 if cves:
-                    add_line(f"     🔓 VULNERABILITY AUDIT: {len(cves)} MATCHES")
-                    for cve in cves:
-                        add_line(f"       - {cve['cve_id']} [{cve['severity']}]: {cve['desc'][:100]}...")
+                    add_line(f"     🔓 VULNERABILITY AUDIT: {len(cves)} HIGH-RISK MATCHES")
+                    for cve in sorted(cves, key=lambda x: x.get('score', 0), reverse=True):
+                        kev = " (KNOWN EXPLOITED)" if cve.get('is_kev') else ""
+                        add_line(f"       - {cve['cve_id']} [{cve['severity']} / {float(cve.get('score',0.0)):.1f}]{kev}")
+                        add_line(f"         Impact: {cve['desc'][:120]}...")
                 
                 add_line("     🛡️ SENTINEL AUDIT:")
                 for find in findings:
@@ -7485,438 +7608,632 @@ def main(stdscr, args=None):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 🛡️ VULNERABILITY INTELLIGENCE ENGINE (Part 1-3)
+# ═══════════════════════════════════════════════════════════════
+
+class ServiceFingerprint:
+    """Represents a detected service, its version, and detection confidence."""
+    def __init__(self, product, version, confidence, method):
+        self.product = product
+        self.version = version  # Normalized string
+        self.confidence = confidence # 0.0 - 1.0
+        self.method = method # 'dpkg', 'rpm', 'cmdline', 'probe'
+
+    def __repr__(self):
+        return f"<SF: {self.product} v{self.version} ({self.confidence*100:.0f}%) via {self.method}>"
+
+class VersionDetector:
+    """Modular version detection using multiple providers."""
+    def __init__(self):
+        self._pkg_cache = {}
+
+    @staticmethod
+    def normalize_version(v: str) -> str:
+        """Strip distro suffixes and normalize to semver-like format."""
+        if not v: return "0.0.0"
+        # Strip leading v/V
+        v = v.lstrip('vV')
+        # Take everything before first '-', '+', or '~'
+        for sep in ['-', '+', '~', ':']: # Added ':' for epoch
+            if sep in v:
+                v = v.split(sep)[-1] if sep == ':' else v.split(sep)[0]
+        # Keep only numbers and dots
+        v = re.sub(r'[^0-9.]', '', v)
+        return v.strip('.') or "0.0.0"
+
+    def detect(self, pid: int) -> ServiceFingerprint:
+        """Entry point for detecting version of a running process."""
+        try:
+            # We use global psutil or try to import it if missing
+            p = psutil.Process(pid)
+            name = p.name().lower()
+            try:
+                exe = p.exe()
+                cmdline = p.cmdline()
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                exe = ""
+                cmdline = []
+        except:
+            return None
+
+        # 1. Package Manager (High Confidence)
+        fp = self._detect_via_pkg(name, exe=exe)
+        if fp and fp.confidence >= 0.8:
+            return fp
+
+        # 2. Cmdline Inspection
+        fp_cmd = self._detect_via_cmdline(name, cmdline)
+        if fp_cmd and (not fp or fp_cmd.confidence > fp.confidence):
+            fp = fp_cmd
+
+        # 3. Binary Probing (Internal safe list only)
+        if not fp or fp.confidence < 0.5:
+            fp_probe = self._detect_via_probe(exe, name)
+            if fp_probe and (not fp or fp_probe.confidence > fp.confidence):
+                fp = fp_probe
+
+        return fp
+
+    def _detect_via_pkg(self, name, exe=""):
+        cache_key = f"{name}:{exe}"
+        if cache_key in self._pkg_cache:
+            return self._pkg_cache[cache_key]
+
+        res = None
+        # Try dpkg-query first (fast)
+        try:
+            out = subprocess.check_output(["dpkg-query", "-W", "-f", "${Package}|${Version}", name], 
+                                          text=True, stderr=subprocess.DEVNULL)
+            if "|" in out:
+                pkg, ver = out.strip().split("|", 1)
+                res = ServiceFingerprint(pkg, self.normalize_version(ver), 0.95, "dpkg")
+        except: pass
+        
+        # Binary Path Ownership (Deep lookup)
+        if not res and exe and os.path.exists(exe):
+            try:
+                # dpkg -S /path/to/exe
+                out = subprocess.check_output(["dpkg", "-S", exe], text=True, stderr=subprocess.DEVNULL)
+                if ":" in out:
+                    pkg = out.split(":")[0].strip()
+                    # Found the owning package, now get its version
+                    ver_out = subprocess.check_output(["dpkg-query", "-W", "-f", "${Version}", pkg], 
+                                                     text=True, stderr=subprocess.DEVNULL)
+                    res = ServiceFingerprint(pkg, self.normalize_version(ver_out), 0.98, "dpkg-path")
+            except: pass
+
+        if not res:
+            try:
+                # RPM fallback
+                cmd = ["rpm", "-qf", "--queryformat", "%{NAME}|%{VERSION}", exe] if exe else ["rpm", "-q", "--queryformat", "%{NAME}|%{VERSION}", name]
+                out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+                if "|" in out:
+                    pkg, ver = out.strip().split("|", 1)
+                    res = ServiceFingerprint(pkg, self.normalize_version(ver), 0.95, "rpm")
+            except: pass
+        
+        self._pkg_cache[cache_key] = res
+        return res
+
+    def _detect_via_cmdline(self, name, cmdline):
+        text = " ".join(cmdline)
+        # Regex for common version patterns
+        patterns = [
+            (r'/([0-9]+\.[0-9.]*[0-9])', 0.7),
+            (r'version[:\s]+([0-9]+\.[0-9.]*[0-9])', 0.7),
+            (r'([0-9]+\.[0-9]+\.[0-9]+)', 0.5), # generic triplet
+        ]
+        for pat, conf in patterns:
+            m = re.search(pat, text, re.I)
+            if m:
+                return ServiceFingerprint(name, self.normalize_version(m.group(1)), conf, "cmdline")
+        return None
+
+    def _detect_via_probe(self, exe, name):
+        if not exe or not os.path.exists(exe):
+            return None
+        
+        # Only probe known server binaries to minimize noise/risk
+        safe_list = ["nginx", "httpd", "apache2", "ssh", "sshd", "vsftpd", "mysql", "mysqld", "postgres", "redis-server"]
+        if name not in safe_list:
+            return None
+
+        try:
+            # Try -v or --version with tight timeout
+            for flag in ["-v", "--version", "-V"]:
+                try:
+                    out = subprocess.check_output([exe, flag], text=True, stderr=subprocess.STDOUT, timeout=0.8)
+                    m = re.search(r'([0-9]+\.[0-9.]*[0-9])', out)
+                    if m:
+                        return ServiceFingerprint(name, self.normalize_version(m.group(1)), 0.85, f"probe:{flag}")
+                except: continue
+        except: pass
+        return None
+
+class CPEMatcher:
+    """Fuzzy matcher for ServiceFingerprint -> NVD CPEs."""
+    def __init__(self):
+        # Maps common process names to (Vendor, Product)
+        self._map = {
+            "nginx": ("nginx", "nginx"),
+            "sshd": ("openbsd", "openssh"),
+            "vsftpd": ("vsftpd_project", "vsftpd"),
+            "apache2": ("apache", "http_server"),
+            "httpd": ("apache", "http_server"),
+            "mysql": ("oracle", "mysql"),
+            "postgres": ("postgresql", "postgresql"),
+            "redis-server": ("redislabs", "redis"),
+            "node": ("nodejs", "node.js"),
+            "python": ("python", "python"),
+        }
+
+    def match(self, fp: ServiceFingerprint) -> list:
+        if not fp or fp.confidence < 0.4:
+            return []
+        
+        vendor, product = self._map.get(fp.product, (fp.product, fp.product))
+        # Generate CPE 2.3 string
+        # cpe:2.3:part:vendor:product:version:update:edition:language:sw_edition:target_sw:target_hw:other
+        return [f"cpe:2.3:a:{vendor}:{product}:{fp.version}"]
+
+class NVDCache:
+    """Persistent local cache for NVD queries to avoid rate limits."""
+    def __init__(self, ttl_hours=24):
+        self.path = Path(os.path.expanduser("~/.cache/heimdall/vuln_cache.json"))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.ttl = ttl_hours * 3600
+        self._data = self._load()
+
+    def _load(self):
+        if self.path.exists():
+            try:
+                with open(self.path, "r") as f:
+                    return json.load(f)
+            except: return {}
+        return {}
+
+    def save(self):
+        try:
+            with open(self.path, "w") as f:
+                json.dump(self._data, f)
+        except: pass
+
+    def get(self, key):
+        entry = self._data.get(key)
+        if entry:
+            if time.time() - entry.get("ts", 0) < self.ttl:
+                return entry.get("val")
+            else:
+                del self._data[key]
+                self.save()
+        return None
+
+    def set(self, key, value):
+        self._data[key] = {"ts": time.time(), "val": value}
+        self.save()
+
+class ThreatIntelEnricher:
+    """Enriches CVEs with KEV/EPSS data (Pluggable logic)."""
+    def __init__(self):
+        self.kev_ids = set() # Stub for now
+        self._updated = 0
+
+    def enrich(self, cve_id):
+        # FUTURE: Fetch actual EPSS/KEV feeds here
+        return {
+            "is_kev": cve_id in self.kev_ids,
+            "epss": 0.0,
+            "score_mod": 1.2 if cve_id in self.kev_ids else 1.0
+        }
+
+# ═══════════════════════════════════════════════════════════════
 # 🛡️ VULNERABILITY SCANNER — Background NVD checker thread
 # ═══════════════════════════════════════════════════════════════
 class VulnerabilityChecker(threading.Thread):
-    """Background daemon: polls NVD every hour, matches local pkgs, pushes alerts."""
-    POLL_INTERVAL = 3600  # 1 hour
-
+    """Background daemon: polls NVD, matches active services, pushes alerts."""
     def __init__(self, api_key=None):
         super().__init__(daemon=True, name="VulnChecker")
         self.api_key = api_key
+        # High-confidence intelligence engine
+        self.detector = VersionDetector()
+        self.matcher = CPEMatcher()
+        self.cache = NVDCache()
+        self.enricher = ThreatIntelEnricher()
 
-    @staticmethod
-    def _local_packages():
-        """Return set of installed package names (lower-cased) via dpkg or rpm."""
-        pkgs = set()
-        # Try Debian/Ubuntu
-        try:
-            out = subprocess.check_output(
-                ["dpkg", "-l"], text=True, stderr=subprocess.DEVNULL
-            )
-            pkgs.update({ln.split()[1].lower().split(":")[0] for ln in out.splitlines() if ln.startswith("ii")})
-        except Exception:
-            pass
-        
-        # Try RedHat/Fedora/CentOS
-        try:
-            out = subprocess.check_output(
-                ["rpm", "-qa", "--queryformat", "%{NAME}\n"], text=True, stderr=subprocess.DEVNULL
-            )
-            pkgs.update({ln.strip().lower() for ln in out.splitlines() if ln.strip()})
-        except Exception:
-            pass
-
-        return pkgs
-
-    def _fetch_cves(self):
-        """Query NVD for recent HIGH/CRITICAL CVEs (last 30 days)."""
+    def _fetch_for_cpe(self, cpe):
+        """Query NVD for a specific CPE with rate-limiting and caching."""
         global VULN_STATUS_MSG
+        cached = self.cache.get(cpe)
+        if cached:
+            return cached, "success"
+
         if not _requests_lib:
             return [], "error"
-        
-        # Pull API key dynamically from CONFIG
+
         api_key = CONFIG.get("nvd_api_key")
-        if not api_key:
-            VULN_STATUS_MSG = "⚠ NVD API Key missing – Vulnerability scanning limited. Set key in Settings (p → v)"
-        
         base = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-        # 120 days ago (NVD API 2.0 has a 120-day MAX range limit)
-        now_ts = time.time()
-        start = now_ts - 120 * 24 * 3600
-        pub_start = time.strftime("%Y-%m-%dT%H:%M:%S.000", time.gmtime(start))
-        pub_end   = time.strftime("%Y-%m-%dT%H:%M:%S.000", time.gmtime(now_ts))
-        
-        severities = ["CRITICAL", "HIGH"]
-        all_vulns = []
-        status = "success"
-        
-        for sev in severities:
-            params = {
-                "pubStartDate": pub_start,
-                "pubEndDate": pub_end,
-                "resultsPerPage": 100,
-                "cvssV3Severity": sev,
-            }
-            headers = {}
-            if api_key:
-                headers["apiKey"] = api_key
-            try:
-                r = _requests_lib.get(base, params=params, headers=headers, timeout=20)
-                if r.status_code in (403, 429):
-                    status = "rate_limit"
-                    break
-                r.raise_for_status()
-                all_vulns.extend(r.json().get("vulnerabilities", []))
-                # Add a small delay between requests if no API key
-                if not api_key:
-                    time.sleep(6) 
-            except Exception as e:
-                err_msg = str(e)
-                if hasattr(e, 'response') and e.response is not None:
-                    err_msg += f" (Code: {e.response.status_code}, Body: {e.response.text[:100]})"
-                debug_log(f"VULN_CHECKER: NVD fetch error ({sev}): {err_msg}")
-                VULN_STATUS_MSG = f"⚠ NVD Error: {err_msg[:40]}..."
-                status = "error"
-                break
-        
-        if status == "rate_limit":
-            VULN_STATUS_MSG = "⚠ NVD Rate limit reached – Vulnerability scanning paused. Add API Key in Settings (p → v)"
-        elif api_key and status == "success":
-            VULN_STATUS_MSG = ""
+        params = {
+            "virtualformat": "cpe",
+            "cpeName": cpe,
+            "resultsPerPage": 20
+        }
+        headers = {}
+        if api_key:
+            headers["apiKey"] = api_key
 
-        return all_vulns, status
-
-    @staticmethod
-    def _cpe_to_pkg(cpe):
-        """Naive: cpe:2.3:a:vendor:product:version → product (lower)."""
         try:
-            parts = cpe.split(":")
-            if len(parts) >= 5:
-                return parts[4].lower()
-        except Exception:
-            pass
-        return None
+            r = _requests_lib.get(base, params=params, headers=headers, timeout=15)
+            if r.status_code == 403 or r.status_code == 429:
+                return [], "rate_limit"
+            r.raise_for_status()
+            
+            vulns = r.json().get("vulnerabilities", [])
+            self.cache.set(cpe, vulns)
+            
+            # Rate limit protection: 6s delay if no API key (NVD recommendation)
+            if not api_key:
+                time.sleep(6)
+            return vulns, "success"
+        except Exception as e:
+            debug_log(f"VULN_CHECKER: NVD Error for {cpe}: {e}")
+            return [], "error"
 
     def run(self):
         global VULN_STATUS_MSG, VULN_NEXT_CHECK_TIME, VULN_IS_FETCHING, VULN_LAST_NEW_COUNT
-        # Initial brief delay to let TUI initialize
-        time.sleep(3)
-        backoff_sec = 0
+        # Delay to let TUI settle
+        time.sleep(6)
         
         while True:
             try:
                 now = time.time()
                 last_check = VULN_CONFIG_DATA.get("last_check_timestamp", 0)
                 interval_hours = CONFIG.get("vuln_scan_interval_hours", 0.5)
-                interval_sec = max(300, int(interval_hours * 3600))
+                interval_sec = max(600, int(interval_hours * 3600))
                 
                 VULN_NEXT_CHECK_TIME = last_check + interval_sec
 
-                # 1. Skip logic: If last check was too recent (unless we have 0 alerts, then refresh once)
+                # 1. Skip if too recent
                 if last_check > 0 and (now - last_check) < interval_sec and len(VULN_PENDING) > 0:
-                    mins_ago = int((now - last_check) // 60)
-                    VULN_STATUS_MSG = f"Last NVD scan: {mins_ago}m ago (skipped)"
-                    debug_log(f"VULN_CHECKER: Skipping scan, last one was {mins_ago}m ago.")
-                    time.sleep(1)
+                    time.sleep(10)
                     continue
 
-                local = self._local_packages()
-                if not local:
-                    VULN_NEXT_CHECK_TIME = time.time() + 300
-                    time.sleep(300) 
-                    continue
-
-                # 2. Perform Fetch
                 VULN_IS_FETCHING = True
-                vulns, status = self._fetch_cves()
-                VULN_IS_FETCHING = False
+                VULN_STATUS_MSG = "🔍 Fingerprinting services..."
                 
-                VULN_CONFIG_DATA["last_check_timestamp"] = int(time.time())
-                VULN_CONFIG_DATA["last_check_status"] = status
-                _save_vuln_config()
-
-                if status == "rate_limit":
-                    backoff_sec = min(3600, (backoff_sec * 3 if backoff_sec > 0 else 300))
-                    VULN_NEXT_CHECK_TIME = time.time() + backoff_sec
-                    time.sleep(backoff_sec)
-                    continue
-                
-                backoff_sec = 0 
-                VULN_LAST_NEW_COUNT = 0
-
-                if status == "success":
-                    debug_log(f"VULN_CHECKER: Fetched {len(vulns)} CVEs from NVD.")
-                    for entry in vulns:
+                # 2. Part 1: Service & Version Intelligence (High Confidence)
+                targets = []
+                try:
+                    # Scan active processes with listening sockets 
+                    for p in psutil.process_iter(['pid', 'name']):
                         try:
-                            cve_item = entry.get("cve", {})
-                            cve_id = cve_item.get("id")
+                            # Only scan processes with listening sockets to minimize noise
+                            conns = p.connections(kind='inet')
+                            if any(c.status == 'LISTEN' for c in conns):
+                                fp = self.detector.detect(p.pid)
+                                if fp:
+                                    targets.append((p.pid, fp))
+                        except (psutil.AccessDenied, psutil.NoSuchProcess):
+                            continue
+                except Exception as e:
+                    debug_log(f"VULN_CHECKER: Error during process scan: {e}")
+
+                if not targets:
+                    VULN_IS_FETCHING = False
+                    VULN_CONFIG_DATA["last_check_timestamp"] = int(time.time())
+                    _save_vuln_config()
+                    time.sleep(300)
+                    continue
+
+                VULN_LAST_NEW_COUNT = 0
+                fetch_status = "success"
+
+                # 3. Part 2 & 3: Match, Fetch, and Prioritize
+                # NVD Access Optimization: Querying specific CPEs is more efficient and accurate
+                for pid, fp in targets:
+                    VULN_STATUS_MSG = f"📡 Checking {fp.product} v{fp.version}..."
+                    cpes = self.matcher.match(fp)
+                    
+                    for cpe in cpes:
+                        vulns, status = self._fetch_for_cpe(cpe)
+                        if status == "rate_limit":
+                            fetch_status = "rate_limit"
+                            break
+                        
+                        for entry in vulns:
+                            c = entry.get("cve", {})
+                            cve_id = c.get("id")
                             if not cve_id or cve_id in VULN_CONFIG_DATA.get("ignored_cves", []):
                                 continue
 
-                            # Already matched in VULN_PENDING?
+                            # Thread-safe duplicate check
+                            # Ensure we don't spam duplicate CVE IDs across different products
                             with VULN_LOCK:
                                 if any(a["cve_id"] == cve_id for a in VULN_PENDING):
                                     continue
 
-                            # Match logic...
-                            desc = ""
-                            # ... description loop ...
-                            for d in cve_item.get("descriptions", []):
-                                if d.get("lang") == "en":
-                                    desc = d.get("value", "")[:200]
-                                    break
-
-                            # Severity from CVSS v3.1 or v3.0
+                            # Severity Filtering & Robust Scoring (Part 2.1)
+                            metrics = c.get("metrics", {})
                             severity = "UNKNOWN"
-                            metrics = entry.get("metrics", cve_item.get("metrics", {}))
-                            for metric_key in ("cvssMetricV31", "cvssMetricV30"):
-                                for m in metrics.get(metric_key, []):
-                                    s = m.get("cvssData", {}).get("baseSeverity")
-                                    if s:
-                                        severity = s
-                                        break
-                                if severity != "UNKNOWN":
-                                    break
-
-                            # Match CPEs against local packages
-                            matched_pkg = None
-                            for conf in cve_item.get("configurations", []):
-                                for node in conf.get("nodes", []):
-                                    for cpe_obj in node.get("cpeMatch", []):
-                                        pkg = self._cpe_to_pkg(cpe_obj.get("criteria", ""))
-                                        if pkg:
-                                            if pkg in local:
-                                                matched_pkg = pkg
-                                                break
-                                            # Substring match (e.g. inetutils in inetutils-telnetd)
-                                            # Only if pkg is long enough to avoid false positives
-                                            if len(pkg) > 3:
-                                                for lp in local:
-                                                    if pkg in lp:
-                                                        matched_pkg = lp
-                                                        break
-                                                if matched_pkg: break
-                                    if matched_pkg:
-                                        break
-                                if matched_pkg:
-                                    break
-
-                            if not matched_pkg:
-                                continue
+                            score = 0.0
                             
-                            debug_log(f"VULN_CHECKER: MATCH FOUND! {cve_id} -> {matched_pkg}")
+                            for mkey in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                                for m in metrics.get(mkey, []):
+                                    data = m.get("cvssData", {})
+                                    # V3.x has it in cvssData, V2.0 has it as sibling to cvssData
+                                    severity = (data.get("baseSeverity") or m.get("baseSeverity") or "UNKNOWN").upper()
+                                    score = data.get("baseScore", 0.0)
+                                    if severity != "UNKNOWN": break
+                                if severity != "UNKNOWN": break
+                            
+                            # Final fallback: if score is >= 7.0 but severity still UNKNOWN, it's HIGH
+                            if severity == "UNKNOWN" and score >= 7.0:
+                                severity = "HIGH"
+                            
+                            if severity not in ("HIGH", "CRITICAL"):
+                                continue
 
-                            # References link
-                            refs = cve_item.get("references", [])
-                            link = refs[0].get("url") if refs else f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+                            # Risk Priority & Enrichment (Part 2.2, 2.3)
+                            intel = self.enricher.enrich(cve_id)
+                            desc = ""
+                            for d in c.get("descriptions", []):
+                                if d.get("lang") == "en":
+                                    desc = d.get("value", "")[:400]
+                                    break
 
                             alert = {
                                 "cve_id": cve_id,
                                 "desc": desc,
                                 "severity": severity,
-                                "pkg": matched_pkg,
-                                "link": link,
+                                "pkg": fp.product,
+                                "version": fp.version if fp.version not in ("Unknown", "0.0.0") else "Version Undetected",
+                                "link": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                                "score": score,
+                                "confidence": fp.confidence,
+                                "is_kev": intel["is_kev"],
+                                "epss": intel["epss"],
+                                "method": fp.method,
+                                "ts": int(time.time()),
+                                "pid": pid
                             }
                             VULN_QUEUE.put(alert)
                             VULN_LAST_NEW_COUNT += 1
-                        except Exception:
-                            continue
+                        
+                        if fetch_status == "rate_limit": break
+                    if fetch_status == "rate_limit": break
 
-                debug_log(f"VULN_CHECKER: Scan complete (Status: {status}). Queue size: {VULN_QUEUE.qsize()}")
+                VULN_IS_FETCHING = False
+                VULN_CONFIG_DATA["last_check_timestamp"] = int(time.time())
+                VULN_CONFIG_DATA["last_check_status"] = fetch_status
+                _save_vuln_config()
+
+                if fetch_status == "rate_limit":
+                    VULN_STATUS_MSG = "⚠ NVD Rate limit reached – Scanning paused."
+                    time.sleep(1800) # Wait 30 mins
+                else:
+                    VULN_STATUS_MSG = ""
+                    time.sleep(interval_sec)
+
             except Exception as e:
-                debug_log(f"VULN_CHECKER: Error in run loop: {e}")
-
-            time.sleep(interval_sec)
+                debug_log(f"VULN_CHECKER Error: {e}")
+                VULN_IS_FETCHING = False
+                time.sleep(60)
 
 
 
 def _open_vuln_modal(stdscr):
-    """Top-level modal: lists pending CVEs."""
-    if not VULN_PENDING:
-        h, w = stdscr.getmaxyx()
-        msg = " ✅ No pending CVE alerts "
+    """Top-level modal: lists pending HIGH/CRITICAL CVEs with severity badges."""
+    # Consume queue first
+    while not VULN_QUEUE.empty():
+        try:
+            item = VULN_QUEUE.get_nowait()
+            with VULN_LOCK:
+                if not any(a["cve_id"] == item["cve_id"] for a in VULN_PENDING):
+                    VULN_PENDING.append(item)
+        except: break
+
     if not VULN_PENDING:
         h, w = stdscr.getmaxyx()
         last_ts = VULN_CONFIG_DATA.get("last_check_timestamp", 0)
         dt_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts)) if last_ts > 0 else "Never"
-        msg = f" ✅ No vulnerabilities found (Last Scan: {dt_str}) "
+        msg = f" ✅ SECURITY AUDIT: No high-risk vulnerabilities found (Last Scan: {dt_str}) "
         try:
             stdscr.addstr(h // 2, (w - len(msg)) // 2, msg, curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_REVERSE)
             stdscr.refresh()
-            time.sleep(2.0)
-        except curses.error:
-            pass
+            time.sleep(1.8)
+        except: pass
         return
 
     sel = 0
     scroll = 0
     while True:
         h, w = stdscr.getmaxyx()
-        win_h = min(len(VULN_PENDING) + 6, h - 4)
-        win_w = min(w - 4, 120)
+        # Sort pending by score descending
+        with VULN_LOCK:
+            sorted_vulns = sorted(VULN_PENDING, key=lambda x: x.get('score', 0), reverse=True)
+        
+        if not sorted_vulns: break
+        if sel >= len(sorted_vulns): sel = len(sorted_vulns) - 1
+
+        win_h = min(len(sorted_vulns) + 6, h - 4)
+        win_w = min(w - 4, 130)
         start_y = max(1, (h - win_h) // 2)
         start_x = max(1, (w - win_w) // 2)
 
         try:
             win = curses.newwin(win_h, win_w, start_y, start_x)
-        except curses.error:
-            break
-        win.bkgd(' ', curses.color_pair(CP_TEXT))
-        win.box()
+            win.bkgd(' ', curses.color_pair(CP_TEXT))
+            win.box()
+            
+            # Legend Header explaining Origin (Part 4.4)
+            legend = "[SYSTEM]: Package is installed  |  [PID:X]: Risk detected in running service"
+            win.addstr(1, (win_w - len(legend)) // 2, legend, curses.A_DIM | curses.A_ITALIC)
+        except: break
 
-        # Title
-        title = " 📩 Pending Vulnerabilities "
-        footer = " [↑↓] Navigate  [Enter] Details  [i] Ignore  [Esc] Close "
+        title = " 🛡️  SECURITY ADVISORY — HIGH-RISK VULNERABILITIES "
+        footer = " [↑↓] Navigate  [Enter] CVE Details  [i] Ignore  [Esc] Close "
         try:
             win.addstr(0, max(1, (win_w - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
             win.addstr(win_h - 1, max(1, (win_w - len(footer)) // 2), footer, curses.color_pair(CP_TEXT) | curses.A_DIM)
-        except curses.error:
-            pass
+        except: pass
 
         visible_rows = win_h - 4
         for vi in range(visible_rows):
             idx = scroll + vi
-            if idx >= len(VULN_PENDING):
-                break
-            a = VULN_PENDING[idx]
-            sev_icon = "🔴" if a["severity"] in ("CRITICAL", "HIGH") else "🟡"
-            line = f" {sev_icon} {a['cve_id']}  {a['pkg']:<20s}  {a['desc'][:win_w-45]}"
+            if idx >= len(sorted_vulns): break
+            a = sorted_vulns[idx]
+            
+            # Severity Badge (Part 4.1) - Show actual severity instead of hardcoded HIGH
+            sev = a.get("severity", "UNKNOWN")
+            badge = f"[{sev:^10}]"
+            if sev == "CRITICAL":
+                b_attr = curses.color_pair(CP_WARN) | curses.A_BOLD
+            elif sev == "HIGH":
+                b_attr = curses.color_pair(CP_WARN)
+            else:
+                b_attr = curses.color_pair(CP_TEXT) | curses.A_DIM
+
+            kev_flag = "💥" if a.get("is_kev") else "  "
+            origin = "[SYSTEM]" if not a.get("pid") else f"[PID:{a.get('pid')}]"
+            line_start = f" {kev_flag} {badge} {origin:<10} {a['cve_id']:<15} {a.get('pkg', ''):<15} v{a.get('version', '?.?'):<10} "
+            v_score = a.get('score', 0.0)
+            score_str = f"Score: {float(v_score):.1f} " if v_score > 0 else "Unrated "
+            
+            avail_desc = win_w - len(line_start) - len(score_str) - 5
+            desc = a.get("desc", "")[:max(0, avail_desc)] + "..."
+            
+            full_line = f"{line_start}{score_str} {desc}"
             attr = curses.color_pair(CP_ACCENT) | curses.A_REVERSE if idx == sel else curses.color_pair(CP_TEXT)
+            
             try:
-                win.addstr(vi + 2, 1, line[:win_w - 2].ljust(win_w - 2), attr)
-            except curses.error:
-                pass
+                win.addstr(vi + 2, 1, full_line[:win_w - 2].ljust(win_w - 2), attr)
+                # Apply color to badge if not selected (for contrast)
+                if idx != sel:
+                    win.addstr(vi + 2, 4, badge, b_attr)
+            except: pass
 
         win.refresh()
+        key = stdscr.getch()
+        if key in (27, ord('q')): break
+        elif key == curses.KEY_UP:
+            if sel > 0:
+                sel -= 1
+                if sel < scroll: scroll = sel
+        elif key == curses.KEY_DOWN:
+            if sel < len(sorted_vulns) - 1:
+                sel += 1
+                if sel >= scroll + visible_rows: scroll = sel - visible_rows + 1
+        elif key == ord('i'):
+            # Ignore
+            cve_id = sorted_vulns[sel]["cve_id"]
+            VULN_CONFIG_DATA.setdefault("ignored_cves", []).append(cve_id)
+            with VULN_LOCK:
+                VULN_PENDING[:] = [v for v in VULN_PENDING if v["cve_id"] != cve_id]
+            VULN_CONFIG_DATA["pending_vulns"] = list(VULN_PENDING)
+            _save_vuln_config()
+        elif key in (10, 13, curses.KEY_ENTER):
+            _open_vuln_detail(stdscr, sorted_vulns[sel])
+            # Check if alert was ignored inside detail
+            with VULN_LOCK:
+                VULN_PENDING[:] = [v for v in VULN_PENDING if v["cve_id"] not in VULN_CONFIG_DATA.get("ignored_cves", [])]
+            if not VULN_PENDING: break
 
-        k = stdscr.getch()
-        if k in (27, ord('q')):
-            break
-        elif k == curses.KEY_UP and sel > 0:
-            sel -= 1
-            if sel < scroll:
-                scroll = sel
-        elif k == curses.KEY_DOWN and sel < len(VULN_PENDING) - 1:
-            sel += 1
-            if sel >= scroll + visible_rows:
-                scroll = sel - visible_rows + 1
-        elif k in (10, curses.KEY_ENTER):
-            if VULN_PENDING:
-                _open_vuln_detail(stdscr, VULN_PENDING[sel])
-                # Refresh: remove ignored
-                with VULN_LOCK:
-                    VULN_PENDING[:] = [a for a in VULN_PENDING if a["cve_id"] not in VULN_CONFIG_DATA.get("ignored_cves", [])]
-                    VULN_CONFIG_DATA["pending_vulns"] = list(VULN_PENDING)
-                    _save_vuln_config()
-                if sel >= len(VULN_PENDING):
-                    sel = max(0, len(VULN_PENDING) - 1)
-                if not VULN_PENDING:
-                    break
-        elif k == ord('i'):
-            # Quick ignore from list
-            if VULN_PENDING:
-                cve = VULN_PENDING[sel]
-                VULN_CONFIG_DATA.setdefault("ignored_cves", []).append(cve["cve_id"])
-                _save_vuln_config()
-                with VULN_LOCK:
-                    VULN_PENDING[:] = [a for a in VULN_PENDING if a["cve_id"] not in VULN_CONFIG_DATA.get("ignored_cves", [])]
-                    VULN_CONFIG_DATA["pending_vulns"] = list(VULN_PENDING)
-                    _save_vuln_config()
-                if sel >= len(VULN_PENDING):
-                    sel = max(0, len(VULN_PENDING) - 1)
-                if not VULN_PENDING:
-                    break
-
-    # Cleanup
     stdscr.touchwin()
-    stdscr.noutrefresh()
-    curses.doupdate()
-
+    stdscr.refresh()
 
 def _open_vuln_detail(stdscr, alert):
-    """Detail view for a single CVE with Ignore / Open actions."""
-    h, w = stdscr.getmaxyx()
-    win_h = min(22, h - 4)
-    win_w = min(90, w - 4)
-    start_y = max(1, (h - win_h) // 2)
-    start_x = max(1, (w - win_w) // 2)
-
-    try:
-        win = curses.newwin(win_h, win_w, start_y, start_x)
-    except curses.error:
-        return
-    win.bkgd(' ', curses.color_pair(CP_TEXT))
-    win.box()
-
-    # Header
-    sev_color = curses.color_pair(CP_WARN) | curses.A_BOLD if alert["severity"] in ("CRITICAL", "HIGH") else curses.color_pair(CP_ACCENT) | curses.A_BOLD
-    try:
-        win.addstr(1, 2, f"🔒 {alert['cve_id']}", curses.color_pair(CP_HEADER) | curses.A_BOLD)
-        sev_txt = f" [{alert['severity']}] "
-        win.addstr(1, win_w - len(sev_txt) - 2, sev_txt, sev_color)
-    except curses.error:
-        pass
-
-    # Separator
-    try:
-        win.hline(2, 1, curses.ACS_HLINE, win_w - 2, curses.color_pair(CP_BORDER))
-    except curses.error:
-        pass
-
-    # Body
-    y = 3
-    try:
-        win.addstr(y, 2, "Description:", curses.A_UNDERLINE | curses.A_BOLD)
-    except curses.error:
-        pass
-    y += 1
-    for line in textwrap.wrap(alert["desc"], win_w - 6):
-        if y >= win_h - 6:
-            break
-        try:
-            win.addstr(y, 4, line, curses.color_pair(CP_TEXT))
-        except curses.error:
-            pass
-        y += 1
-
-    y += 1
-    try:
-        win.addstr(y, 2, f"📦 Affected package: ", curses.A_BOLD)
-        win.addstr(y, 23, alert["pkg"], curses.color_pair(CP_ACCENT) | curses.A_BOLD)
-    except curses.error:
-        pass
-    y += 1
-    try:
-        fix_cmd = f"sudo apt update && sudo apt install --only-upgrade {alert['pkg']}"
-        win.addstr(y, 2, f"🔧 Fix: ", curses.A_BOLD)
-        win.addstr(y, 10, fix_cmd[:win_w - 12], curses.color_pair(CP_TEXT))
-    except curses.error:
-        pass
-
-    # Buttons
-    btn_y = win_h - 2
-    ignore_lbl = " [i] Ignore "
-    open_lbl = " [o] Open in Browser "
-    esc_lbl = " [Esc] Close "
-    try:
-        win.addstr(btn_y, 2, ignore_lbl, curses.color_pair(CP_WARN) | curses.A_BOLD | curses.A_REVERSE)
-        win.addstr(btn_y, 2 + len(ignore_lbl) + 2, open_lbl, curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_REVERSE)
-        win.addstr(btn_y, win_w - len(esc_lbl) - 2, esc_lbl, curses.color_pair(CP_TEXT) | curses.A_DIM)
-    except curses.error:
-        pass
-
-    win.refresh()
-
+    """Deep-dive CVE Panel with KEV and EPSS data."""
     while True:
-        k = stdscr.getch()
-        if k in (27, ord('q')):
-            break
-        elif k == ord('i'):
+        h, w = stdscr.getmaxyx()
+        win_h = 24
+        win_w = min(w - 2, 100)
+        start_y = (h - win_h) // 2
+        start_x = (w - win_w) // 2
+
+        try:
+            win = curses.newwin(win_h, win_w, start_y, start_x)
+            win.bkgd(' ', curses.color_pair(CP_TEXT))
+            win.box()
+        except: break
+
+        title = f" 🔍  VULNERABILITY DETAIL: {alert['cve_id']} "
+        try:
+            win.addstr(0, max(1, (win_w - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except: pass
+
+        y = 2
+        def add_field(label, value, attr=None, val_attr=None):
+            nonlocal y
+            try:
+                win.addstr(y, 2, f"{label:<18}: ", attr or curses.color_pair(CP_ACCENT))
+                win.addstr(y, 20, str(value), val_attr or curses.color_pair(CP_TEXT))
+                y += 1
+            except: pass
+
+        add_field("PRODUCT", alert.get("pkg", "Unknown"))
+        # Use a more accurate fallback than "Scan Failed"
+        v_disp = alert.get("version", "Version Undetected")
+        add_field("DETECTED VERSION", v_disp if v_disp != "Unknown" else "Not Detected")
+        
+        sev = alert.get("severity", "UNKNOWN")
+        s_attr = curses.color_pair(CP_WARN) | curses.A_BOLD if sev in ("HIGH", "CRITICAL") else curses.color_pair(CP_TEXT)
+        add_field("SEVERITY", sev, val_attr=s_attr)
+        
+        score = alert.get('score', 0.0)
+        score_disp = f"{score:.1f}" if score > 0 else "Awaiting Analysis (New CVE)"
+        add_field("BASE SCORE", score_disp)
+        
+        # Threat Intel enrichment placeholders (Part 2.3)
+        is_kev = alert.get("is_kev")
+        epss = alert.get("epss", 0.0)
+        
+        if is_kev:
+            add_field("KNOWN EXPLOITED", "⚠️ YES (CISA KEV List)", val_attr=curses.color_pair(CP_WARN) | curses.A_BOLD)
+        
+        if epss > 0.01: # Only show if statistically significant
+            add_field("EPSS SCORE", f"{epss:.4f} (Likelihood of Exploit)")
+        
+        method = alert.get('method', 'pattern')
+        method_map = {
+            "dpkg": "System Package", 
+            "rpm": "System Package", 
+            "dpkg-path": "Package Ownership lookup",
+            "cmdline": "Command Line Inspection", 
+            "probe": "Direct Binary Probe",
+            "pattern": "Heuristic Pattern Match"
+        }
+        method_disp = method_map.get(method, f"Match: {method}")
+        conf = alert.get('confidence', 0.5) * 100
+        add_field("MATCH METHOD", f"{method_disp} ({conf:.0f}% confidence)")
+        y += 1
+        
+        # Description
+        try:
+            win.addstr(y, 2, "DESCRIPTION:", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+            y += 2
+            desc_text = alert.get("desc", "No description available.")
+            desc_lines = textwrap.wrap(desc_text, win_w - 6)
+            for line in desc_lines[:10]:
+                win.addstr(y, 3, line)
+                y += 1
+        except: pass
+
+        footer = " [o] Open in Browser  [i] Ignore  [Esc/q] Back "
+        try:
+            win.addstr(win_h - 1, (win_w - len(footer)) // 2, footer, curses.color_pair(CP_TEXT) | curses.A_DIM)
+        except: pass
+
+        win.refresh()
+        key = stdscr.getch()
+        if key in (27, ord('q')): break
+        elif key == ord('o'):
+            safe_open_url(alert.get("link", f"https://nvd.nist.gov/vuln/detail/{alert['cve_id']}"))
+        elif key == ord('i'):
             VULN_CONFIG_DATA.setdefault("ignored_cves", []).append(alert["cve_id"])
             _save_vuln_config()
             break
-        elif k == ord('o'):
-            try:
-                safe_open_url(alert["link"])
-            except Exception:
-                pass
-            # Keep modal open so user can also ignore
 
-    # Cleanup
     stdscr.touchwin()
-    stdscr.noutrefresh()
-    curses.doupdate()
+    stdscr.refresh()
 
 
 def check_and_show_terminal_size_then_exit():
@@ -7970,6 +8287,11 @@ def cli_entry():
 
     # Load persistent ignored-CVE config
     _load_vuln_config()
+    
+    # We no longer purge items automatically to avoid "disappearing" findings.
+    # The scanner will simply filter for HIGH/CRITICAL for NEW detections.
+    # Existing findings stay until ignored by the user.
+
     # Start background vulnerability scanner (optional API key from CONFIG)
     _vuln_api_key = CONFIG.get("nvd_api_key")
     _vuln_thread = VulnerabilityChecker(api_key=_vuln_api_key)

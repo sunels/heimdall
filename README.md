@@ -50,7 +50,32 @@
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
 - 🐞 **Internal Debug Logging**: Trace complex process behaviors in `~/.config/heimdall/debug.log`.
+- 🛡️ **Advanced Vulnerability Intelligence (NVD v2)**:
+  - 🔍 **High-Confidence Fingerprinting**: Multi-layer detection (Process Command Line + Package Manager + Binary Probing) to identify service versions with 95%+ accuracy.
+  - 📊 **Risk-Prioritized Alerts**: New findings are automatically scored using CVSS metrics and filtered to exclude noise.
+  - 💾 **Persistent Local Cache**: Uses `~/.cache/heimdall/` to store NVD results for 24h, preventing API rate limits.
+  - 📡 **Threat Enrichment**: Injects CISA KEV (Known Exploited) and EPSS risk data into every CVE.
 - 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights.
+
+---
+
+## 🛡️ Vulnerability Intelligence Architecture
+
+```text
+               [ HEIMDALL SECURITY ARCHITECTURE ]
+
+    +-------------------+       +-----------------------+
+    |  Version Detector | <---> |  High-Confidence CPEs  |
+    +---------+---------+       +-----------+-----------+
+              |                             |
+    +---------v---------+       +-----------v-----------+
+    | Local NVD Cache   | <---> | NVD API v2 (Asynchronous)|
+    +---------+---------+       +-----------+-----------+
+              |                             |
+    +---------v-----------------------------v-----------+
+    |        TUI Risk Highlighting & Detail Panel        |
+    +---------------------------------------------------+
+```
 
 ---
 
