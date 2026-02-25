@@ -7193,6 +7193,21 @@ def load_plugins(heimdall_instance=None):
                 mod = importlib.import_module(mod_name)
                 if hasattr(mod, "Plugin"):
                     plugin_instance = mod.Plugin(heimdall_instance)
+                    
+                    import shutil
+                    tc = getattr(plugin_instance, "tool_command", None)
+                    if tc:
+                        cmd_path = shutil.which(tc)
+                        if not cmd_path:
+                            sudo_user = os.environ.get('SUDO_USER')
+                            if sudo_user:
+                                local_bin = os.path.expanduser(f"~{sudo_user}/.local/bin/{tc}")
+                                if os.path.exists(local_bin):
+                                    cmd_path = local_bin
+                        if not cmd_path:
+                            debug_log(f"Plugin {filename} skipped: tool '{tc}' not installed.")
+                            continue
+                            
                     LOADED_PLUGINS.append(plugin_instance)
             except Exception as e:
                 debug_log(f"Failed to load plugin {filename}: {e}")
