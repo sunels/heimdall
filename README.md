@@ -18,6 +18,7 @@
 - 📂 Displays **all open files** of the selected process (`/proc/<pid>/fd`)
 - 🧾 Deep inspection via **`witr --port`**
 - 🖥️ Fully interactive **terminal UI (curses)**
+- 🔌 **Plugin System**: Embed existing TUI tools (e.g., btop) directly into new tabs. Btop example plugin included.
 - ⚡ Real-time refresh
 - 🛑 Stop a **process or systemd service** directly from the UI (with confirmation)
 - 📝 Warnings annotation (e.g., suspicious working directory is flagged but explained)
@@ -113,6 +114,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 ---
 
 ## 📸 Screenshots
+
+### 🔌 Plugin System & Real-Terminal Emulation (Pyte)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-24.png" alt="heimdall plugin system btop" width="100%"/>
+
+---
 
 ### 🔍 Main View — Ports, Processes & Open Files
 <img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-1.png" alt="heimdall main view" width="100%"/>
@@ -670,7 +676,6 @@ heimdall/
 - 📤 JSON export
 - 🧪 Parser unit tests
 - 🍎 Partial macOS support
-- 🔌 Plugin system
 
 ---
 

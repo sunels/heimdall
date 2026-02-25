@@ -8,6 +8,8 @@ import os
 import time
 import argparse
 import json
+import pty
+import importlib
 from datetime import datetime, timedelta
 import unicodedata
 try:
@@ -5336,7 +5338,7 @@ def draw_help_bar(stdscr, active_pane=0):
     bar_x = w - bar_w
     
     try:
-        bar_win = stdscr.derwin(h, bar_w, 0, bar_x)
+        bar_win = stdscr.derwin(h - 1, bar_w, 1, bar_x)
         bar_win.erase()
         try:
             bar_win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -7173,6 +7175,48 @@ def draw_filter_modal(stdscr, filters):
     del win
     return True
 
+# --------------------------------------------------
+# 🔌 Plugin System
+# --------------------------------------------------
+LOADED_PLUGINS = []
+
+def load_plugins(heimdall_instance=None):
+    global LOADED_PLUGINS
+    LOADED_PLUGINS = []
+    plugins_dir = os.path.join(os.path.dirname(__file__), "plugins")
+    if not os.path.exists(plugins_dir):
+        return
+    for filename in os.listdir(plugins_dir):
+        if filename.endswith(".py") and not filename.startswith("__"):
+            mod_name = f"heimdall.plugins.{filename[:-3]}"
+            try:
+                mod = importlib.import_module(mod_name)
+                if hasattr(mod, "Plugin"):
+                    plugin_instance = mod.Plugin(heimdall_instance)
+                    LOADED_PLUGINS.append(plugin_instance)
+            except Exception as e:
+                debug_log(f"Failed to load plugin {filename}: {e}")
+
+class HeimdallDummyInstance:
+    # Small dummy instance if plugins need simple callbacks, could be enriched later.
+    pass
+
+def draw_top_tabs(stdscr, active_tab_index):
+    global LOADED_PLUGINS
+    h, w = stdscr.getmaxyx()
+    tabs = ["Heimdall"] + [p.name for p in LOADED_PLUGINS]
+    
+    x = 2
+    for i, tab in enumerate(tabs):
+        attr = curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_REVERSE if i == active_tab_index else curses.color_pair(CP_TEXT) | curses.A_DIM
+        try:
+            stdscr.addstr(0, x, f" [{i+1}] {tab} ", attr)
+        except:
+            pass
+        x += len(tab) + 7
+    stdscr.chgat(0, 0, w, curses.color_pair(CP_HEADER) | curses.A_REVERSE)
+
+
 def main(stdscr, args=None):
     global TRIGGER_REFRESH, TRIGGER_LIST_ONLY, SCANNING_STATUS_EXP, SNAPSHOT_MODE
     global PENDING_IPC_ALERT, CURRENT_THEME_INDEX
@@ -7185,6 +7229,10 @@ def main(stdscr, args=None):
     # Initialize theme
     apply_current_theme(stdscr)
 
+    # Load Plugins
+    load_plugins(HeimdallDummyInstance())
+    active_tab = 0 # 0 = Heimdall, 1+ = Plugins
+    
     # Start the background services updater
     start_services_updater()
 
@@ -7262,6 +7310,41 @@ def main(stdscr, args=None):
             except queue.Empty:
                 break
 
+        h, w = stdscr.getmaxyx()
+        
+        draw_top_tabs(stdscr, active_tab)
+        
+        if active_tab > 0:
+            plugin_idx = active_tab - 1
+            if plugin_idx < len(LOADED_PLUGINS):
+                plugin = LOADED_PLUGINS[plugin_idx]
+                # draw shortcuts bar if needed
+                plugin_win = stdscr.derwin(h-1, w, 1, 0)
+                plugin.render(plugin_win)
+                
+                curses.doupdate()
+                k = stdscr.getch()
+                if k == -1: continue
+                
+                if 49 <= k <= 57: # 1-9
+                    idx = k - 49
+                    if idx < len(LOADED_PLUGINS) + 1 and idx != active_tab:
+                        LOADED_PLUGINS[active_tab-1].stop()
+                        active_tab = idx
+                        if active_tab > 0: LOADED_PLUGINS[active_tab-1].start()
+                        stdscr.erase()
+                    continue
+                
+                # Tab keys
+                if k == 9 or k == curses.KEY_BTAB:
+                    pass # plugin panes if complex
+
+                if k == ord('q'):
+                    pass # pass to plugin, or quit main? user said q quits tool in plugin
+                    
+                plugin.on_key(k)
+                continue
+
         # Periodic background refresh (Auto-scan)
         if not show_detail:
             auto_interval = CONFIG.get("auto_scan_interval", 3.0)
@@ -7269,7 +7352,6 @@ def main(stdscr, args=None):
                 SCANNING_STATUS_EXP = time.time() + 1.5
                 request_list_refresh()
 
-        h, w = stdscr.getmaxyx()
         visible_rows = table_h-4
 
         # refresh rows from cached parser (fast)
@@ -7341,7 +7423,7 @@ def main(stdscr, args=None):
 
             # Render maximized logic
             if maximized_pane is not None:
-                max_win = stdscr.derwin(h, main_w, 0, 0) # Maximize to main_w to preserve right panel
+                max_win = stdscr.derwin(h - 1, main_w, 1, 0) # Maximize to main_w to preserve right panel
                 try: max_win.bkgd(' ', curses.color_pair(CP_TEXT))
                 except: pass
                 
@@ -7364,27 +7446,27 @@ def main(stdscr, args=None):
                 # Add ESC to exit maximize hint
                 try:
                     esc_msg = " 🔍 MAXIMIZED VIEW — Press [ESC] or [Enter] to Restore ✨ "
-                    max_win.addstr(h - 1, max(1, (main_w - len(esc_msg)) // 2), esc_msg, curses.color_pair(CP_TEXT) | curses.A_BOLD | curses.A_REVERSE)
+                    max_win.addstr(h - 2, max(1, (main_w - len(esc_msg)) // 2), esc_msg, curses.color_pair(CP_TEXT) | curses.A_BOLD | curses.A_REVERSE)
                     max_win.noutrefresh()
                 except:
                     pass
                 
             else:
                 # Normal Layout
-                table_win = stdscr.derwin(table_h, table_w, 0, 0)
+                table_win = stdscr.derwin(table_h, table_w, 1, 0)
                 draw_table(table_win, rows, selected, offset, cache, firewall_status, is_active=(active_pane == 0))
 
                 if table_h >= 15 and user != "-":
                     files_h = table_h - req_user_pane_h
-                    open_files_win = stdscr.derwin(files_h, of_w, 0, table_w)
-                    user_win = stdscr.derwin(req_user_pane_h, of_w, files_h, table_w)
+                    open_files_win = stdscr.derwin(files_h, of_w, 1, table_w)
+                    user_win = stdscr.derwin(req_user_pane_h, of_w, 1 + files_h, table_w)
                 elif user != "-":
                     files_h = table_h
-                    open_files_win = stdscr.derwin(files_h, of_w, 0, table_w)
-                    user_win = stdscr.derwin(min(req_user_pane_h, files_h), of_w, files_h - min(req_user_pane_h, files_h), table_w)
+                    open_files_win = stdscr.derwin(files_h, of_w, 1, table_w)
+                    user_win = stdscr.derwin(min(req_user_pane_h, files_h), of_w, 1 + files_h - min(req_user_pane_h, files_h), table_w)
                 else:
                     files_h = table_h
-                    open_files_win = stdscr.derwin(files_h, of_w, 0, table_w)
+                    open_files_win = stdscr.derwin(files_h, of_w, 1, table_w)
                     user_win = None
 
                 try: open_files_win.bkgd(' ', curses.color_pair(CP_TEXT))
@@ -7398,7 +7480,7 @@ def main(stdscr, args=None):
                     if user_data:
                         draw_user_subpane(user_win, user_data, is_active=(active_pane == 2))
 
-                detail_win = stdscr.derwin(h-table_h, main_w, table_h, 0)
+                detail_win = stdscr.derwin(h - table_h - 1, main_w, table_h + 1, 0)
                 try: detail_win.bkgd(' ', curses.color_pair(CP_TEXT))
                 except: pass
                 draw_detail(detail_win, cached_wrapped_icon_lines, scroll=detail_scroll, conn_info=cached_conn_info, is_active=(active_pane == 3))
@@ -7510,6 +7592,15 @@ def main(stdscr, args=None):
                     os.remove(IPC_SOCKET_PATH)
             except: pass
             break
+            
+        if 49 <= k <= 57: # 1-9
+            idx = k - 49
+            if idx < len(LOADED_PLUGINS) + 1 and idx != active_tab:
+                if active_tab > 0: LOADED_PLUGINS[active_tab-1].stop()
+                active_tab = idx
+                if active_tab > 0: LOADED_PLUGINS[active_tab-1].start()
+                stdscr.erase()
+            continue
 
         elif k == ord('v') or k == ord('n'):
             _open_vuln_modal(stdscr)
