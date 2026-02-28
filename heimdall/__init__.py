@@ -8440,6 +8440,12 @@ class CPEMatcher:
             "redis-server": ("redislabs", "redis"),
             "node": ("nodejs", "node.js"),
             "python": ("python", "python"),
+            "cups-daemon": ("apple", "cups"),
+            "cups": ("apple", "cups"),
+            "ssh": ("openbsd", "openssh"),
+            "sshd": ("openbsd", "openssh"),
+            "apache2": ("apache", "http_server"),
+            "ntp": ("ntp", "ntp"),
         }
 
     def match(self, fp: ServiceFingerprint) -> list:
@@ -8538,6 +8544,12 @@ class VulnerabilityChecker(threading.Thread):
 
         try:
             r = _requests_lib.get(base, params=params, headers=headers, timeout=15)
+            if r.status_code == 404:
+                # 404 means the CPE doesn't exist in NVD (very common for custom/local processes)
+                # Cache as empty so we don't hammer the API for missing products
+                self.cache.set(cpe, [])
+                return [], "success"
+            
             if r.status_code == 403 or r.status_code == 429:
                 return [], "rate_limit"
             r.raise_for_status()
@@ -8550,7 +8562,9 @@ class VulnerabilityChecker(threading.Thread):
                 time.sleep(6)
             return vulns, "success"
         except Exception as e:
-            debug_log(f"VULN_CHECKER: NVD Error for {cpe}: {e}")
+            # Distinguish between network errors and missing CPEs
+            if not isinstance(e, _requests_lib.HTTPError) or e.response.status_code != 404:
+                debug_log(f"VULN_CHECKER: NVD Error for {cpe}: {e}")
             return [], "error"
 
     def run(self):
@@ -8585,7 +8599,7 @@ class VulnerabilityChecker(threading.Thread):
                             conns = p.connections(kind='inet')
                             if any(c.status == 'LISTEN' for c in conns):
                                 fp = self.detector.detect(p.pid)
-                                if fp:
+                                if fp and fp.product not in ["antigravity", "sh", "bash"]:
                                     targets.append((p.pid, fp))
                         except (psutil.AccessDenied, psutil.NoSuchProcess):
                             continue

@@ -1,18 +1,17 @@
-## 🌐 Outbound Connections Modal - Zero-Loss Traffic Tail (v1.0.6)
+## 🛡️ Vulnerability Guard & NVD Stability (v1.0.7)
 
-This update drastically improves the reliability and performance of the Outbound Connections features.
+This patch focuses on the stability and accuracy of the background vulnerability scanner.
 
-### **✨ Major Enhancements (v1.0.6)**
-- **OS-Level File Buffering for Tail Traffic**: The `Tail Traffic (t)` feature has been re-architected. Instead of Python-level threading, packet data is now streamed directly to an OS file buffer and read using high-speed `seek()` operations. This ensures **zero packet loss** and **terminal-grade performance** even under high load.
-- **Smart Data Truncation**: UI şimdi dosyanın son 32KB'lık kısmını okur, böylece bellek kullanımı optimize edilirken canlı akış hızı korunur.
-- **Improved UI Freeze**: Use **Space** to instantly lock the Outbound list, allowing for easier analysis of selected processes without row displacement.
+### **✨ Major Fixes (v1.0.7)**
+- **NVD 404 Silence**: Resolved "NVD Error 404" noise in debug logs by gracefully handling missing CPE entries (common for local or custom processes). These are now silently cached as empty results to avoid API overhead.
+- **Improved Service Fingerprinting**: Added high-confidence CPE mapping for common Linux services:
+  - **CUPS** (cups-daemon)
+  - **SSH/SSHD** (OpenSSH)
+  - **Apache2** (HTTP Server)
+  - **NTP**
+- **Noise Reduction**: Automatically excludes internal and generic processes like `antigravity`, `sh`, and `bash` from vulnerability scans.
 
-### **🚀 Core Outbound Features (v1.0.5 Recap)**
-- **Unified Monitor (o)**: Detailed external traffic dashboard (Process, Remote IP:Port, Protocol, Sent/Recv, Duration).
-- **Ghost Connection Persistence**: Brief outbound connections (like REST API bursts) remain visible for 20s as `[CLOSED]`.
-- **Integrated Sentinel Risk Audit**: Real-time behavioral risk scoring for every destination.
-- **Direct Actions**: Kill connections, stop processes, or block IPs/Ports directly from the modal.
-
-### **📸 New Screenshots**
-- 📸 `pp-25.png`: Outbound Connections Modal overview.
-- 📸 `pp-26.png`: Real-time Traffic Tail analysis in action.
+### **🚀 Core Recap (v1.0.6)**
+- **Zero-Loss Traffic Tail**: High-performance OS-level file buffering for real-time traffic monitoring.
+- **Smart Data Truncation**: UI-optimized 32KB tail reading for high-speed packet analysis.
+- **UI Freeze (Space)**: Instantly lock lists for stable inspection.
