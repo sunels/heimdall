@@ -7650,66 +7650,71 @@ def draw_traffic_tail_window(stdscr, conn_info):
     win.keypad(True)
     win.timeout(100)
     title = f" 🕵️ Tail Traffic: {conn_info['prog']} -> {conn_info['remote_ip']} "
-    win.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
     
     log_path = os.path.expanduser(f"~/heimdall_tail_{conn_info['pid']}_{int(time.time())}.log")
-    # tcpdump -i any -nn -A -U -s 0 host [ip] and port [port]
-    # -U: Packet-buffered (more immediate than -l)
-    cmd = ["sudo", "tcpdump", "-U", "-nn", "-A", "-i", "any", "host", conn_info["remote_ip"], "and", "port", str(conn_info["remote_port"])]
+    # Write directly to file to use OS-level buffering
+    cmd = f"sudo tcpdump -U -nn -A -i any host {conn_info['remote_ip']} and port {conn_info['remote_port']} > {log_path} 2>/dev/null"
+    
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        log_file = open(log_path, "w")
+        # Start tcpdump in background writing to file
+        proc = subprocess.Popen(cmd, shell=True, preexec_fn=os.setsid)
+        # Ensure file exists
+        open(log_path, 'a').close()
     except Exception as e:
-        show_message(stdscr, f"Error starting tcpdump: {e}")
+        show_message(stdscr, f"Error starting capture: {e}")
         return
 
     lines = []
     is_waiting = True
+    
     while True:
-        # non-blocking drain: read ALL available data from the pipe
-        import select
-        while select.select([proc.stdout], [], [], 0)[0]:
-            line = proc.stdout.readline()
-            if not line: break
-            is_waiting = False
-            log_file.write(line)
-            lines.append(line.rstrip('\n'))
-            # Keep a larger history buffer (e.g. 1000 lines) so we don't lose context
-            if len(lines) > 1000: lines.pop(0)
+        try:
+            # Read last 32KB of the file for tailing
+            if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+                is_waiting = False
+                with open(log_path, "r", errors='ignore') as f:
+                    f.seek(0, 2)
+                    f_size = f.tell()
+                    # Read last 32k to ensure we have enough context
+                    read_size = min(f_size, 32768)
+                    f.seek(f_size - read_size)
+                    chunk = f.read()
+                    lines = chunk.splitlines()
+        except: pass
 
         win.erase()
         win.box()
         win.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
         
         y_off = 1
-        # Add a hint about encryption if port 443
         if conn_info['remote_port'] == '443':
-            hint = "⚠️  HTTPS (Port 443) detected. Content is ENCRYPTED and will appear as binary junk."
+            hint = "⚠️  HTTPS (Port 443) ENCRYPTED Content."
             win.addstr(y_off, 2, hint, curses.color_pair(CP_WARN) | curses.A_DIM)
-            y_off += 2
+            y_off += 1
 
         if is_waiting:
-            msg = "📡  Capture is active. Waiting for traffic... Please be patient."
+            msg = "📡  Capture Active. Waiting for data..."
             win.addstr(h//2 - 3, (w-10-len(msg))//2, msg, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
-            win.addstr(h//2 - 2, (w-10-24)//2, "(Use Ctrl+C in test app)", curses.A_DIM)
         else:
-            # Show only the last 'visible' lines in the window
-            visible_h = h - 10 - y_off
+            visible_h = h - 8 - y_off
             display_slice = lines[-visible_h:] if len(lines) > visible_h else lines
             for i, l in enumerate(display_slice):
-                display_line = "".join([c if c.isprintable() else "." for c in l])
-                try: win.addstr(y_off + i, 2, display_line[:w-14], curses.color_pair(CP_TEXT))
+                disp = "".join([c if (ord(c) >= 32 and ord(c) < 127) or c == '\t' else "." for c in l])
+                try: win.addstr(y_off + i, 2, disp[:w-14], curses.color_pair(CP_TEXT))
                 except: pass
         
         th, tw = win.getmaxyx()
-        win.addstr(th - 2, 2, f" [ESC] Stop   Saving to {log_path}", curses.color_pair(CP_ACCENT) | curses.A_DIM)
+        win.addstr(th - 2, 2, f" [ESC] Stop   Log: {log_path}", curses.color_pair(CP_ACCENT) | curses.A_DIM)
         win.refresh()
         
         k = win.getch()
         if k == 27: break
 
-    proc.terminate()
-    log_file.close()
+    # Clean up
+    try:
+        import signal
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except: pass
     del win
 
 def draw_file_tail_window(stdscr, pid, prog):
