@@ -51,6 +51,13 @@
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
 - 🐞 **Internal Debug Logging**: Trace complex process behaviors in `~/.config/heimdall/debug.log`.
+- 🌐 **Outbound Connections Modal (o)**: High-density interactive monitor for all active outbound traffic.
+  - 📊 **Real-time Stats**: Sent/Received bytes, duration, last activity, and protocol (TCP/UDP).
+  - 🛡️ **Intelligent Risk Scoring**: Integrated Sentinel engine flags suspicious outbound destinations.
+  - 🔍 **Interactive Filtering (f)**: Search by process, remote IP, port, or risk level.
+  - 📋 **Data Export (e)**: Save connection snapshots to JSON for audit.
+  - 🕵️ **Live Tail Traffic (t)**: Real-time packet capture (tcpdump) for a specific connection with raw hex logging.
+  - 📄 **Live Tail Files (f)**: Select any file owned by the process and follow its updates in real-time.
 - 🛡️ **Advanced Vulnerability Intelligence (NVD v2)**:
   - 🔍 **High-Confidence Fingerprinting**: Multi-layer detection (Process Command Line + Package Manager + Binary Probing) to identify service versions with 95%+ accuracy.
   - 📊 **Risk-Prioritized Alerts**: New findings are automatically scored using CVSS metrics and filtered to exclude noise.
@@ -206,6 +213,16 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 🌐 Outbound Connections Modal — Real-time External Traffic (o)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-25.png" alt="heimdall outbound modal" width="100%"/>
+
+---
+
+### 🕵️ Live Traffic Tail — Real-time Packet Capture (t)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-26.png" alt="heimdall traffic tail" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -224,6 +241,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | i | Inspect / Deep Information modal |
 | F | Filter (Port, PID, User modal) |
 | z | System Services Manager modal (TAB to switch view, 'i' for info) |
+| o | Outbound Connections Modal (t: Tail Traffic, f: Tail Files, e: Export) |
 | d | Full System Dump (Reports all services/units to file) |
 | p | Settings (Auto-update, etc.) |
 | q | Quit |

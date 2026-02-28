@@ -162,7 +162,8 @@ CONFIG = {
     "auto_scan_interval": 3.0,
     "daemon_enabled": False,
     "alert_timeout": 30,
-    "vuln_scan_interval_hours": 0.5
+    "vuln_scan_interval_hours": 0.5,
+    "outbound_refresh_interval": 10.0
 }
 SERVICES_DB = {}
 SYSTEM_SERVICES_DB = {}
@@ -191,6 +192,7 @@ TUI_PROTECTION_HANDLED = set() # (pid, create_time) -> Action Taken (timestamp)
 # 🛡️ VULNERABILITY SCANNER — Background NVD checker globals
 # ═══════════════════════════════════════════════════════════════
 VULN_QUEUE = queue.Queue()           # alerts from background thread
+OUTBOUND_QUEUE = queue.Queue()       # trigger modal refreshes if needed
 VULN_LOCK = threading.Lock()         # protect VULN_PENDING list
 VULN_PENDING = []                    # list of dicts {cve_id, desc, severity, pkg, link}
 VULN_CONFIG_PATH = Path(os.path.expanduser("~/.config/heimdall")) / "vuln_settings.yaml"
@@ -203,6 +205,12 @@ _traffic_lock = threading.Lock()
 _traffic_data = {}  # port(int) -> {"conns": int, "rx_queue": int, "tx_queue": int, "rate": float, "bytes_rate": float}
 _traffic_prev = {}  # previous snapshot for delta calculation
 TRAFFIC_POLL_INTERVAL = 1.0
+
+# --- Outbound Connections Modal Globals ---
+OUTBOUND_DATA = []
+OUTBOUND_LOCK = threading.Lock()
+OUTBOUND_REFRESH_INTERVAL = 3.0
+OUTBOUND_HISTORY = {} # (remote_ip, remote_port, pid) -> {"first_seen": timestamp, "last_seen": timestamp, "sent": bytes, "recv": bytes}
 
 def _traffic_poller_thread():
     """Background thread: polls per-pid network activity using /proc/pid/io every TRAFFIC_POLL_INTERVAL seconds."""
@@ -249,6 +257,180 @@ def _traffic_poller_thread():
             debug_log(f"TRAFFIC_POLLER: Error: {e}")
         
         time.sleep(TRAFFIC_POLL_INTERVAL)
+
+def _outbound_poller_thread():
+    """
+    Background thread for Outbound Connections (Total: X).
+    Hybrid: ss polling for snapshot + (placeholder) conntrack logic.
+    """
+    global OUTBOUND_DATA, OUTBOUND_HISTORY
+    while True:
+        try:
+            now = time.time()
+            # ss -ntuip -H: Numeric, TCP/UDP, internal info, process, No Header
+            # We want only established / non-listening for "active outbound"
+            cmd = ["ss", "-ntuipH"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            
+            new_list = []
+            active_keys = set()
+            
+            # Pattern to parse ss output (which can be multi-line with -i)
+            # 127.0.0.1:1234 1.2.3.4:443  users:(("prog",pid=123,fd=4))
+            # ... stats ...
+            lines = result.stdout.splitlines()
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                parts = line.split()
+                if len(parts) < 5: 
+                    i += 1
+                    continue
+                
+                proto = parts[0].lower()
+                local = parts[4]
+                remote = parts[5] if len(parts) > 5 else "-"
+                
+                # Check if it's strictly outbound (dest not 0.0.0.0 or [::])
+                if remote in ["0.0.0.0:*", "[::]:*", "*:*"]:
+                    i += 1
+                    continue
+                    
+                # Parse PID/PROG
+                pid = "-"
+                prog = "-"
+                m = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
+                if m:
+                    prog = m.group(1)
+                    pid = m.group(2)
+                
+                # Remote components
+                try:
+                    r_host_port = remote.rsplit(':', 1)
+                    r_ip = r_host_port[0]
+                    r_port = r_host_port[1]
+                except:
+                    r_ip, r_port = remote, "-"
+                
+                if r_ip.startswith("[") and r_ip.endswith("]"):
+                    r_ip = r_ip[1:-1]
+                
+                # Stats (from -i)
+                sent = 0
+                received = 0
+                # ss -i stats appear on subsequent lines or same line
+                # Look for "bytes_sent:X" "bytes_received:Y"
+                # If they aren't on this line, they might be on the next
+                search_text = line
+                next_line_idx = i + 1
+                while next_line_idx < len(lines) and "users:" not in lines[next_line_idx]:
+                    search_text += " " + lines[next_line_idx]
+                    next_line_idx += 1
+                
+                m_s = re.search(r'bytes_sent:(\d+)', search_text)
+                m_r = re.search(r'bytes_received:(\d+)', search_text)
+                if m_s: sent = int(m_s.group(1))
+                if m_r: received = int(m_r.group(1))
+                
+                # History key
+                key = (r_ip, r_port, pid)
+                if key not in OUTBOUND_HISTORY:
+                    OUTBOUND_HISTORY[key] = {
+                        "first_seen": now, "last_seen": now, 
+                        "sent": sent, "recv": received,
+                        "prog": prog, "proto": proto.upper()
+                    }
+                else:
+                    hist = OUTBOUND_HISTORY[key]
+                    hist["last_seen"] = now
+                    hist["prog"] = prog # update in case it changes (unlikely for same PID/port)
+                    # ss -i stats are usually life-of-connection
+                    if sent < hist["sent"]:
+                         hist["first_seen"] = now
+                    hist["sent"] = sent
+                    hist["recv"] = received
+                
+                hist = OUTBOUND_HISTORY[key]
+                duration_sec = int(now - hist["first_seen"])
+                last_active_sec = int(now - hist["last_seen"])
+                
+                # Risk Heuristics
+                # Re-use existing Heimdall logic
+                user = get_process_user(pid)
+                findings = perform_security_heuristics(pid, r_port, prog, user, is_outbound=True)
+                risk_level = "CLEAN"
+                if any(f['level'] == 'CRITICAL' for f in findings): risk_level = "CRITICAL"
+                elif any(f['level'] == 'HIGH' for f in findings): risk_level = "HIGH"
+                elif any(f['level'] == 'MEDIUM' for f in findings): risk_level = "MEDIUM"
+                
+                new_list.append({
+                    "pid": pid,
+                    "prog": prog,
+                    "remote_ip": r_ip,
+                    "remote_port": r_port,
+                    "proto": proto.upper(),
+                    "sent": sent,
+                    "recv": received,
+                    "duration": duration_sec,
+                    "last_active": last_active_sec,
+                    "risk": risk_level,
+                    "findings": findings
+                })
+                
+                active_keys.add(key)
+                i = next_line_idx
+            
+            # Default sorting: Last Activity (descending)
+            new_list.sort(key=lambda x: x['last_active'])
+            
+            with OUTBOUND_LOCK:
+                # Merge current poll with recent history (Ghost connections)
+                # This helps catch short-lived connections (like the user's POST loop)
+                final_list = []
+                seen_keys = set()
+                
+                # First add currently active ones
+                for item in new_list:
+                    key = (item["remote_ip"], item["remote_port"], item["pid"])
+                    final_list.append(item)
+                    seen_keys.add(key)
+                
+                # Then add recently closed ones (up to 20s ago)
+                for k, hist in OUTBOUND_HISTORY.items():
+                    if k not in seen_keys:
+                        last_active_sec = int(now - hist["last_seen"])
+                        if last_active_sec < 20: # Keep in list for 20s after closure
+                            # Re-run sentinel once for ghost items? or keep last findings
+                            user = get_process_user(k[2])
+                            findings = perform_security_heuristics(k[2], k[1], hist.get("prog","-"), user, is_outbound=True)
+                            
+                            final_list.append({
+                                "pid": k[2],
+                                "prog": hist.get("prog", "-"),
+                                "remote_ip": k[0],
+                                "remote_port": k[1],
+                                "proto": hist.get("proto", "TCP"),
+                                "sent": hist["sent"],
+                                "recv": hist["recv"],
+                                "duration": int(hist["last_seen"] - hist["first_seen"]),
+                                "last_active": last_active_sec,
+                                "risk": "CLEAN",
+                                "findings": findings,
+                                "is_ghost": True
+                            })
+
+                final_list.sort(key=lambda x: x['last_active'])
+                OUTBOUND_DATA = final_list
+            
+            # Prune old history
+            for k in list(OUTBOUND_HISTORY.keys()):
+                if now - OUTBOUND_HISTORY[k]["last_seen"] > 600: # 10 min
+                    OUTBOUND_HISTORY.pop(k, None)
+                    
+        except Exception as e:
+            debug_log(f"OUTBOUND_POLLER Error: {e}")
+            
+        time.sleep(globals().get("OUTBOUND_REFRESH_INTERVAL", 3.0))
 
 def get_traffic_for_pid(pid):
     """Thread-safe getter for traffic data of a specific pid."""
@@ -3955,6 +4137,7 @@ def draw_settings_modal(stdscr):
         win.addstr(4, 4, "[d] Daemon Mode (Background)", curses.color_pair(CP_TEXT))
         win.addstr(5, 4, "[v] Vulnerability Scanner (NVD API Key)", curses.color_pair(CP_TEXT))
         win.addstr(6, 4, "[i] Vuln. Scan Interval", curses.color_pair(CP_TEXT))
+        win.addstr(7, 4, "[o] Outbound Refresh Interval", curses.color_pair(CP_TEXT))
         
         daemon_status = "ON" if CONFIG.get("daemon_enabled") else "OFF"
         win.addstr(4, bw - 10, f"[{daemon_status}]", curses.color_pair(CP_ACCENT) if daemon_status == "ON" else curses.A_DIM)
@@ -3965,6 +4148,9 @@ def draw_settings_modal(stdscr):
 
         vuln_interval = CONFIG.get("vuln_scan_interval_hours", 1.0)
         win.addstr(6, bw - 10, f"[{vuln_interval}h]", curses.color_pair(CP_TEXT) | curses.A_BOLD)
+
+        outbound_interval = CONFIG.get("outbound_refresh_interval", 10.0)
+        win.addstr(7, bw - 10, f"[{outbound_interval}s]", curses.color_pair(CP_TEXT) | curses.A_BOLD)
 
         footer = " [q/ESC] Close "
         win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_TEXT))
@@ -3982,9 +4168,40 @@ def draw_settings_modal(stdscr):
             draw_vuln_settings_modal(stdscr)
         elif k == ord('i'):
             draw_vuln_interval_settings_modal(stdscr)
+        elif k == ord('o'):
+            draw_outbound_interval_settings_modal(stdscr)
             
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
+
+def draw_outbound_interval_settings_modal(stdscr):
+    global OUTBOUND_REFRESH_INTERVAL
+    h, w = stdscr.getmaxyx()
+    bh, bw = 8, 50
+    y, x = (h - bh) // 2, (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    title = " 🌐 Outbound Refresh Interval "
+    
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        curr = CONFIG.get("outbound_refresh_interval", 10.0)
+        win.addstr(2, 4, f"Current Interval: {curr} seconds")
+        win.addstr(4, 4, "[+] Increase (+5s)  [-] Decrease (-5s)")
+        win.addstr(bh-2, 4, "[ESC/q] Save and Close")
+        win.refresh()
+        k = win.getch()
+        if k == 27 or k == ord('q'): break
+        elif k == ord('+'):
+            CONFIG["outbound_refresh_interval"] = min(60, curr + 5)
+            OUTBOUND_REFRESH_INTERVAL = CONFIG["outbound_refresh_interval"]
+            save_config()
+        elif k == ord('-'):
+            CONFIG["outbound_refresh_interval"] = max(5, curr - 5)
+            OUTBOUND_REFRESH_INTERVAL = CONFIG["outbound_refresh_interval"]
+            save_config()
+    win.erase(); win.refresh(); del win
 
 def draw_vuln_settings_modal(stdscr):
     h, w = stdscr.getmaxyx()
@@ -5369,6 +5586,7 @@ def draw_help_bar(stdscr, active_pane=0):
             (" 🔍 [i Inspect]", curses.color_pair(CP_ACCENT)),
             (" 📋 [d Full Inspect]", curses.color_pair(CP_ACCENT)),
             (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
+            (" 🌐 [o Outbound]", curses.color_pair(CP_ACCENT)),
             (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
             (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
             (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
@@ -7216,6 +7434,344 @@ class HeimdallDummyInstance:
     # Small dummy instance if plugins need simple callbacks, could be enriched later.
     pass
 
+def draw_outbound_modal(stdscr):
+    global OUTBOUND_DATA, OUTBOUND_LOCK
+    h, w = stdscr.getmaxyx()
+    bw = min(w - 4, 140)
+    bh = min(h - 4, 35)
+    y = (h - bh) // 2
+    x = (w - bw) // 2
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.timeout(500) # Fast refresh for activity timers
+
+    filters = {"proc": "", "remote": "", "min_sent": 0, "min_dur": 0, "risk": "", "user": ""}
+    sort_key = "last_active"
+    sort_desc = False # For last_active, ascending means "most recent" in my poller (0s ago < 10s ago)
+    
+    selected = 0
+    offset = 0
+    paused = False
+    current_rows = []
+    
+    def get_filtered_data():
+        with OUTBOUND_LOCK:
+            data = list(OUTBOUND_DATA)
+        
+        filtered = []
+        for d in data:
+            if filters["proc"] and filters["proc"].lower() not in d["prog"].lower(): continue
+            if filters["remote"] and filters["remote"].lower() not in d["remote_ip"].lower() and filters["remote"] not in str(d["remote_port"]): continue
+            if filters["min_sent"] and d["sent"] < filters["min_sent"] * 1024: continue
+            if filters["min_dur"] and d["duration"] < filters["min_dur"] * 60: continue
+            if filters["risk"] and filters["risk"].upper() not in d["risk"]: continue
+            # User filter would need process lookup if not in d
+            filtered.append(d)
+        
+        # Apply sorting
+        if sort_key == "sent": filtered.sort(key=lambda x: x["sent"], reverse=True)
+        elif sort_key == "duration": filtered.sort(key=lambda x: x["duration"], reverse=True)
+        elif sort_key == "prog": filtered.sort(key=lambda x: x["prog"].lower())
+        elif sort_key == "last_active": filtered.sort(key=lambda x: x["last_active"])
+        else: filtered.sort(key=lambda x: x["last_active"])
+        
+        return filtered
+
+    while True:
+        if not paused:
+            current_rows = get_filtered_data()
+        
+        rows = current_rows
+        bh_actual, bw_actual = win.getmaxyx()
+        visible_rows = bh_actual - 6
+        
+        if selected >= len(rows): selected = max(0, len(rows) - 1)
+        if selected < offset: offset = selected
+        if selected >= offset + visible_rows: offset = selected - visible_rows + 1
+
+        win.erase()
+        win.box()
+        try:
+            title = f" 🌐 Outbound Connections (Total: {len(rows)}) "
+            win.addstr(0, (bw_actual - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            
+            # Header
+            header = f"{'Process+PID':<25} {'Remote IP:Port':<30} {'Proto':<6} {'Sent':<10} {'Recv':<10} {'Dur':<8} {'Active':<10} {'Risk':<10}"
+            win.addstr(2, 2, header[:bw_actual-4], curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_UNDERLINE)
+        except: pass
+
+        for i in range(visible_rows):
+            idx = i + offset
+            if idx >= len(rows): break
+            d = rows[idx]
+            attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+            
+            risk_color = CP_TEXT
+            if d["risk"] == "CRITICAL": risk_color = CP_WARN
+            elif d["risk"] == "HIGH": risk_color = CP_WARN
+            
+            line_proc = f"{d['prog'][:18]+'('+d['pid']+')':<25}"
+            
+            line = f"{line_proc} {d['remote_ip']+':'+str(d['remote_port']):<30} {d['proto']:<6} {format_bytes(d['sent']):<10} {format_bytes(d['recv']):<10} {format_duration(d['duration']):<8} {d['last_active']}s ago"
+            try:
+                l_attr = attr
+                if d.get("is_ghost"): l_attr |= curses.A_DIM
+                
+                win.addstr(3 + i, 2, line, curses.color_pair(CP_TEXT) | l_attr)
+                
+                # Risk column with CLOSED status
+                if d.get("is_ghost"):
+                    win.addstr(3 + i, 108, f"⏹️  CLOSED", curses.color_pair(CP_TEXT) | curses.A_DIM | attr)
+                else:
+                    icon = "🛡️ " if d["risk"] == "CLEAN" else "💀 "
+                    win.addstr(3 + i, 108, f"{icon}{d['risk']:<8}", curses.color_pair(risk_color) | l_attr)
+            except: pass
+
+        # Footer
+        try:
+            p_status = "[FROZEN]" if paused else ""
+            footer = f" [f] Filter  [s] Sort  [Space] {p_status or 'Freeze'}  [r] Refresh  [t] Tail Traffic  [ESC] Close"
+            win.addstr(bh_actual - 2, 2, footer[:bw_actual-4], curses.color_pair(CP_ACCENT) | curses.A_DIM)
+        except: pass
+
+        win.refresh()
+        k = win.getch()
+        if k == -1: continue # refresh timeout
+        if k == ord(' '): 
+            paused = not paused
+            continue
+        if k == 27: break
+        
+        if k == curses.KEY_UP:
+            if selected > 0: selected -= 1
+        elif k == curses.KEY_DOWN:
+            if selected < len(rows) - 1: selected += 1
+        elif k == ord('r'):
+            OUTBOUND_QUEUE.put("refresh") # optional trigger
+        elif k == ord('f'):
+            # Simple Filter Dialog
+            filters["proc"] = get_input_modal(stdscr, "Filter Process Name:", filters["proc"])
+            filters["remote"] = get_input_modal(stdscr, "Filter Remote IP/Port:", filters["remote"])
+        elif k == ord('s'):
+            # Sort choice
+            sort_opts = [("l", "Last Activity", "last_active"), ("s", "Sent Bytes", "sent"), ("d", "Duration", "duration"), ("p", "Process Name", "prog")]
+            msg = "Sort by: " + " ".join([f"[{k}] {l}" for k, l, f in sort_opts])
+            show_message(stdscr, msg)
+            sk = stdscr.getch()
+            for key_char, label, field in sort_opts:
+                if sk == ord(key_char):
+                    sort_key = field
+                    break
+        elif k == ord('k') and rows:
+            d = rows[selected]
+            if confirm_dialog(stdscr, f"Kill connection to {d['remote_ip']}?"):
+                if kill_connection(d['remote_ip'], d['remote_port']):
+                    show_message(stdscr, "Connection killed (ss -K)")
+                else:
+                    show_message(stdscr, "Failed to kill connection (Check sudo)")
+        elif k == ord('K') and rows:
+            d = rows[selected]
+            if confirm_dialog(stdscr, f"Kill process {d['prog']} (PID {d['pid']})?"):
+                stop_process_or_service(d['pid'], d['prog'], stdscr)
+        elif k in [ord('s'), ord('r')] and rows:
+            # Re-use existing suspend/resume if possible, or direct
+            d = rows[selected]
+            action = "STOP" if k == ord('s') else "CONT"
+            try: subprocess.run(["sudo", "kill", f"-{action}", d["pid"]])
+            except: pass
+        elif k == ord('b') and rows:
+            d = rows[selected]
+            if confirm_dialog(stdscr, f"Block IP {d['remote_ip']} via iptables?"):
+                subprocess.run(["sudo", "iptables", "-A", "OUTPUT", "-d", d["remote_ip"], "-j", "DROP"])
+                show_message(stdscr, f"IP {d['remote_ip']} blocked.")
+        elif k == ord('B') and rows:
+            d = rows[selected]
+            if confirm_dialog(stdscr, f"Block Remote Port {d['remote_port']}?"):
+                subprocess.run(["sudo", "iptables", "-A", "OUTPUT", "-p", d["proto"].lower(), "--dport", str(d["remote_port"]), "-j", "DROP"])
+                show_message(stdscr, f"Port {d['remote_port']} blocked.")
+        elif k == ord('e'):
+            export_outbound_data(rows)
+            show_message(stdscr, "Data exported to ~/heimdall_outbound_export.json")
+        elif k == ord('t') and rows:
+            d = rows[selected]
+            draw_traffic_tail_window(stdscr, d)
+        elif k == ord('f') and rows:
+            d = rows[selected]
+            draw_file_tail_window(stdscr, d["pid"], d["prog"])
+        elif k == 10 or k == curses.KEY_ENTER:
+            if rows:
+                d = rows[selected]
+                user = get_process_user(d["pid"])
+                show_inspect_modal(stdscr, "-", d["prog"], d["pid"], user)
+
+    del win
+    return
+
+def format_bytes(b):
+    if b < 1024: return f"{b} B"
+    if b < 1024*1024: return f"{b/1024:.1f} KB"
+    return f"{b/(1024*1024):.1f} MB"
+
+def format_duration(s):
+    if s < 60: return f"{s}s"
+    if s < 3600: return f"{s//60}m {s%60}s"
+    return f"{s//3600}h {(s%3600)//60}m"
+
+def get_input_modal(stdscr, prompt, current=""):
+    h, w = stdscr.getmaxyx()
+    win = curses.newwin(5, 60, (h-5)//2, (w-60)//2)
+    win.box()
+    win.addstr(1, 2, prompt, curses.color_pair(CP_ACCENT))
+    curses.echo()
+    win.addstr(2, 2, "> ")
+    # Simple input
+    try: 
+        win.move(2, 4)
+        input_str = win.getstr().decode('utf-8')
+    except: input_str = current
+    curses.noecho()
+    return input_str if input_str else current
+
+def kill_connection(remote_ip, remote_port):
+    try:
+        subprocess.run(["sudo", "ss", "-K", "dst", remote_ip, "dport", str(remote_port)], check=True, capture_output=True)
+        return True
+    except: return False
+
+def export_outbound_data(rows):
+    path = os.path.expanduser("~/heimdall_outbound_export.json")
+    with open(path, "w") as f:
+        json.dump(rows, f, indent=4)
+
+def draw_traffic_tail_window(stdscr, conn_info):
+    h, w = stdscr.getmaxyx()
+    win = curses.newwin(h-6, w-10, 3, 5)
+    win.box()
+    win.keypad(True)
+    win.timeout(100)
+    title = f" 🕵️ Tail Traffic: {conn_info['prog']} -> {conn_info['remote_ip']} "
+    win.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    
+    log_path = os.path.expanduser(f"~/heimdall_tail_{conn_info['pid']}_{int(time.time())}.log")
+    # tcpdump -i any -nn -A -U -s 0 host [ip] and port [port]
+    # -U: Packet-buffered (more immediate than -l)
+    cmd = ["sudo", "tcpdump", "-U", "-nn", "-A", "-i", "any", "host", conn_info["remote_ip"], "and", "port", str(conn_info["remote_port"])]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        log_file = open(log_path, "w")
+    except Exception as e:
+        show_message(stdscr, f"Error starting tcpdump: {e}")
+        return
+
+    lines = []
+    is_waiting = True
+    while True:
+        # non-blocking drain: read ALL available data from the pipe
+        import select
+        while select.select([proc.stdout], [], [], 0)[0]:
+            line = proc.stdout.readline()
+            if not line: break
+            is_waiting = False
+            log_file.write(line)
+            lines.append(line.rstrip('\n'))
+            # Keep a larger history buffer (e.g. 1000 lines) so we don't lose context
+            if len(lines) > 1000: lines.pop(0)
+
+        win.erase()
+        win.box()
+        win.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        y_off = 1
+        # Add a hint about encryption if port 443
+        if conn_info['remote_port'] == '443':
+            hint = "⚠️  HTTPS (Port 443) detected. Content is ENCRYPTED and will appear as binary junk."
+            win.addstr(y_off, 2, hint, curses.color_pair(CP_WARN) | curses.A_DIM)
+            y_off += 2
+
+        if is_waiting:
+            msg = "📡  Capture is active. Waiting for traffic... Please be patient."
+            win.addstr(h//2 - 3, (w-10-len(msg))//2, msg, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+            win.addstr(h//2 - 2, (w-10-24)//2, "(Use Ctrl+C in test app)", curses.A_DIM)
+        else:
+            # Show only the last 'visible' lines in the window
+            visible_h = h - 10 - y_off
+            display_slice = lines[-visible_h:] if len(lines) > visible_h else lines
+            for i, l in enumerate(display_slice):
+                display_line = "".join([c if c.isprintable() else "." for c in l])
+                try: win.addstr(y_off + i, 2, display_line[:w-14], curses.color_pair(CP_TEXT))
+                except: pass
+        
+        th, tw = win.getmaxyx()
+        win.addstr(th - 2, 2, f" [ESC] Stop   Saving to {log_path}", curses.color_pair(CP_ACCENT) | curses.A_DIM)
+        win.refresh()
+        
+        k = win.getch()
+        if k == 27: break
+
+    proc.terminate()
+    log_file.close()
+    del win
+
+def draw_file_tail_window(stdscr, pid, prog):
+    files = get_open_files(pid)
+    if not files:
+        show_message(stdscr, "No open files found.")
+        return
+        
+    # Selection sub-modal for files
+    h, w = stdscr.getmaxyx()
+    fwin = curses.newwin(min(20, h-10), 80, (h-20)//2, (w-80)//2)
+    fwin.box()
+    fwin.keypad(True)
+    fsel = 0
+    while True:
+        fwin.erase()
+        fwin.box()
+        fwin.addstr(0, 2, f" Select file to tail ({prog}) ", curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        for i, (fd, path) in enumerate(files[:15]):
+            attr = curses.A_REVERSE if i == fsel else curses.A_NORMAL
+            fwin.addstr(2+i, 2, f"{fd:>3} | {path[:70]}", curses.color_pair(CP_TEXT) | attr)
+        fwin.refresh()
+        k = fwin.getch()
+        if k == 27: del fwin; return
+        if k == curses.KEY_UP and fsel > 0: fsel -= 1
+        elif k == curses.KEY_DOWN and fsel < len(files)-1 and fsel < 14: fsel += 1
+        elif k == 10 or k == curses.KEY_ENTER:
+            path = files[fsel][1]
+            if os.path.isdir(path) or not os.path.exists(path):
+                show_message(stdscr, "Cannot tail this path.")
+                continue
+            break
+            
+    # Tail the file
+    twin = curses.newwin(h-6, w-10, 3, 5)
+    twin.box()
+    twin.timeout(200)
+    title = f" 📄 Tail File: {path} "
+    try:
+        tproc = subprocess.Popen(["tail", "-f", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except: return
+    
+    tlines = []
+    while True:
+        import select
+        if select.select([tproc.stdout], [], [], 0)[0]:
+            line = tproc.stdout.readline()
+            if line:
+                tlines.append(line.strip())
+                if len(tlines) > h - 10: tlines.pop(0)
+        twin.erase()
+        twin.box()
+        twin.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        for i, l in enumerate(tlines):
+            try: twin.addstr(1+i, 2, l[:w-14], curses.color_pair(CP_TEXT))
+            except: pass
+        twin.refresh()
+        if twin.getch() == 27: break
+    tproc.terminate()
+    del twin
+    del fwin
+
 def draw_top_tabs(stdscr, active_tab_index):
     global LOADED_PLUGINS
     h, w = stdscr.getmaxyx()
@@ -7260,6 +7816,11 @@ def main(stdscr, args=None):
     traffic_thread = threading.Thread(target=_traffic_poller_thread, daemon=True)
     traffic_thread.start()
     debug_log("TRAFFIC_POLLER: Background thread started.")
+
+    # Start Outbound Poller thread
+    outbound_thread = threading.Thread(target=_outbound_poller_thread, daemon=True)
+    outbound_thread.start()
+    debug_log("OUTBOUND_POLLER: Background thread started.")
 
     rows = parse_ss_cached()
     cache = {}
@@ -7693,6 +8254,9 @@ def main(stdscr, args=None):
             
         elif k == ord('p'):
             draw_settings_modal(stdscr)
+            
+        elif k == ord('o'):
+            draw_outbound_modal(stdscr)
             
         elif k == ord('c'):
             CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)

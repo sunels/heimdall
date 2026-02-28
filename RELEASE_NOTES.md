@@ -1,16 +1,21 @@
-# Release Notes – Heimdall v1.0.0 (The Security Excellence Update) 🛡️🚀
+## 🌐 Outbound Connections Modal & Real-time Traffic Analysis (v1.0.5)
 
-## Highlights
-- **📩 Background Vulnerability Scanner (NVD)**: Real-time system-wide CVE monitoring. Automatically matched with your installed packages via NVD API 2.0.
-- **🔓 Deep Security Audit Integration**: Security vulnerabilities are now directly visible in the `Inspect (i)` modal and `Full System Dump (d)` at the process level.
-- **🏷️ Smart Runtime Classification**: Advanced tech-stack detection. Identifies Java (Spring Boot), Node.js (Electron), Python (WSGI/ASGI), Go, Rust, PHP, and more.
-- **🌍 Sudo-Aware Browser Support**: Opening links from a root-level TUI session now gracefully drops privileges to launch the browser in your user desktop.
-- **📦 Smarter Package Matching**: Improved string-distance and substring matching to bridge the gap between NVD package names and local Ubuntu/Debian names.
+This update introduces a major new feature: the **Outbound Connections Modal**, providing deep visibility into every external network connection originating from your system.
 
-## Bug Fixes & Improvements
-- **NVD API Compliance**: Fixed 404/Bad Request errors by enforcing strict 120-day lookup windows.
-- **UI Polish**: Added blinking alert indicators and refined 'System Health' pane rendering.
-- **Stability**: Fixed a `TypeError` in the detail window's health rendering.
-- **Performance**: Optimized background polling to ensure zero UI lag during NVD fetches.
+### **Key Features**
+- **Unified Monitor (o)**: A high-density dashboard showing process, remote IP/Port, protocol, data transfer (Sent/Recv), and connection duration.
+- **Ghost Connection Tracking**: Short-lived connections (like REST API calls) are captured and held in the list for 20 seconds after they close, marked as `[CLOSED]`.
+- **Intelligent Risk Scoring**: Every outbound connection is automatically audited by the **Sentinel** engine to identify suspicious destinations or behavior.
+- **Freeze/Pause (Space)**: Instantly freeze the live list to analyze a specific connection without rows jumping around.
+- **Real-time Traffic Tail (t)**: Launch a dedicated sub-window to view raw packet data via `tcpdump`. Optimized with unbuffered streaming and clean-view heuristics.
+- **File Tail (f)**: Instantly follow any file (logs, configs) owned by the process associated with a connection.
 
-This major release transforms Heimdall from a process viewer into a proactive security inspection desktop for Linux.
+### **UI & Performance Enhancements**
+- **Aligned Risk Column**: Fixed visual alignment for risk icons across all terminal widths.
+- **Optimized Polling**: Reduced default outbound refresh interval to 3s for better responsiveness.
+- **Noise Reduction**: Added intelligent filtering to the Traffic Tail view to minimize TCP/IP header noise while retaining core payloads.
+- **Waiting Indicators**: Added "Capture is active" notifications to ensure users know the system is working during slow traffic.
+
+### **Screenshots Added**
+- 📸 `pp-25.png`: Outbound Connections Modal overview.
+- 📸 `pp-26.png`: Real-time Traffic Tail analysis in action.
