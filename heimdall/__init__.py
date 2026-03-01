@@ -7750,7 +7750,7 @@ def draw_outbound_modal(stdscr):
         # Footer
         try:
             p_status = "[FROZEN]" if paused else ""
-            footer = f" [f] Filter  [Space] {p_status or 'Freeze'}  [r] Refresh  [t] Tail Traffic  [S] HTTP Summary  [ESC] Close"
+            footer = f" [f] Filter  [s] Sort  [Space] {p_status or 'Freeze'}  [e] Export  [r] Refresh  [t] Tail  [v] File  [S] Summary  [ESC] Close"
             win.addstr(bh_actual - 2, 2, footer[:bw_actual-4], curses.color_pair(CP_ACCENT) | curses.A_DIM)
         except: pass
 
@@ -7785,40 +7785,34 @@ def draw_outbound_modal(stdscr):
                 if sk == ord(key_char):
                     sort_key = field
                     break
+        elif k == ord('e'):
+            export_outbound_data(rows)
+            show_modal_message(stdscr, "✅ Outbound data exported to ~/heimdall_outbound_export.json")
         elif k == ord('k') and rows:
             d = rows[selected]
             if confirm_dialog(stdscr, f"Kill connection to {d['remote_ip']}?"):
                 if kill_connection(d['remote_ip'], d['remote_port']):
-                    show_message(stdscr, "Connection killed (ss -K)")
+                    show_modal_message(stdscr, "✅ Connection killed (ss -K)")
                 else:
-                    show_message(stdscr, "Failed to kill connection (Check sudo)")
+                    show_modal_message(stdscr, "❌ Failed to kill connection (Check sudo)")
         elif k == ord('K') and rows:
             d = rows[selected]
             if confirm_dialog(stdscr, f"Kill process {d['prog']} (PID {d['pid']})?"):
                 stop_process_or_service(d['pid'], d['prog'], stdscr)
-        elif k in [ord('s'), ord('r')] and rows:
-            # Re-use existing suspend/resume if possible, or direct
-            d = rows[selected]
-            action = "STOP" if k == ord('s') else "CONT"
-            try: subprocess.run(["sudo", "kill", f"-{action}", d["pid"]])
-            except: pass
         elif k == ord('b') and rows:
             d = rows[selected]
             if confirm_dialog(stdscr, f"Block IP {d['remote_ip']} via iptables?"):
                 subprocess.run(["sudo", "iptables", "-A", "OUTPUT", "-d", d["remote_ip"], "-j", "DROP"])
-                show_message(stdscr, f"IP {d['remote_ip']} blocked.")
+                show_modal_message(stdscr, f"✅ IP {d['remote_ip']} blocked.")
         elif k == ord('B') and rows:
             d = rows[selected]
             if confirm_dialog(stdscr, f"Block Remote Port {d['remote_port']}?"):
                 subprocess.run(["sudo", "iptables", "-A", "OUTPUT", "-p", d["proto"].lower(), "--dport", str(d["remote_port"]), "-j", "DROP"])
-                show_message(stdscr, f"Port {d['remote_port']} blocked.")
-        elif k == ord('e'):
-            export_outbound_data(rows)
-            show_message(stdscr, "Data exported to ~/heimdall_outbound_export.json")
+                show_modal_message(stdscr, f"✅ Port {d['remote_port']} blocked.")
         elif k == ord('t') and rows:
             d = rows[selected]
             draw_traffic_tail_window(stdscr, d)
-        elif k == ord('f') and rows:
+        elif k == ord('v') and rows: # 'v' for View file tail
             d = rows[selected]
             draw_file_tail_window(stdscr, d["pid"], d["prog"])
         elif k == 10 or k == curses.KEY_ENTER:
