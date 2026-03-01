@@ -1,3 +1,24 @@
+## 🌍 Deep Context & Stream Redirections (v1.0.9)
+
+This release introduces deeper process introspection with Environment Variables and I/O Redirection tracking, along with a high-density Open Files pane.
+
+### **✨ New Features (v1.0.9)**
+- **Process Environment Variables (`e`)**: View the full `environ` block for any running process directly in the TUI.
+- **Process Redirections (`u`)**: Track process standard streams (`stdin`, `stdout`, `stderr`) and their targets (files, pipes, sockets).
+- **Live Stream Tail**: Launch a live tail directly from the Redirections modal if stdout/stderr points to a file.
+- **Enhanced Open Files Pane**: 
+  - **Type Column**: Categorization with icons (📄 Text, 💾 Binary, ⚙️ Special).
+  - **Dynamic Columns**: Auto-hiding columns based on window width to prevent layout overflow.
+  - **Smart Binary Detection**: Improved heuristics using entropy analysis and extension matching.
+- **Improved Tiling & Navigation**: 
+  - **ESC Support**: Unified back/restore behavior for all modals and maximized panes.
+  - **Input Modals**: Enhanced input fields with full backspace, cursor movement, and ESC cancel support.
+
+### **🔧 Bug Fixes**
+- **Unicode Stability**: Fixed `UnicodeDecodeError` in the Tail window when encountering binary data in text streams.
+- **Layout Integrity**: Fixed a boundary error in the Open Files pane that caused UI corruption on down-scroll.
+- **Tail Performance**: Removed illegal buffering flags in binary mode for better compatibility and performance.
+
 ## 📊 HTTP Accurate Monitor & Outbound Intelligence (v1.0.8)
 
 This release introduces deep packet inspection for HTTP traffic and UI refinements for the Outbound Connections Modal.

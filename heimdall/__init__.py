@@ -1793,14 +1793,22 @@ def get_open_files(pid):
             return files
         for fd in sorted(os.listdir(fd_dir), key=lambda x: int(x)):
             try:
-                path = os.readlink(os.path.join(fd_dir, fd))
-                files.append((fd, path))
+                f_path = os.path.join(fd_dir, fd)
+                path = os.readlink(f_path)
+                f_size = 0; f_mtime = 0; f_ctime = 0
+                try:
+                    stats = os.stat(f_path)
+                    f_size = stats.st_size
+                    f_mtime = stats.st_mtime
+                    f_ctime = stats.st_ctime
+                except: pass
+                files.append((fd, path, f_size, f_mtime, f_ctime))
             except PermissionError:
-                files.append((fd, "Permission denied"))
+                files.append((fd, "Permission denied", 0, 0, 0))
             except OSError:
                 continue
     except PermissionError:
-        files.append(("-", "Permission denied (run as root to view)"))
+        files.append(("-", "Permission denied (run as root to view)", 0, 0, 0))
     except (FileNotFoundError, ProcessLookupError):
         pass # Process exited while inspecting
     return files
@@ -3510,10 +3518,8 @@ def build_inspect_content(pid, port, prog, username):
         lines.append(("  Access denied or no files open.", CP_TEXT))
     else:
         lines.append((f"  Count: {len(f_list)} items", CP_TEXT))
-        for f_item in f_list[:20]:
+        for f_item in f_list:
             lines.append((f"    {f_item}", CP_TEXT))
-        if len(f_list) > 20:
-            lines.append((f"    ... and {len(f_list)-20} more (see main view)", CP_TEXT))
 
     lines.append(("", CP_TEXT))
     return lines
@@ -3880,7 +3886,7 @@ def show_full_inspection_preview(stdscr, report_lines):
                     win.addstr(2 + i, 2, line[:bw-4], curses.color_pair(color))
                 except: pass
         
-        footer = " ↑↓ Scroll / PgUp/PgDn | [s] Save to File | [q/ESC] Close "
+        footer = " ↑↓ Scroll / PgUp/PgDn | [s] Save to File | [q/ESC] Close | Full Security Audit Active "
         win.addstr(bh-1, (bw - len(footer)) // 2, footer, curses.color_pair(CP_ACCENT))
         
         win.refresh()
@@ -4480,8 +4486,103 @@ def draw_vuln_interval_settings_modal(stdscr):
             show_message(stdscr, f"✅ Scan interval set to {options[idx][0]}h")
             break
             
+def show_env_vars_modal(stdscr, pid, prog):
+    """View process environment variables from /proc/[pid]/environ."""
+    h, w = stdscr.getmaxyx()
+    win_h, win_w = h - 6, w - 10
+    win = curses.newwin(win_h, win_w, 3, 5)
+    win.box()
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    envs = []
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            data = f.read()
+            envs = [e.decode('utf-8', 'replace') for e in data.split(b'\x00') if e]
+    except Exception as e:
+        envs = [f"Error reading environ: {e}"]
+    
+    envs.sort()
+    scroll = 0
+    title = f" 🌍 Env Vars: {prog} (PID {pid}) "
+    
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (win_w - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        max_rows = win_h - 4
+        for i in range(max_rows):
+            idx = scroll + i
+            if idx < len(envs):
+                line = envs[idx]
+                win.addstr(2 + i, 3, line[:win_w-6], curses.color_pair(CP_TEXT))
+        
+        hint = " [UP/DN] Scroll | [ESC/q/Enter] Close "
+        win.addstr(win_h - 1, (win_w - len(hint)) // 2, hint, curses.color_pair(CP_ACCENT))
+        win.refresh()
+        
+        k = win.getch()
+        if k in (27, ord('q'), ord('Q'), 10, curses.KEY_ENTER): break
+        elif k == curses.KEY_UP and scroll > 0: scroll -= 1
+        elif k == curses.KEY_DOWN and scroll < len(envs) - max_rows: scroll += 1
+    
     win.erase(); win.refresh(); del win
-    stdscr.touchwin()
+
+def show_redirections_modal(stdscr, pid, prog):
+    """View process redirections (stdin, stdout, stderr) from /proc/[pid]/fd/."""
+    h, w = stdscr.getmaxyx()
+    win_h, win_w = 12, min(80, w - 10)
+    win = curses.newwin(win_h, win_w, (h - win_h) // 2, (w - win_w) // 2)
+    win.box()
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    
+    fds = [0, 1, 2]
+    labels = ["STDIN (0)", "STDOUT (1)", "STDERR (2)"]
+    targets = []
+    for fd in fds:
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except:
+            target = "unknown / closed"
+        targets.append(target)
+    
+    sel = 1 # Default to stdout
+    title = f" ⇄ Redirections: {prog} "
+    
+    while True:
+        win.erase(); win.box()
+        win.addstr(0, (win_w - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        win.addstr(2, 4, "Process Standard Streams:", curses.A_DIM)
+        for i, (label, target) in enumerate(zip(labels, targets)):
+            attr = curses.A_REVERSE | curses.A_BOLD if i == sel else curses.color_pair(CP_TEXT)
+            icon = "➡️" if i == sel else "  "
+            win.addstr(4 + i, 4, f"{icon} {label}: {target[:win_w-20]}", attr)
+        
+        hint = " [Enter/t] Tail File | [ESC/q] Close "
+        win.addstr(win_h - 2, (win_w - len(hint)) // 2, hint, curses.color_pair(CP_ACCENT))
+        win.refresh()
+        
+        k = win.getch()
+        if k in (27, ord('q'), ord('Q')): break
+        elif k == curses.KEY_UP and sel > 0: sel -= 1
+        elif k == curses.KEY_DOWN and sel < 2: sel += 1
+        elif k in (10, curses.KEY_ENTER, ord('t'), ord('T')):
+            target = targets[sel]
+            if target.startswith("/") and os.path.exists(target) and not os.path.isdir(target):
+                draw_file_tail_window(stdscr, pid, prog, target_path=target)
+            elif "socket:[" in target or "pipe:[" in target:
+                show_message(stdscr, "Cannot tail a socket/pipe directly.")
+            else:
+                show_message(stdscr, "Selected stream is not a tail-able file.")
+            # Refresh in case we returned from tail
+            stdscr.touchwin(); curses.doupdate(); win.refresh()
+
+    win.erase(); win.refresh(); del win
 
 # --------------------------------------------------
 # System Services Management
@@ -5511,45 +5612,160 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None, is_active=Fal
             
     win.noutrefresh()
 
-def draw_open_files(win, pid, prog, files, scroll=0, is_active=False):
+def draw_open_files(win, pid, prog, files, selected_idx=-1, scroll=0, is_active=False, sort_key='fd', query="", hide_footer=False):
     win.erase()
     try:
         win.bkgd(' ', curses.color_pair(CP_TEXT))
     except: pass
     h, w = win.getmaxyx()
+    if h < 4 or w < 10: return # Too small
     
+    # 1. Processing (Filter)
+    display_files = []
+    for f in files:
+        fd, path, size, mtime, ctime = f
+        is_special = any(x in path for x in ["socket:[", "pipe:[", "anon_inode:", "[pidfd]", "dmabuf:"])
+        is_binary = False
+        if not is_special:
+            binary_ext = ('.so', '.bin', '.exe', '.db', '.dat', '.png', '.jpg', '.zip', '.gz', '.tar', '.o', '.pyc', '.pak', '.bdic')
+            if path.lower().endswith(binary_ext) or path.startswith("/dev/") or "/leveldb/" in path.lower() or "/gpcache/" in path.lower() or "/gpucache/" in path.lower():
+                is_binary = True
+        
+        f_type = "Special" if is_special else ("Binary" if is_binary else "Text")
+        
+        if query:
+            q = query.lower()
+            # Match path OR type name
+            if q not in path.lower() and q not in f_type.lower():
+                continue
+        
+        display_files.append((fd, path, size, mtime, ctime, f_type))
+    
+    # 2. Sorting
+    reverse = True if sort_key in ['size', 'mtime', 'ctime'] else False
+    if sort_key == 'size': display_files.sort(key=lambda x: x[2], reverse=reverse)
+    elif sort_key == 'mtime': display_files.sort(key=lambda x: x[3], reverse=reverse)
+    elif sort_key == 'ctime': display_files.sort(key=lambda x: x[4], reverse=reverse)
+    elif sort_key == 'type': display_files.sort(key=lambda x: x[5])
+    elif sort_key == 'path': display_files.sort(key=lambda x: x[1].lower())
+    else: display_files.sort(key=lambda x: int(x[0]) if (len(x) > 0 and str(x[0]).isdigit()) else 9999)
+
     # Border
     b_color = curses.color_pair(CP_ACCENT) | curses.A_BOLD if is_active else curses.color_pair(CP_BORDER)
     try:
         win.attron(b_color)
         win.box()
+        # Top internal border for 📂 line
+        win.hline(2, 1, curses.ACS_HLINE, w - 2)
         win.attroff(b_color)
     except:
         win.box()
 
-    header = f"📂 Open Files — PID {pid}/{prog} ({len(files)})"
+    # Dynamic Column definitions based on width
+    # (Name, SortKey, Width)
+    cols = [("FD", "fd", 3)]
+    if w >= 40: cols.append(("Size", "size", 6))
+    if w >= 55: cols.append(("Type", "type", 7))
+    if w >= 75: cols.append(("Created", "ctime", 12))
+    if w >= 95: cols.append(("Modified", "mtime", 12))
+    cols.append(("Path", "path", 0))
+    
+    # Header drawing
     try:
-        win.addstr(1, 2, header[:w-4], curses.color_pair(CP_HEADER) | curses.A_BOLD)
-        try:
-            win.hline(2, 1, curses.ACS_HLINE, w - 2, curses.color_pair(CP_BORDER))
-        except: pass
-    except:
-        pass
+        win.addstr(1, 2, f"📂 PID {pid} ({len(display_files)})", curses.color_pair(CP_HEADER) | curses.A_BOLD)
         
-    max_rows = h - 4
+        col_header_y = 3
+        curr_x = 2
+        for name, sk, width in cols:
+            if width == 0: name_str = f" {name}"
+            else: name_str = f" {name:<{width-1}}"
+            
+            if sort_key == sk:
+                indicator = " ↓" if reverse else " ↑"
+                name_str = name_str.rstrip() + indicator
+                if width > 0: name_str = f"{name_str:<{width}}"
+            
+            attr = curses.color_pair(CP_ACCENT) | curses.A_BOLD if sort_key == sk else curses.color_pair(CP_HEADER)
+            try: win.addstr(col_header_y, curr_x, name_str[:w-curr_x-1], attr)
+            except: pass
+            
+            if width > 0: curr_x += width + 2
+            else: break
+            
+        # USER REQUEST: Use ~ for header line
+        try:
+            for x in range(1, w-1):
+                win.addch(col_header_y + 1, x, '~', curses.color_pair(CP_BORDER))
+        except: pass
+    except: pass
+        
+    start_y = 5
+    max_rows = h - 7
     for i in range(max_rows):
         idx = scroll + i
-        if idx >= len(files):
-            continue
-        fd, path = files[idx]
+        if idx >= len(display_files): break
+        
+        f_data = display_files[idx]
+        fd, path, size, mtime, ctime, f_type = f_data
+        icon = "⚙️ " if f_type == "Special" else ("💾" if f_type == "Binary" else "📄")
+        
+        # Formatting Values
+        if size < 1024: s_val = f"{size}B"
+        elif size < 1024*1024: s_val = f"{size/1024:.1f}K"
+        else: s_val = f"{size/(1024*1024):.1f}M"
+        
+        def fmt_t(t):
+            if t <= 0: return "-"
+            try: return datetime.fromtimestamp(t).strftime("%m-%d %H:%M")
+            except: return "-"
+
         try:
-            # Use normal text color
-            line = f"{idx+1:3d}. [{fd}] {path}"
-            max_len = max(1, w - 4)
-            win.addstr(i+3, 2, line[:max_len], curses.color_pair(CP_TEXT))
-        except:
-            pass
+            attr = curses.A_REVERSE if (is_active and idx == selected_idx) else curses.color_pair(CP_TEXT)
+            if not is_active and idx == selected_idx: attr |= curses.A_DIM 
+            if f_type == "Special" and not (is_active and idx == selected_idx): attr |= curses.A_DIM
+
+            curr_x = 2
+            # FD (always)
+            win.addstr(start_y + i, curr_x, f"{fd:>2}", attr)
+            curr_x += 5
             
+            # Size
+            if w >= 40:
+                win.addstr(start_y + i, curr_x, f"{s_val:>6}", attr)
+                curr_x += 8
+                
+            # Type (with Icon)
+            if w >= 55:
+                win.addstr(start_y + i, curr_x, f"{icon}{f_type:7}", attr)
+                curr_x += 10
+                
+            # Created
+            if w >= 75:
+                win.addstr(start_y + i, curr_x, f"{fmt_t(ctime):12}", attr)
+                curr_x += 14
+                
+            # Modified
+            if w >= 95:
+                win.addstr(start_y + i, curr_x, f"{fmt_t(mtime):12}", attr)
+                curr_x += 14
+            
+            # Path
+            win.addstr(start_y + i, curr_x, f" {path[:w-curr_x-2]}", attr)
+        except: pass
+    
+    # 3. Footer
+    footer_y = h - 2
+    if is_active and not hide_footer:
+        help_hint = " [S] Sort [F] Filter [t] Tail 🦊 "
+        if query:
+            filter_msg = f" 🔍 FILTER: {query} (Press F to clear/edit) "
+            try: 
+                win.attron(curses.color_pair(CP_WARN) | curses.A_BOLD)
+                win.addstr(footer_y - 1, (w - len(filter_msg)) // 2, filter_msg)
+                win.attroff(curses.color_pair(CP_WARN) | curses.A_BOLD)
+            except: pass
+        try: win.addstr(footer_y, (w - len(help_hint)) // 2, help_hint, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+        except: pass
     win.noutrefresh()
 
 def draw_help_bar(stdscr, active_pane=0):
@@ -5593,14 +5809,16 @@ def draw_help_bar(stdscr, active_pane=0):
             (" 🌐 [o Outbound]", curses.color_pair(CP_ACCENT)),
             (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
             (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
+            (" 🌍 [e Env Vars]", curses.color_pair(CP_ACCENT)),
+            (" ⇄  [u Redirect]", curses.color_pair(CP_ACCENT)),
             (" ⛔ [s Stop]", curses.color_pair(CP_ACCENT)),
             (" 🔥 [f Firewall]", curses.color_pair(CP_ACCENT)),
             (" 🛠  [a Actions]", curses.color_pair(CP_ACCENT)),
             (" ⚙️  [z Services]", curses.color_pair(CP_ACCENT)),
-            (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
             (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
             (" 🧭 [↑↓ Select]", curses.color_pair(CP_ACCENT)),
-            (vuln_label, curses.color_pair(CP_WARN) if vuln_count > 0 else curses.color_pair(CP_ACCENT)),
+            (f"{vuln_label}", curses.color_pair(CP_WARN) if vuln_count > 0 else curses.color_pair(CP_ACCENT)),
+            (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
         ]
         if SNAPSHOT_MODE:
             shortcuts.insert(0, (snap, curses.color_pair(CP_ACCENT)))
@@ -7041,7 +7259,7 @@ def generate_full_system_dump(stdscr, rows, cache):
                 add_line(f"     OOM Score: {get_oom_score_adj(pid)}\n")
             
             # ── Activity History ──
-            history = get_service_activity_history(prog, pid, port, max_entries=8)
+            history = get_service_activity_history(prog, pid, port, max_entries=100)
             add_line(f"   📜 Recent Activity ({len(history)} events):")
             if history:
                 for ts, msg, _ in history:
@@ -7059,10 +7277,8 @@ def generate_full_system_dump(stdscr, rows, cache):
             # ── Open Files ──
             files = get_open_files_cached(pid)
             add_line(f"\n   📂 Open Files ({len(files)}):")
-            for i, file_entry in enumerate(files[:8]):
+            for i, file_entry in enumerate(files):
                 add_line(f"     - {file_entry}")
-            if len(files) > 8:
-                add_line(f"     ... ({len(files)-8} more)")
             
             add_line("\n" + "=" * 80 + "\n")
 
@@ -7626,18 +7842,54 @@ def format_duration(s):
 
 def get_input_modal(stdscr, prompt, current=""):
     h, w = stdscr.getmaxyx()
-    win = curses.newwin(5, 60, (h-5)//2, (w-60)//2)
+    win_h, win_w = 6, 60
+    win = curses.newwin(win_h, win_w, (h-win_h)//2, (w-win_w)//2)
     win.box()
-    win.addstr(1, 2, prompt, curses.color_pair(CP_ACCENT))
-    curses.echo()
-    win.addstr(2, 2, "> ")
-    # Simple input
-    try: 
-        win.move(2, 4)
-        input_str = win.getstr().decode('utf-8')
-    except: input_str = current
-    curses.noecho()
-    return input_str if input_str else current
+    win.keypad(True)
+    curses.curs_set(1)
+    
+    buf = list(current)
+    pos = len(buf)
+    
+    while True:
+        win.erase()
+        win.box()
+        win.addstr(1, 2, f" {prompt} ", curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        win.addstr(2, 2, " [ESC] Cancel | [Enter] Confirm ", curses.A_DIM)
+        
+        # Draw input field
+        win.addstr(3, 2, "> ")
+        field_w = win_w - 6
+        display_str = "".join(buf)
+        win.addstr(3, 4, display_str[:field_w])
+        
+        win.move(3, 4 + pos)
+        win.refresh()
+        
+        k = win.getch()
+        if k == 27: # ESC
+            curses.curs_set(0)
+            return None
+        elif k in (10, curses.KEY_ENTER):
+            curses.curs_set(0)
+            return "".join(buf)
+        elif k in (curses.KEY_BACKSPACE, 127, 8):
+            if pos > 0:
+                buf.pop(pos-1)
+                pos -= 1
+        elif k == curses.KEY_LEFT:
+            if pos > 0: pos -= 1
+        elif k == curses.KEY_RIGHT:
+            if pos < len(buf): pos += 1
+        elif k == curses.KEY_DC: # Delete
+            if pos < len(buf): buf.pop(pos)
+        elif 32 <= k <= 126: # Printable
+            if len(buf) < field_w:
+                buf.insert(pos, chr(k))
+                pos += 1
+    
+    curses.curs_set(0)
+    return "".join(buf)
 
 def kill_connection(remote_ip, remote_port):
     try:
@@ -7879,65 +8131,163 @@ def draw_http_summary_modal(stdscr, conn_info):
     del win
 
 
-def draw_file_tail_window(stdscr, pid, prog):
-    files = get_open_files(pid)
-    if not files:
-        show_message(stdscr, "No open files found.")
-        return
-        
-    # Selection sub-modal for files
-    h, w = stdscr.getmaxyx()
-    fwin = curses.newwin(min(20, h-10), 80, (h-20)//2, (w-80)//2)
-    fwin.box()
-    fwin.keypad(True)
-    fsel = 0
-    while True:
-        fwin.erase()
-        fwin.box()
-        fwin.addstr(0, 2, f" Select file to tail ({prog}) ", curses.color_pair(CP_HEADER) | curses.A_BOLD)
-        for i, (fd, path) in enumerate(files[:15]):
-            attr = curses.A_REVERSE if i == fsel else curses.A_NORMAL
-            fwin.addstr(2+i, 2, f"{fd:>3} | {path[:70]}", curses.color_pair(CP_TEXT) | attr)
-        fwin.refresh()
-        k = fwin.getch()
-        if k == 27: del fwin; return
-        if k == curses.KEY_UP and fsel > 0: fsel -= 1
-        elif k == curses.KEY_DOWN and fsel < len(files)-1 and fsel < 14: fsel += 1
-        elif k == 10 or k == curses.KEY_ENTER:
-            path = files[fsel][1]
-            if os.path.isdir(path) or not os.path.exists(path):
-                show_message(stdscr, "Cannot tail this path.")
-                continue
-            break
+def draw_file_tail_window(stdscr, pid, prog, target_path=None):
+    if not target_path:
+        files = get_open_files(pid)
+        if not files:
+            show_message(stdscr, "No open files found.")
+            return
             
-    # Tail the file
+        # Selection sub-modal for files
+        h, w = stdscr.getmaxyx()
+        f_h = min(20, h-10)
+        f_w = min(100, w-10)
+        fwin = curses.newwin(f_h, f_w, (h-f_h)//2, (w-f_w)//2)
+        fwin.box()
+        fwin.keypad(True)
+        fsel = 0
+        while True:
+            fwin.erase()
+            fwin.box()
+            title = f" Select file to tail ({prog}) "
+            fwin.addstr(0, (f_w - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            
+            # Show visible files in the selection window
+            max_sel_rows = f_h - 4
+            sel_scroll = max(0, fsel - max_sel_rows + 1)
+            
+            for i in range(min(max_sel_rows, len(files))):
+                idx = sel_scroll + i
+                if idx < len(files):
+                    # Icons consistent with Open Files pane
+                    is_special = any(x in path for x in ["socket:[", "pipe:[", "anon_inode:", "pidfd"])
+                    
+                    # Heuristic for binary in selection list too
+                    is_binary = False
+                    if not is_special:
+                        binary_ext = ('.so', '.bin', '.exe', '.db', '.dat', '.png', '.zip', '.gz')
+                        if path.lower().endswith(binary_ext) or path.startswith("/dev/"):
+                            is_binary = True
+                    
+                    if is_special: icon = "⚙️  "
+                    elif is_binary: icon = "💾 "
+                    else: icon = "📄 "
+                    
+                    attr = curses.A_REVERSE if idx == fsel else curses.A_NORMAL
+                    if is_special:
+                        attr |= curses.A_DIM
+                    
+                    fwin.addstr(2+i, 2, f"{fd:>3} | {icon}{path[:f_w-18]}", curses.color_pair(CP_TEXT) | attr)
+            
+            help_footer = " [Enter/T] Tail Selected 🦊 | [ESC/Q] Cancel "
+            fwin.addstr(f_h-1, max(1, (f_w - len(help_footer)) // 2), help_footer, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+            
+            fwin.refresh()
+            k = fwin.getch()
+            if k in (ord('q'), 27): del fwin; return
+            if k == curses.KEY_UP and fsel > 0: fsel -= 1
+            elif k == curses.KEY_DOWN and fsel < len(files)-1: fsel += 1
+            elif k in (10, curses.KEY_ENTER, ord('t'), ord('T')):
+                path = files[fsel][1]
+                break
+        del fwin
+    else:
+        path = target_path
+
+    # Filter out sockets, pipes, etc. before tailing
+    if any(x in path for x in ["socket:[", "pipe:[", "anon_inode:", "pidfd"]):
+        show_message(stdscr, "Cannot tail non-file descriptor (socket/pipe/internal).")
+        return
+
+    if not os.path.exists(path) or os.path.isdir(path):
+        # Maybe it's a character device like /dev/pts/X
+        if not os.path.exists(path) or (not path.startswith("/dev/")):
+             show_message(stdscr, "Access denied or file does not exist.")
+             return
+
+    # Check if file is likely binary (more robust heuristic)
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            # First, check common text-like extensions to bail out early
+            text_exts = ('.log', '.txt', '.py', '.sh', '.json', '.xml', '.yaml', '.yml', '.md', '.conf', '.cfg')
+            if not path.lower().endswith(text_exts):
+                with open(path, 'rb') as f:
+                    chunk = f.read(1024)
+                    if not chunk: return
+                    # Count null bytes and non-printable chars
+                    null_count = chunk.count(b'\x00')
+                    # A small number of nulls might be okay in some text encodings, 
+                    # but usually 1 is enough to be suspicious. 
+                    # Let's check the ratio of non-ascii/non-printable
+                    printable = bytes(range(32, 127)) + b'\n\r\t'
+                    non_printable = sum(1 for b in chunk if b not in printable)
+                    
+                    if null_count > 0 or (non_printable / len(chunk) > 0.3):
+                        if not confirm_dialog(stdscr, "File appears to be binary. Tail anyway?"):
+                            return
+    except: pass
+
+    h, w = stdscr.getmaxyx()
     twin = curses.newwin(h-6, w-10, 3, 5)
     twin.box()
     twin.timeout(200)
-    title = f" 📄 Tail File: {path} "
+    twin.keypad(True)
+    
+    # We'll use tail -f via subprocess
     try:
-        tproc = subprocess.Popen(["tail", "-f", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    except: return
+        tproc = subprocess.Popen(["tail", "-f", "-n", str(h-10), path], 
+                                 stdout=subprocess.PIPE, 
+                                 stderr=subprocess.STDOUT, 
+                                 text=False) # bufsize=1 not supported in binary mode
+    except Exception as e:
+        show_message(stdscr, f"Tail error: {e}")
+        return
+    
+    # Set non-blocking read
+    import fcntl
+    fd = tproc.stdout.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
     
     tlines = []
+    title = f" 📄 Tail: {os.path.basename(path)} "
+    help_text = " [q/ESC] Close | [s] Stop Stream "
+    
     while True:
-        import select
-        if select.select([tproc.stdout], [], [], 0)[0]:
-            line = tproc.stdout.readline()
-            if line:
-                tlines.append(line.strip())
-                if len(tlines) > h - 10: tlines.pop(0)
+        try:
+            line_bytes = tproc.stdout.readline()
+            if line_bytes:
+                line = line_bytes.decode('utf-8', 'replace').rstrip('\n')
+                tlines.append(line)
+                if len(tlines) > h - 10:
+                    tlines.pop(0)
+        except (IOError, TypeError):
+            pass
+            
         twin.erase()
         twin.box()
-        twin.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
-        for i, l in enumerate(tlines):
-            try: twin.addstr(1+i, 2, l[:w-14], curses.color_pair(CP_TEXT))
-            except: pass
+        try:
+            twin.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            twin.addstr(h-7, (w-10-len(help_text))//2, help_text, curses.color_pair(CP_ACCENT))
+            
+            for i, l in enumerate(tlines):
+                # Sanitize line (remove non-printable)
+                clean_l = "".join(c for c in l if c.isprintable())
+                twin.addstr(1+i, 2, clean_l[:w-14], curses.color_pair(CP_TEXT))
+        except: pass
+        
         twin.refresh()
-        if twin.getch() == 27: break
+        k = twin.getch()
+        if k in (ord('q'), ord('Q'), 27): break
+        if k in (ord('s'), ord('S')):
+            # Pause/Stop stream toggle (simulated by stop reading)
+            confirm_dialog(stdscr, "Tailing paused. Press enter to close.")
+            break
+            
     tproc.terminate()
+    try: tproc.wait(timeout=0.5)
+    except: pass
     del twin
-    del fwin
 
 def draw_top_tabs(stdscr, active_tab_index):
     global LOADED_PLUGINS
@@ -8031,6 +8381,9 @@ def main(stdscr, args=None):
     # 0: Table, 1: Open Files, 2: User Profile, 3: Detail Info
     active_pane = 0 
     maximized_pane = None
+    open_files_selected_idx = 0
+    open_files_sort_mode = 0 # 0:fd, 1:size, 2:ctime, 3:mtime, 4:type, 5:path
+    open_files_query = ""
     
     while True:
         # ------------------------------------------------------------------
@@ -8120,6 +8473,9 @@ def main(stdscr, args=None):
             if selection_changed:
                 last_selected_change_time = now
                 last_selected = selected
+                # Reset open files view on selection change
+                open_files_selected_idx = 0
+                open_files_scroll = 0
 
             selection_stable = (now - last_selected_change_time) >= SELECT_STABLE_TTL
             
@@ -8176,7 +8532,8 @@ def main(stdscr, args=None):
                     pid = rows[selected][4] if selected>=0 and selected < len(rows) else "-"
                     prog = rows[selected][3] if selected>=0 and selected < len(rows) else "-"
                     files = get_open_files_cached(pid)
-                    draw_open_files(max_win, pid, prog, files, scroll=open_files_scroll, is_active=True)
+                    sk = ["fd", "size", "type", "ctime", "mtime", "path"][open_files_sort_mode]
+                    draw_open_files(max_win, pid, prog, files, selected_idx=open_files_selected_idx, scroll=open_files_scroll, is_active=True, sort_key=sk, query=open_files_query, hide_footer=True)
                 elif maximized_pane == 2:
                     if user != "-":
                         user_data = get_user_info_cached(user)
@@ -8188,7 +8545,10 @@ def main(stdscr, args=None):
                 
                 # Add ESC to exit maximize hint
                 try:
-                    esc_msg = " 🔍 MAXIMIZED VIEW — Press [ESC] or [Enter] to Restore ✨ "
+                    if maximized_pane == 1:
+                        esc_msg = " [ESC/Enter] Restore | [s] Sort [f] Filter [t] Tail 🦊 "
+                    else:
+                        esc_msg = " [ESC/Enter] Restore | [t] Tail 🦊 "
                     max_win.addstr(h - 2, max(1, (main_w - len(esc_msg)) // 2), esc_msg, curses.color_pair(CP_TEXT) | curses.A_BOLD | curses.A_REVERSE)
                     max_win.noutrefresh()
                 except:
@@ -8216,7 +8576,8 @@ def main(stdscr, args=None):
                 except: pass
                 
                 files = get_open_files_cached(pid)
-                draw_open_files(open_files_win, pid, prog, files, scroll=open_files_scroll, is_active=(active_pane == 1))
+                sk = ["fd", "size", "type", "ctime", "mtime", "path"][open_files_sort_mode]
+                draw_open_files(open_files_win, pid, prog, files, selected_idx=open_files_selected_idx, scroll=open_files_scroll, is_active=(active_pane == 1), sort_key=sk, query=open_files_query)
 
                 if user_win:
                     user_data = get_user_info_cached(user)
@@ -8351,6 +8712,8 @@ def main(stdscr, args=None):
             
         if k == 9 or k == KEY_TAB:
             active_pane = (active_pane + 1) % 4
+        elif k == curses.KEY_BTAB:
+            active_pane = (active_pane - 1) % 4
             
         elif k == 10 or k == curses.KEY_ENTER:
             if maximized_pane is None:
@@ -8361,8 +8724,10 @@ def main(stdscr, args=None):
         elif k == curses.KEY_UP:
             if active_pane == 0 and selected > 0:
                 selected -= 1
-            elif active_pane == 1 and open_files_scroll > 0:
-                open_files_scroll -= 1
+            elif active_pane == 1 and open_files_selected_idx > 0:
+                open_files_selected_idx -= 1
+                if open_files_selected_idx < open_files_scroll:
+                    open_files_scroll = open_files_selected_idx
             elif active_pane == 3 and detail_scroll > 0:
                 detail_scroll -= 1
                 
@@ -8370,10 +8735,83 @@ def main(stdscr, args=None):
             if active_pane == 0 and selected < len(rows) - 1:
                 selected += 1
             elif active_pane == 1:
-                open_files_scroll += 1
+                files = get_open_files_cached(pid)
+                # We MUST count filtered files for correct boundary
+                filtered_count = 0
+                for f in files:
+                    p = f[1]
+                    is_spec = any(x in p for x in ["socket:[", "pipe:[", "anon_inode:", "[pidfd]", "dmabuf:"])
+                    is_bin = False
+                    if not is_spec:
+                        binary_ext = ('.so', '.bin', '.exe', '.db', '.dat', '.png', '.jpg', '.zip', '.gz', '.tar', '.o', '.pyc', '.pak', '.bdic')
+                        if p.lower().endswith(binary_ext) or p.startswith("/dev/") or "/leveldb/" in p.lower() or "/gpcache/" in p.lower() or "/gpucache/" in p.lower():
+                            is_bin = True
+                    f_tp = "Special" if is_spec else ("Binary" if is_bin else "Text")
+                    if open_files_query:
+                        q = open_files_query.lower()
+                        if q not in p.lower() and q not in f_tp.lower(): continue
+                    filtered_count += 1
+
+                if open_files_selected_idx < filtered_count - 1:
+                    open_files_selected_idx += 1
+                    of_h, _ = (open_files_win.getmaxyx() if maximized_pane is None else max_win.getmaxyx())
+                    if open_files_selected_idx >= open_files_scroll + (of_h - 7): # Use 7 due to header lines
+                        open_files_scroll += 1
             elif active_pane == 3 and detail_scroll < max(0, cached_total_lines - (h - 3)):
                 detail_scroll += 1
                 
+        # Open Files Pane Specific Commands
+        if active_pane == 1:
+            if k in (ord('s'), ord('S')):
+                open_files_sort_mode = (open_files_sort_mode + 1) % 6
+                continue
+            elif k in (ord('f'), ord('F')):
+                new_q = get_input_modal(stdscr, "Filter path/type:", open_files_query)
+                if new_q is not None:
+                    open_files_query = new_q
+                    open_files_selected_idx = 0
+                    open_files_scroll = 0
+                continue
+            elif k in (ord('t'), ord('T')): # Handle 't' for tail specifically when active
+                files = get_open_files_cached(pid)
+                display_files = []
+                for f in files:
+                    fd, path, size, mtime, ctime = f
+                    is_special = any(x in path for x in ["socket:[", "pipe:[", "anon_inode:", "[pidfd]", "dmabuf:"])
+                    is_binary = False
+                    if not is_special:
+                        binary_ext = ('.so', '.bin', '.exe', '.db', '.dat', '.png', '.jpg', '.zip', '.gz', '.tar', '.o', '.pyc', '.pak', '.bdic')
+                        if path.lower().endswith(binary_ext) or path.startswith("/dev/") or "/leveldb/" in path.lower() or "/gpcache/" in path.lower() or "/gpucache/" in path.lower(): 
+                            is_binary = True
+                    f_type = "Special" if is_special else ("Binary" if is_binary else "Text")
+                    if open_files_query:
+                        q = open_files_query.lower()
+                        if q not in path.lower() and q not in f_type.lower(): continue
+                    display_files.append((fd, path, size, mtime, ctime, f_type))
+                
+                sk_name = ["fd", "size", "type", "ctime", "mtime", "path"][open_files_sort_mode]
+                reverse = True if sk_name in ['size', 'mtime', 'ctime'] else False
+                if sk_name == 'size': display_files.sort(key=lambda x: x[2], reverse=reverse)
+                elif sk_name == 'mtime': display_files.sort(key=lambda x: x[3], reverse=reverse)
+                elif sk_name == 'ctime': display_files.sort(key=lambda x: x[4], reverse=reverse)
+                elif sk_name == 'type': display_files.sort(key=lambda x: x[5])
+                elif sk_name == 'path': display_files.sort(key=lambda x: x[1].lower())
+                else: display_files.sort(key=lambda x: int(x[0]) if (len(x) > 0 and str(x[0]).isdigit()) else 9999)
+                
+                if display_files and 0 <= open_files_selected_idx < len(display_files):
+                    target_path = display_files[open_files_selected_idx][1]
+                    draw_file_tail_window(stdscr, pid, prog, target_path=target_path)
+                
+                stdscr.touchwin()
+                curses.doupdate()
+                continue
+            elif k == ord('e'):
+                show_env_vars_modal(stdscr, pid, prog)
+                stdscr.touchwin(); curses.doupdate(); continue
+            elif k == ord('u'):
+                show_redirections_modal(stdscr, pid, prog)
+                stdscr.touchwin(); curses.doupdate(); continue
+            
         # Main Table commands are restricted to when active_pane == 0
         if active_pane == 0:
             if k == KEY_SEP_UP and table_h < max(6, h - 2):
@@ -8398,6 +8836,14 @@ def main(stdscr, args=None):
             elif k == KEY_FIREWALL and selected >= 0 and rows:
                 port = rows[selected][0]
                 toggle_firewall(port, stdscr, firewall_status)
+            elif k == ord('e') and selected >= 0 and rows:
+                pid = rows[selected][4]
+                prog = rows[selected][3]
+                show_env_vars_modal(stdscr, pid, prog)
+            elif k == ord('u') and selected >= 0 and rows:
+                pid = rows[selected][4]
+                prog = rows[selected][3]
+                show_redirections_modal(stdscr, pid, prog)
                 
         # Global hotkeys
         if k == ord('r'):
@@ -8439,9 +8885,26 @@ def main(stdscr, args=None):
             except: pass
             rows = parse_ss_cached()
             splash_screen(stdscr, rows, cache)
+        elif k in (ord('t'), ord('T')):
+            if active_pane == 1:
+                # Tail the currently selected file in the pane
+                files = get_open_files_cached(pid)
+                if files and 0 <= open_files_selected_idx < len(files):
+                    path = files[open_files_selected_idx][1]
+                    draw_file_tail_window(stdscr, pid, prog, target_path=path)
+                else:
+                    show_message(stdscr, "No file selected to tail.")
+            else:
+                # Fallback to selection modal
+                if selected >= 0:
+                    port, proto, pidprog, prog, pid = rows[selected]
+                    draw_file_tail_window(stdscr, pid, prog)
+            
+            stdscr.touchwin()
+            curses.doupdate()
             continue
 
-            offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
+        offset = min(max(selected - visible_rows // 2, 0), max(0, len(rows) - visible_rows))
 
 
 # ═══════════════════════════════════════════════════════════════

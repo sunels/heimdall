@@ -65,6 +65,9 @@
   - 📊 **Risk-Prioritized Alerts**: New findings are automatically scored using CVSS metrics and filtered to exclude noise.
   - 💾 **Persistent Local Cache**: Uses `~/.cache/heimdall/` to store NVD results for 24h, preventing API rate limits.
   - 📡 **Threat Enrichment**: Injects CISA KEV (Known Exploited) and EPSS risk data into every CVE.
+- 🌍 **Process Environment Variables (e)**: View all `ENV` variables for any running process (e.g., PATH, USER, custom app configs).
+- ⇄ **Standard Stream Redirections (u)**: Track where `stdin`, `stdout`, and `stderr` are pointing (files, pipes, or sockets) and tail them live.
+- 📂 **Enhanced Open Files (v1.0.9)**: High-density file list with dynamic columns, file type icons (📄, 💾, ⚙️), and smart binary detection.
 - 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights.
 
 ---
@@ -230,6 +233,21 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 📂 Open Files — Detailed Path, Size & Type Analysis
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-28.png" alt="heimdall open files enhanced" width="100%"/>
+
+---
+
+### 🌍 Process Environment Variables — Deep Runtime Context (e)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-29.png" alt="heimdall env vars" width="100%"/>
+
+---
+
+### ⇄ Process Redirections — Tracking stdin/stdout/stderr & Live Tail (u)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-30.png" alt="heimdall redirections tail" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -246,6 +264,8 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | f | Toggle firewall for selected port |
 | a | Actions (open Action Center modal) |
 | i | Inspect / Deep Information modal |
+| e | Process Environment Variables modal |
+| u | Process Redirections & Stream Tail modal |
 | F | Filter (Port, PID, User modal) |
 | z | System Services Manager modal (TAB to switch view, 'i' for info) |
 | o | Outbound Connections Modal (**Space**: Freeze, **t**: Tail, **f**: Tail Files, **S**: HTTP Summary) |
