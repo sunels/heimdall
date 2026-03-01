@@ -51,7 +51,8 @@
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
 - 🐞 **Internal Debug Logging**: Trace complex process behaviors in `~/.config/heimdall/debug.log`.
-- 🌐 **Outbound Connections Modal (o)** (v1.0.6): High-density interactive monitor for external traffic.
+- 🌐 **Outbound Connections Modal (o)** (v1.0.8): High-density interactive monitor for external traffic.
+  - 📊 **HTTP Accurate Monitor (S)** (v1.0.8): Real-time per-process HTTP endpoint tracker (Method/Host/Path).
   - 🕵️ **Zero-Loss Traffic Tail (t)**: Re-architected with OS-level file buffering for terminal-grade performance and no packet loss.
   - ⏸️ **Freeze View (Space)**: Instantly lock the live list for stable analysis.
   - 📊 **Real-time Stats**: Sent/Received bytes, duration, last activity, and protocol (TCP/UDP).
@@ -224,6 +225,11 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ---
 
+### 📊 HTTP Accurate Monitor — Per-Process HTTP Inspector (S)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-27.png" alt="heimdall http monitor" width="100%"/>
+
+---
+
 
 ## 🎮 Key Bindings
 
@@ -242,7 +248,7 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 | i | Inspect / Deep Information modal |
 | F | Filter (Port, PID, User modal) |
 | z | System Services Manager modal (TAB to switch view, 'i' for info) |
-| o | Outbound Connections Modal (**Space**: Freeze, **t**: Tail, **f**: Tail Files) |
+| o | Outbound Connections Modal (**Space**: Freeze, **t**: Tail, **f**: Tail Files, **S**: HTTP Summary) |
 | d | Full System Dump (Reports all services/units to file) |
 | p | Settings (Auto-update, etc.) |
 | q | Quit |

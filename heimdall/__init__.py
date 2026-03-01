@@ -40,6 +40,10 @@ except ImportError:
 import webbrowser
 from pathlib import Path
 import math
+import queue
+import threading
+import select
+import signal
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -7530,7 +7534,7 @@ def draw_outbound_modal(stdscr):
         # Footer
         try:
             p_status = "[FROZEN]" if paused else ""
-            footer = f" [f] Filter  [s] Sort  [Space] {p_status or 'Freeze'}  [r] Refresh  [t] Tail Traffic  [ESC] Close"
+            footer = f" [f] Filter  [Space] {p_status or 'Freeze'}  [r] Refresh  [t] Tail Traffic  [S] HTTP Summary  [ESC] Close"
             win.addstr(bh_actual - 2, 2, footer[:bw_actual-4], curses.color_pair(CP_ACCENT) | curses.A_DIM)
         except: pass
 
@@ -7552,6 +7556,9 @@ def draw_outbound_modal(stdscr):
             # Simple Filter Dialog
             filters["proc"] = get_input_modal(stdscr, "Filter Process Name:", filters["proc"])
             filters["remote"] = get_input_modal(stdscr, "Filter Remote IP/Port:", filters["remote"])
+        elif k == ord('S') and rows: # Capital S for Summary
+            d = rows[selected]
+            draw_http_summary_modal(stdscr, d)
         elif k == ord('s'):
             # Sort choice
             sort_opts = [("l", "Last Activity", "last_active"), ("s", "Sent Bytes", "sent"), ("d", "Duration", "duration"), ("p", "Process Name", "prog")]
@@ -7712,10 +7719,165 @@ def draw_traffic_tail_window(stdscr, conn_info):
 
     # Clean up
     try:
-        import signal
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except: pass
     del win
+
+def draw_http_summary_modal(stdscr, conn_info):
+    h, w = stdscr.getmaxyx()
+    # Compact sizing: max 15 lines height, max 85 columns width
+    win_h = min(h - 4, 15)
+    win_w = min(w - 4, 85)
+    # Perfectly centered
+    start_y = (h - win_h) // 2
+    start_x = (w - win_w) // 2
+    win = curses.newwin(win_h, win_w, start_y, start_x)
+    win.box()
+    win.keypad(True)
+    win.timeout(100)
+    
+    start_time = datetime.now().strftime("%H:%M:%S")
+    title = f" 📊 HTTP Accurate Monitor: {conn_info['prog']} "
+    target_pid = conn_info['pid']
+    
+    def get_current_ips(pid):
+        ips = {conn_info['remote_ip']}
+        try:
+            import psutil
+            p = psutil.Process(pid)
+            for c in p.connections(kind='inet'):
+                if c.raddr: ips.add(c.raddr.ip)
+        except: pass
+        return ips
+
+    # Initial capture IPs
+    active_ips = get_current_ips(target_pid)
+    ip_filter = " or ".join([f"host {ip}" for ip in active_ips])
+    is_encrypted = str(conn_info['remote_port']) == "443"
+
+    import queue
+    data_queue = queue.Queue()
+    stop_event = threading.Event()
+    
+    # CRITICAL: Added single quotes around the filter to prevent shell expansion of ()
+    cmd = f"sudo tcpdump -U -l -nn -A -s 2048 -i any '{ip_filter}' 2>/dev/null"
+    
+    def reader_thread(proc, q, ev):
+        try:
+            while not ev.is_set():
+                r, _, _ = select.select([proc.stdout], [], [], 0.1)
+                if r:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk: break
+                    q.put(chunk)
+        except: pass
+
+    proc = None
+    if not is_encrypted:
+        try:
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, preexec_fn=os.setsid)
+            t = threading.Thread(target=reader_thread, args=(proc, data_queue, stop_event), daemon=True)
+            t.start()
+        except Exception as e:
+            show_message(stdscr, f"Error: {e}")
+            return
+
+    stats = {}
+    session_host = ""
+    overlap_buffer = ""
+    total_bytes = 0
+    
+    METHOD_ICONS = {
+        "GET": "📥 GET", "POST": "📤 POST", "PUT": "📝 PUT", 
+        "PATCH": "🔧 PATCH", "DELETE": "❌ DELETE", "HEAD": "🔍 HEAD", "OPTIONS": "⚙️  OPTS"
+    }
+
+    last_ip_update = time.time()
+
+    while True:
+        # Periodically refresh IPs to catch new load-test connections
+        if time.time() - last_ip_update > 5:
+            new_ips = get_current_ips(target_pid)
+            if new_ips != active_ips:
+                # We show the delta in UI
+                active_ips = new_ips
+            last_ip_update = time.time()
+
+        while not data_queue.empty():
+            chunk = data_queue.get_nowait()
+            total_bytes += len(chunk)
+            # Combine with overlap to catch patterns split across chunks
+            text = overlap_buffer + chunk
+            overlap_len = len(overlap_buffer)
+            overlap_buffer = text[-1024:] 
+            
+            # 1. Update Host (with deduplication)
+            hosts = re.finditer(r'Host:\s+(\S+)', text, re.I)
+            for h_match in hosts:
+                if h_match.end() > overlap_len:
+                    new_host = h_match.group(1).strip()
+                    if new_host and new_host != session_host:
+                        to_migrate = [k for k in stats.keys() if not k[1].startswith(new_host) and k[1].startswith("/")]
+                        for m_key in stats.copy(): # Safely iterate over keys to pop
+                            if m_key in to_migrate:
+                                new_key = (m_key[0], f"{new_host}{m_key[1]}")
+                                stats[new_key] = stats.get(new_key, 0) + stats.pop(m_key)
+                        session_host = new_host
+
+            # 2. Match Method + Path (with deduplication)
+            matches = re.finditer(r'(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s\r\n]+)', text, re.I)
+            for m in matches:
+                if m.end() > overlap_len:
+                    method = m.group(1).upper()
+                    path = m.group(2).split('?')[0].split('#')[0]
+                    path = path.replace("http://", "").replace("https://", "")
+                    
+                    full_endpoint = path
+                    if path.startswith("/") and session_host:
+                        full_endpoint = f"{session_host}{path}"
+                    
+                    key = (method, full_endpoint)
+                    stats[key] = stats.get(key, 0) + 1
+
+        win.erase()
+        win.box()
+        # Full centering within the compact window
+        win.addstr(0, (win_w-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        win.addstr(1, 2, f"⏱️  {start_time}", curses.A_DIM)
+        win.addstr(1, win_w-15, f"📡  Nodes: {len(active_ips)}", curses.color_pair(CP_ACCENT))
+        
+        if is_encrypted:
+            win.addstr(win_h//2, (win_w-20)//2, "🔒  HTTPS Encrypted", curses.color_pair(CP_WARN) | curses.A_BOLD)
+        elif not stats:
+            msg = f"📡  Listening ({total_bytes//1024} KB rcvd)..."
+            win.addstr(win_h//2, (win_w-len(msg))//2, msg, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+        else:
+            # Table Header for win_w=85
+            header = f"  {'Method':<10} {'Full Endpoint (Host/Path)':<55} {'Count':>10}"
+            win.addstr(2, 1, header, curses.color_pair(CP_ACCENT) | curses.A_BOLD | curses.A_UNDERLINE)
+            
+            sorted_items = sorted(stats.items(), key=lambda x: x[1], reverse=True)
+            # Display rows (max win_h-6 to fit headers and footer)
+            for i, ((method, endpoint), count) in enumerate(sorted_items[:win_h-6]):
+                icon = METHOD_ICONS.get(method, method)
+                try:
+                    win.addstr(3 + i, 3, f"{icon:<10}", curses.color_pair(CP_TEXT))
+                    win.addstr(3 + i, 14, f"{endpoint[:54]:<55}", curses.color_pair(CP_TEXT))
+                    win.addstr(3 + i, 70, f"{count:>10}", curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+                except: pass
+
+        stats_total = sum(stats.values())
+        footer = f" [ESC] Close   Hits: {stats_total}   Data: {total_bytes/1024:.1f} KB"
+        win.addstr(win_h - 2, 2, footer, curses.A_DIM)
+        win.refresh()
+        if win.getch() == 27: break
+
+    stop_event.set()
+    if proc:
+        try: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except: pass
+    del win
+
 
 def draw_file_tail_window(stdscr, pid, prog):
     files = get_open_files(pid)
