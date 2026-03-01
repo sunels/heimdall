@@ -1,10 +1,11 @@
-## 📜 User Intelligence & history Tail (v1.3.0)
+## 📜 User Intelligence & history Tail (v1.3.1)
 
 This release significantly expands user-level diagnostics with deep command history tracking and real-time history tailing.
 
-### **✨ New Features (v1.3.0)**
+### **✨ New Features (v1.3.1)**
 - **User History Tail (`t`)**: Press 't' while the User Profile pane is active to instantly tail the owner's `.bash_history`.
 - **Deep History Buffer**: Command history capture increased to 1000 lines for a more comprehensive "Allah ne verdiyse" view.
+- **Improved Header**: The "Open Files" pane now explicitly shows the program name and PID for better navigation.
 - **Expanded User Pane**: Increased default height and improved layout for better command visibility.
 - **Optimized Layout**: Adjusted startup layout to give 3 additional lines to the main process table, reducing the initial detail pane height.
 - **Context-Aware Tail**: The 't' shortcut now intelligently handles different panes (Open Files, User Profile, or Main Table) even when maximized.
