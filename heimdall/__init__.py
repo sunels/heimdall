@@ -5672,7 +5672,7 @@ def draw_open_files(win, pid, prog, files, selected_idx=-1, scroll=0, is_active=
     
     # Header drawing
     try:
-        win.addstr(1, 2, f"📂 PID {pid} ({len(display_files)})", curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        win.addstr(1, 2, f"📂 Open Files: {prog} ({pid}) | Count: {len(display_files)}", curses.color_pair(CP_HEADER) | curses.A_BOLD)
         
         col_header_y = 3
         curr_x = 2
