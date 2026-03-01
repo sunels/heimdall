@@ -8305,6 +8305,65 @@ def draw_top_tabs(stdscr, active_tab_index):
     stdscr.chgat(0, 0, w, curses.color_pair(CP_HEADER) | curses.A_REVERSE)
 
 
+def exit_animation(stdscr):
+    """Melting effect: characters fall to the bottom of the screen."""
+    import random
+    import time
+    try:
+        h, w = stdscr.getmaxyx()
+        chars = []
+        # Capture screen content
+        for y in range(h):
+            for x in range(w):
+                try:
+                    ch = stdscr.inch(y, x)
+                    char = ch & 0xFF
+                    if char != ord(' '):
+                        attr = ch & ~0xFF
+                        chars.append({
+                            'y': float(y), 
+                            'x': x, 
+                            'char': char, 
+                            'attr': attr, 
+                            'v': 0.0, # Velocity
+                            'delay': random.uniform(0, 0.8) # Staggered start
+                        })
+                except: continue
+        
+        curses.curs_set(0)
+        start_time = time.time()
+        
+        while True:
+            elapsed = time.time() - start_time
+            still_falling = False
+            stdscr.erase()
+            
+            for c in chars:
+                if elapsed > c['delay']:
+                    if c['y'] < h - 1:
+                        c['v'] += 0.15 # Gravity
+                        c['y'] += c['v']
+                        if c['y'] >= h - 1:
+                            c['y'] = h - 1
+                        else:
+                            still_falling = True
+                else:
+                    still_falling = True
+                
+                try:
+                    # Draw character at calculated integer position
+                    stdscr.addch(int(c['y']), c['x'], c['char'], c['attr'])
+                except: pass
+            
+            stdscr.refresh()
+            if not still_falling or elapsed > 3.0:
+                break
+            time.sleep(0.02)
+            
+        time.sleep(0.1)
+    except:
+        pass
+
 def main(stdscr, args=None):
     global TRIGGER_REFRESH, TRIGGER_LIST_ONLY, SCANNING_STATUS_EXP, SNAPSHOT_MODE
     global PENDING_IPC_ALERT, CURRENT_THEME_INDEX
@@ -8690,6 +8749,8 @@ def main(stdscr, args=None):
                 k = next_k
 
         if k == ord('q'):
+            # Play exit animation
+            exit_animation(stdscr)
             # Cleanup IPC
             try:
                 if os.path.exists(IPC_SOCKET_PATH):
