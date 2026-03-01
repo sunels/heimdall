@@ -8525,7 +8525,7 @@ def main(stdscr, args=None):
                 of_w = 35
             table_w = main_w - of_w
             user = cache.get(rows[selected][0] if selected>=0 and selected<len(rows) else "-", {}).get("user", "-")
-            req_user_pane_h = 14
+            req_user_pane_h = 12
             
             # debounce heavy detail fetch: only update cached_wrapped_lines / conn_info when selection stable
             now = time.time()
