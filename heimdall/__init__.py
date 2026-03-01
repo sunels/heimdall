@@ -7396,7 +7396,7 @@ def _fetch_user_info_worker(username):
         except:
             pass
         
-        data["commands"] = cmds[-10:] if cmds else []
+        data["commands"] = cmds[-1000:] if cmds else []
 
         with _user_info_lock:
             _user_info_cache[username] = (data, time.time())
@@ -8159,6 +8159,7 @@ def draw_file_tail_window(stdscr, pid, prog, target_path=None):
             for i in range(min(max_sel_rows, len(files))):
                 idx = sel_scroll + i
                 if idx < len(files):
+                    fd, path = files[idx][0], files[idx][1]
                     # Icons consistent with Open Files pane
                     is_special = any(x in path for x in ["socket:[", "pipe:[", "anon_inode:", "pidfd"])
                     
@@ -8433,7 +8434,7 @@ def main(stdscr, args=None):
     # Runtime state variables
     open_files_scroll = 0
     h, w = stdscr.getmaxyx()
-    table_h = h // 2
+    table_h = (h // 2) + 3
     offset = 0
     selected = 0
     
@@ -8524,7 +8525,7 @@ def main(stdscr, args=None):
                 of_w = 35
             table_w = main_w - of_w
             user = cache.get(rows[selected][0] if selected>=0 and selected<len(rows) else "-", {}).get("user", "-")
-            req_user_pane_h = 10
+            req_user_pane_h = 14
             
             # debounce heavy detail fetch: only update cached_wrapped_lines / conn_info when selection stable
             now = time.time()
@@ -8947,16 +8948,33 @@ def main(stdscr, args=None):
             rows = parse_ss_cached()
             splash_screen(stdscr, rows, cache)
         elif k in (ord('t'), ord('T')):
-            if active_pane == 1:
+            # Selection variables for the tail logic
+            curr_pid = pid
+            curr_prog = prog
+            curr_user = user
+            
+            # Context-aware tailing
+            if active_pane == 1 or maximized_pane == 1:
                 # Tail the currently selected file in the pane
-                files = get_open_files_cached(pid)
-                if files and 0 <= open_files_selected_idx < len(files):
-                    path = files[open_files_selected_idx][1]
-                    draw_file_tail_window(stdscr, pid, prog, target_path=path)
+                files_sel = get_open_files_cached(curr_pid)
+                if files_sel and 0 <= open_files_selected_idx < len(files_sel):
+                    t_path = files_sel[open_files_selected_idx][1]
+                    draw_file_tail_window(stdscr, curr_pid, curr_prog, target_path=t_path)
                 else:
                     show_message(stdscr, "No file selected to tail.")
+            elif active_pane == 2 or maximized_pane == 2:
+                # Tail user history file if possible
+                user_data = get_user_info_cached(curr_user)
+                if user_data:
+                    h_file = os.path.join(user_data.get("home", ""), ".bash_history")
+                    if os.path.exists(h_file):
+                        draw_file_tail_window(stdscr, curr_pid, curr_prog, target_path=h_file)
+                    else:
+                        show_message(stdscr, f"No .bash_history found for {curr_user}")
+                else:
+                    show_message(stdscr, "User data not ready.")
             else:
-                # Fallback to selection modal
+                # Fallback to selection modal for the main table process
                 if selected >= 0:
                     port, proto, pidprog, prog, pid = rows[selected]
                     draw_file_tail_window(stdscr, pid, prog)

@@ -65,9 +65,10 @@
   - 📊 **Risk-Prioritized Alerts**: New findings are automatically scored using CVSS metrics and filtered to exclude noise.
   - 💾 **Persistent Local Cache**: Uses `~/.cache/heimdall/` to store NVD results for 24h, preventing API rate limits.
   - 📡 **Threat Enrichment**: Injects CISA KEV (Known Exploited) and EPSS risk data into every CVE.
-- 🌍 **Process Environment Variables (e)**: View all `ENV` variables for any running process (e.g., PATH, USER, custom app configs).
-- ⇄ **Standard Stream Redirections (u)**: Track where `stdin`, `stdout`, and `stderr` are pointing (files, pipes, or sockets) and tail them live.
-- 📂 **Enhanced Open Files (v1.0.9)**: High-density file list with dynamic columns, file type icons (📄, 💾, ⚙️), and smart binary detection.
+- 🌍 **Process Environment Variables (e)**: View all `ENV` variables for any running process.
+- ⇄ **Standard Stream Redirections (u)**: Track where `stdin`, `stdout`, and `stderr` are pointing.
+- 📜 **User History Tail (t)** (v1.3.0): Instantly tail a process owner's `.bash_history` directly from the User pane.
+- 📂 **Enhanced Open Files (v1.0.9)**: High-density file list with dynamic columns and type icons.
 - 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights.
 
 ---
@@ -335,15 +336,13 @@ To update, simply download the latest binary and replace the old one.
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases) layer:
  
 ```bash
-sudo dpkg -i heimdall_0.9.7-1_all.deb
-# If dependencies are missing:
-sudo apt update && sudo apt install -f
+sudo dpkg -i heimdall_1.3.0-1_all.deb
 ```
 
 #### 🔄 Update
 Download the new `.deb` file and run the same command:
 ```bash
-sudo dpkg -i heimdall_0.9.7-1_all.deb
+sudo dpkg -i heimdall_1.3.0-1_all.deb
 ```
  
 ---
@@ -356,13 +355,13 @@ sudo dpkg -i heimdall_0.9.7-1_all.deb
 rpmbuild -ba heimdall.rpm.spec
 
 # Install the generated RPM
-sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-0.9.7-1.noarch.rpm
+sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-1.3.0-1.noarch.rpm
 ```
 
 #### 🔄 Update
 Rebuild and reinstall the RPM:
 ```bash
-sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-0.9.7-1.noarch.rpm
+sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-1.3.0-1.noarch.rpm
 ```
  
 ---
@@ -402,7 +401,7 @@ sudo pip3 install --upgrade heimdall-linux --break-system-packages
 
 Or install from the latest wheel:
 ```bash
-pip3 install heimdall-0.9.7-py3-none-any.whl
+pip3 install heimdall-1.3.0-py3-none-any.whl
 ```
 *(Note: Requires `witr` installed separately)*
  

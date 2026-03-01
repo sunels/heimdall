@@ -1,3 +1,18 @@
+## 📜 User Intelligence & history Tail (v1.3.0)
+
+This release significantly expands user-level diagnostics with deep command history tracking and real-time history tailing.
+
+### **✨ New Features (v1.3.0)**
+- **User History Tail (`t`)**: Press 't' while the User Profile pane is active to instantly tail the owner's `.bash_history`.
+- **Deep History Buffer**: Command history capture increased to 1000 lines for a more comprehensive "Allah ne verdiyse" view.
+- **Expanded User Pane**: Increased default height and improved layout for better command visibility.
+- **Optimized Layout**: Adjusted startup layout to give 3 additional lines to the main process table, reducing the initial detail pane height.
+- **Context-Aware Tail**: The 't' shortcut now intelligently handles different panes (Open Files, User Profile, or Main Table) even when maximized.
+
+### **🔧 Bug Fixes**
+- **Tail Selection Crash**: Fixed a `NameError: path` in the file selection modal that caused Heimdall to crash when choosing a file to tail.
+- **Binary Detection**: Improved heuristic handling in the file selection list to correctly identify and iconize binary files.
+
 ## 🌍 Deep Context & Stream Redirections (v1.0.9)
 
 This release introduces deeper process introspection with Environment Variables and I/O Redirection tracking, along with a high-density Open Files pane.
