@@ -3961,10 +3961,9 @@ def show_inspect_modal(stdscr, port, prog, pid, username):
                     f.write("="*60 + "\n")
                     for txt, _ in lines:
                         f.write(txt + "\n")
-                show_message(stdscr, f"Exported to {filename}")
+                show_modal_message(stdscr, f"✅ Exported to {filename}")
             except Exception as e:
-                show_message(stdscr, f"Export failed: {e}")
-            break
+                show_modal_message(stdscr, f"❌ Export failed: {e}")
             
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
@@ -7786,8 +7785,11 @@ def draw_outbound_modal(stdscr):
                     sort_key = field
                     break
         elif k == ord('e'):
-            export_outbound_data(rows)
-            show_modal_message(stdscr, "✅ Outbound data exported to ~/heimdall_outbound_export.json")
+            success, res = export_outbound_data(rows)
+            if success:
+                show_modal_message(stdscr, f"✅ Exported to: {res}")
+            else:
+                show_modal_message(stdscr, f"❌ Export failed: {res}")
         elif k == ord('k') and rows:
             d = rows[selected]
             if confirm_dialog(stdscr, f"Kill connection to {d['remote_ip']}?"):
@@ -7892,9 +7894,13 @@ def kill_connection(remote_ip, remote_port):
     except: return False
 
 def export_outbound_data(rows):
-    path = os.path.expanduser("~/heimdall_outbound_export.json")
-    with open(path, "w") as f:
-        json.dump(rows, f, indent=4)
+    try:
+        path = os.path.expanduser("~/heimdall_outbound_export.json")
+        with open(path, "w", encoding='utf-8') as f:
+            json.dump(rows, f, indent=4, default=str)
+        return True, path
+    except Exception as e:
+        return False, str(e)
 
 def draw_traffic_tail_window(stdscr, conn_info):
     h, w = stdscr.getmaxyx()

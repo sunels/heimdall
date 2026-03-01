@@ -67,7 +67,7 @@
   - 📡 **Threat Enrichment**: Injects CISA KEV (Known Exploited) and EPSS risk data into every CVE.
 - 🌍 **Process Environment Variables (e)**: View all `ENV` variables for any running process.
 - ⇄ **Standard Stream Redirections (u)**: Track where `stdin`, `stdout`, and `stderr` are pointing.
-- 📜 **User History Tail (t)** (v1.3.2): Instantly tail a process owner's `.bash_history` directly from the User pane.
+- 📜 **User History Tail (t)** (v1.3.3): Instantly tail a process owner's `.bash_history` directly from the User pane.
 - 📂 **Enhanced Open Files (v1.0.9)**: High-density file list with dynamic columns and type icons.
 - 🧩 Modal UX: monospace, standard curses box(), 2-space padding, reverse+bold highlights.
 
@@ -336,13 +336,13 @@ To update, simply download the latest binary and replace the old one.
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases) layer:
  
 ```bash
-sudo dpkg -i heimdall_1.3.2-1_all.deb
+sudo dpkg -i heimdall_1.3.3-1_all.deb
 ```
 
 #### 🔄 Update
 Download the new `.deb` file and run the same command:
 ```bash
-sudo dpkg -i heimdall_1.3.2-1_all.deb
+sudo dpkg -i heimdall_1.3.3-1_all.deb
 ```
  
 ---
@@ -355,13 +355,13 @@ sudo dpkg -i heimdall_1.3.2-1_all.deb
 rpmbuild -ba heimdall.rpm.spec
 
 # Install the generated RPM
-sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-1.3.2-1.noarch.rpm
+sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-1.3.3-1.noarch.rpm
 ```
 
 #### 🔄 Update
 Rebuild and reinstall the RPM:
 ```bash
-sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-1.3.2-1.noarch.rpm
+sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-1.3.3-1.noarch.rpm
 ```
  
 ---
@@ -401,7 +401,7 @@ sudo pip3 install --upgrade heimdall-linux --break-system-packages
 
 Or install from the latest wheel:
 ```bash
-pip3 install heimdall-1.3.2-py3-none-any.whl
+pip3 install heimdall-1.3.3-py3-none-any.whl
 ```
 *(Note: Requires `witr` installed separately)*
  
@@ -630,11 +630,11 @@ Invoked from Main View via `[F]`:
   - Press **ESC** (when not typing) to apply filters and return to the main view.
   - Press `[c]` to clear all active filters instantly.
 - **Status Indicator**: When filters are active, a "🔍 Filter: ..." status line appears above the help bar in the main view.
--## 📜 User Intelligence & history Tail (v1.3.2)
+-## 📜 User Intelligence & history Tail (v1.3.3)
 
 This release significantly expands user-level diagnostics with deep command history tracking and real-time history tailing.
 
-### **✨ New Features (v1.3.2)**
+### **✨ New Features (v1.3.3)**
 - **User History Tail (`t`)**: Press 't' while the User Profile pane is active to instantly tail the owner's `.bash_history`.
 - **Deep History Buffer**: Command history capture increased to 1000 lines for a more comprehensive "Allah ne verdiyse" view.
 - **Improved Header**: The "Open Files" pane now explicitly shows the program name and PID for better navigation.
@@ -644,6 +644,7 @@ This release significantly expands user-level diagnostics with deep command hist
 
 ### **🔧 Bug Fixes**
 - **Tail Selection Crash**: Fixed a `NameError: path` in the file selection modal that caused Heimdall to crash when choosing a file to tail.
+- **Inspection Export Fix**: Resolved a bug where exporting data in the System Inspection modal provided no visual feedback and fixed the auto-closing behavior.
 - **Outbound Export Fix**: Resolved a bug where exporting data in the Outbound Connections modal provided no visual feedback and fixed conflicting shortcuts (Filter vs File Tail).
 - **Binary Detection**: Improved heuristic handling in the file selection list to correctly identify and iconize binary files.
 ## 🛡️ Heimdall Sentinel — details
