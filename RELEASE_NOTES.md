@@ -1,6 +1,27 @@
+## 🔌 Native Plugin Experience (v1.4.0)
+
+This release completely overhauls the plugin system architecture for btop and lazydocker, delivering a 100% native tool experience.
+
+### **✨ New Features (v1.4.0)**
+- **Fullscreen Native Plugin Mode**: Plugins now run with full native terminal access instead of degraded embedded rendering.
+  - **All original colors preserved** — lazydocker's blue theme, btop's color scheme displayed exactly as standalone.
+  - **Mouse support** — click navigation works in lazydocker/btop.
+  - **Scrollbars & visual elements** — all TUI features render natively.
+  - **All keyboard shortcuts work** — number keys (1-9), arrows, and tool-specific bindings no longer conflict with Heimdall.
+- **Plugin Keyboard Isolation**: Eliminated shortcut conflicts between Heimdall tab-switching (1-9) and embedded tool shortcuts.
+- **Automatic Return**: When the plugin tool exits (e.g., pressing `q` in btop/lazydocker), Heimdall automatically resumes with full theme restoration.
+
+### **🔧 Architecture Changes**
+- **Removed pyte dependency** for plugin rendering — no more virtual terminal emulation overhead.
+- **Replaced `TERM=vt100`** limitation — plugins now inherit the host terminal's full capabilities (xterm-256color).
+- **curses suspend/resume pattern**: Uses `curses.endwin()` / `stdscr.refresh()` for clean handoff, same proven technique as vim's `:!command`.
+
+
+
 ## 📜 User Intelligence & history Tail (v1.3.3)
 
 This release significantly expands user-level diagnostics with deep command history tracking and real-time history tailing.
+
 
 ### **✨ New Features (v1.3.3)**
 - **User History Tail (`t`)**: Press 't' while the User Profile pane is active to instantly tail the owner's `.bash_history`.

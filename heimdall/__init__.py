@@ -8474,32 +8474,37 @@ def main(stdscr, args=None):
             plugin_idx = active_tab - 1
             if plugin_idx < len(LOADED_PLUGINS):
                 plugin = LOADED_PLUGINS[plugin_idx]
-                # draw shortcuts bar if needed
-                plugin_win = stdscr.derwin(h-1, w, 1, 0)
-                plugin.render(plugin_win)
                 
-                curses.doupdate()
-                k = stdscr.getch()
-                if k == -1: continue
-                
-                if 49 <= k <= 57: # 1-9
-                    idx = k - 49
-                    if idx < len(LOADED_PLUGINS) + 1 and idx != active_tab:
-                        LOADED_PLUGINS[active_tab-1].stop()
-                        active_tab = idx
-                        if active_tab > 0: LOADED_PLUGINS[active_tab-1].start()
-                        stdscr.erase()
+                # Fullscreen mode: suspend curses, run tool natively
+                # Tool gets FULL terminal access (colors, mouse, scrollbars)
+                if getattr(plugin, 'mode', '') == 'fullscreen':
+                    plugin.run_fullscreen(stdscr)
+                    # Tool exited, return to Heimdall
+                    active_tab = 0
+                    stdscr.erase()
+                    # Re-apply Heimdall theme after curses restore
+                    try:
+                        apply_current_theme(stdscr)
+                    except:
+                        pass
                     continue
-                
-                # Tab keys
-                if k == 9 or k == curses.KEY_BTAB:
-                    pass # plugin panes if complex
-
-                if k == ord('q'):
-                    pass # pass to plugin, or quit main? user said q quits tool in plugin
+                else:
+                    # Legacy embedded mode (pyte-based, for non-fullscreen plugins)
+                    plugin_win = stdscr.derwin(h-1, w, 1, 0)
+                    plugin.render(plugin_win)
                     
-                plugin.on_key(k)
-                continue
+                    curses.doupdate()
+                    k = stdscr.getch()
+                    if k == -1: continue
+                    
+                    if k == 27:
+                        plugin.stop()
+                        active_tab = 0
+                        stdscr.erase()
+                        continue
+                    
+                    plugin.on_key(k)
+                    continue
 
         # Periodic background refresh (Auto-scan)
         if not show_detail:
