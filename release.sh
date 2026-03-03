@@ -93,6 +93,9 @@ echo "🚀 Releasing Heimdall v$VERSION..."
 echo "📝 Updating version metadata..."
 echo "$VERSION" > heimdall/VERSION
 sed -i "s/pkgver=[0-9.]*/pkgver=$VERSION/" PKGBUILD
+if [ -f "heimdall.spec" ]; then
+    sed -i "s/Version:        [0-9.]*/Version:        $VERSION/" heimdall.spec
+fi
 
 # Update debian/changelog
 if command -v dch &> /dev/null; then
@@ -107,6 +110,7 @@ fi
 # 6. Clean up old artifacts
 echo "🧹 Cleaning up old artifacts..."
 rm -rf dist/ build/ *.egg-info/ 2>/dev/null || true
+mkdir -p dist/
 
 # 7. Build Python Package (Wheel & Sdist)
 echo "🐍 Building Python Package (Wheel/Sdist)..."
@@ -116,13 +120,35 @@ $PYTHON_CMD -m build
 echo "🐧 Building Debian Package (.deb)..."
 if command -v dpkg-buildpackage &> /dev/null; then
     dpkg-buildpackage -us -uc -b -nc > /dev/null || echo "⚠️ Debian build failed, skipping..."
-    mkdir -p dist/
     mv ../heimdall_${VERSION}-1_all.deb dist/ 2>/dev/null || mv ../heimdall_${VERSION}_all.deb dist/ 2>/dev/null || true
 else
     echo "⚠️ 'dpkg-buildpackage' not found. Skipping .deb build."
 fi
 
-# 9. Upload to PyPI
+# 9. Build RPM Package (.rpm)
+echo "🎩 Building RPM Package (.rpm)..."
+if command -v rpmbuild &> /dev/null; then
+    # We build only from spec for now, assumes source is available locally
+    mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+    tar --exclude='.git' -czf ~/rpmbuild/SOURCES/v${VERSION}.tar.gz .
+    rpmbuild -ba heimdall.spec > /dev/null || echo "⚠️ RPM build failed, skipping..."
+    cp ~/rpmbuild/RPMS/noarch/heimdall-${VERSION}-1*.rpm dist/ 2>/dev/null || true
+else
+    echo "⚠️ 'rpmbuild' not found. Skipping .rpm build."
+fi
+
+# 10. Build Standalone Binary (PyInstaller)
+echo "📦 Building Standalone Binary (PyInstaller)..."
+if command -v pyinstaller &> /dev/null; then
+    pyinstaller --onefile --name heimdall_standalone --distpath dist/ --workpath /tmp/heimdall_build --specpath /tmp \
+      --add-data "heimdall/services.json:." --add-data "heimdall/system-services.json:." \
+      --add-data "heimdall/sentinel_rules.json:." --add-data "heimdall/VERSION:." \
+      --hidden-import psutil --hidden-import curses --strip --log-level WARN heimdall/__main__.py || echo "⚠️ PyInstaller build failed."
+else
+    echo "⚠️ 'pyinstaller' not found. Skipping binary build."
+fi
+
+# 11. Upload to PyPI
 if [ "$TEST_MODE" = true ]; then
     echo "🧪 Uploading to TestPyPI..."
     $TWINE_CMD upload --repository testpypi dist/*.tar.gz dist/*.whl
@@ -133,12 +159,12 @@ else
     PYPI_URL="https://pypi.org/project/heimdall-linux/$VERSION/"
 fi
 
-# 10. Git Tag & Push
+# 12. Git Tag & Push
 echo "🏷️ Creating Git tag v$VERSION..."
 if git rev-parse "v$VERSION" >/dev/null 2>&1; then
     echo "⚠️ Tag v$VERSION already exists."
 else
-    git commit -am "chore: bump version to $VERSION" || true
+    git commit -am "chore: release version $VERSION" || true
     git tag "v$VERSION"
     git push origin "v$VERSION"
     git push origin main

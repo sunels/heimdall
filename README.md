@@ -105,6 +105,107 @@ This eliminates the need to jump between multiple tools such as `ss`, `netstat`,
 
 ---
 
+## 🚀 Installation & Quick Start
+ 
+Choose the installation method that fits your workflow.
+ 
+---
+ 
+### 🐧 Option 1: Debian / Ubuntu (.deb)
+*Native system integration.*
+ 
+Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
+ 
+```bash
+sudo dpkg -i heimdall_1.4.1-1_all.deb
+```
+
+#### 🔄 Update
+Download the new `.deb` file and run the same command:
+```bash
+sudo dpkg -i heimdall_1.4.1-1_all.deb
+```
+ 
+---
+ 
+### 🎩 Option 2: Fedora / RHEL / CentOS (.rpm)
+*Native RPM support.*
+ 
+```bash
+# Build the RPM package
+rpmbuild -ba heimdall.rpm.spec
+
+# Install the generated RPM
+sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-1.4.1-1.noarch.rpm
+```
+
+#### 🔄 Update
+Rebuild and reinstall the RPM:
+```bash
+sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-1.4.1-1.noarch.rpm
+```
+ 
+---
+
+### 🏔️ Option 3: Arch Linux
+*Native Arch Linux package.*
+
+```bash
+# Build and install using the provided PKGBUILD
+makepkg -si
+```
+
+#### 🔄 Update
+Pull the latest changes and rebuild:
+```bash
+git pull origin main
+makepkg -si
+```
+
+---
+
+ 
+### 🐍 Option 4: Python / Pip
+*For Python users.*
+ 
+You can install directly from PyPI:
+ 
+```bash
+pip3 install heimdall-linux
+```
+
+#### 🔄 Update
+To upgrade to the latest version via PyPI:
+```bash
+sudo pip3 install --upgrade heimdall-linux --break-system-packages
+```
+ 
+---
+ 
+### 🛠️ Option 5: Development (Source)
+*For contributors.*
+ 
+Clone the repo and prepare the environment:
+ 
+```bash
+git clone https://github.com/sunels/heimdall.git
+cd heimdall
+ 
+# Install dependencies (psutil, etc.) in editable mode
+pip3 install -e .
+
+# Run directly using the wrapper script:
+sudo python3 run.py
+```
+
+#### 🔄 Update
+Update the source code:
+```bash
+git pull origin main
+```
+
+---
+
 ## Core Navigation
 
 ```text
@@ -361,115 +462,6 @@ That's it — Heimdall will discover and load it automatically on next launch.
     - firewall rule management
     - full `/proc` visibility
 
----
-
-## 🚀 Installation & Quick Start
- 
-Choose the installation method that fits your workflow.
- 
-#### 🔄 Update
-To update, simply download the latest binary and replace the old one.
- 
----
- 
-### 🐧 Option 2: Debian / Ubuntu (.deb)
-*Native system integration.*
- 
-Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases) layer:
- 
-```bash
-sudo dpkg -i heimdall_1.3.3-1_all.deb
-```
-
-#### 🔄 Update
-Download the new `.deb` file and run the same command:
-```bash
-sudo dpkg -i heimdall_1.3.3-1_all.deb
-```
- 
----
- 
-### 🎩 Option 3: Fedora / RHEL / CentOS (.rpm)
-*Native RPM support.*
- 
-```bash
-# Build the RPM package
-rpmbuild -ba heimdall.rpm.spec
-
-# Install the generated RPM
-sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-1.3.3-1.noarch.rpm
-```
-
-#### 🔄 Update
-Rebuild and reinstall the RPM:
-```bash
-sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-1.3.3-1.noarch.rpm
-```
- 
----
-
-### 🏔️ Option 4: Arch Linux
-*Native Arch Linux package.*
-
-```bash
-# Build and install using the provided PKGBUILD
-makepkg -si
-```
-
-#### 🔄 Update
-Pull the latest changes and rebuild:
-```bash
-git pull origin main
-makepkg -si
-```
-
----
-
- 
-### 🐍 Option 5: Python / Pip
-*For Python users.*
- 
-You can install directly from PyPI:
- 
-```bash
-pip3 install heimdall-linux
-```
-
-#### 🔄 Update
-To upgrade to the latest version via PyPI:
-```bash
-sudo pip3 install --upgrade heimdall-linux --break-system-packages
-```
-
-Or install from the latest wheel:
-```bash
-pip3 install heimdall-1.3.3-py3-none-any.whl
-```
-*(Note: Requires `witr` installed separately)*
- 
----
- 
-### 🛠️ Option 6: Development (Source)
-*For contributors.*
- 
-Clone the repo and prepare the environment:
- 
-```bash
-git clone https://github.com/sunels/heimdall.git
-cd heimdall
- 
-# Install dependencies (psutil, etc.) in editable mode
-pip3 install -e .
-
-# Run directly using the wrapper script:
-sudo python3 run.py
-```
-
-#### 🔄 Update
-Update the source code:
-```bash
-git pull origin main
-```
 
 ## 🛡️ Daemon Mode (Background Protection)
 
