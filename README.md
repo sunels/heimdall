@@ -131,7 +131,7 @@ sudo mv heimdall_standalone /usr/local/bin/heimdall
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
  
 ```bash
-sudo dpkg -i heimdall_1.4.2-1_all.deb
+sudo apt install ./heimdall_1.4.2-1_all.deb
 ```
 
 ---
