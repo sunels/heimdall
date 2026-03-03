@@ -112,7 +112,9 @@ Choose the installation method that fits your workflow.
 ---
  
 ### 🐧 Option 1: Standalone Binary (Universal Linux)
-*Works on ANY distro (SteamOS, Bazzite, Fedora, Arch, etc.). No Python required.*
+*Works on ANY distro (**SteamOS**, **Bazzite**, **Fedora**, **Arch**, etc.). No Python required.*
+
+**Best for Steam Deck and Atomic/Immutable distros.**
 
 1. Download the `heimdall_standalone` binary from [Releases](https://github.com/sunels/heimdall/releases).
 2. Make it executable and move to your path:
@@ -124,7 +126,7 @@ sudo mv heimdall_standalone /usr/local/bin/heimdall
 ---
  
 ### 🐧 Option 2: Debian / Ubuntu (.deb)
-*Native system integration for Mint, Ubuntu, Debian.*
+*Native system integration for **Linux Mint**, **Ubuntu**, **Pop!_OS**, **Debian**.*
  
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
  
@@ -132,40 +134,23 @@ Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/r
 sudo dpkg -i heimdall_1.4.2-1_all.deb
 ```
 
-#### 🔄 Update
-Download the new `.deb` file and run the same command:
-```bash
-sudo dpkg -i heimdall_1.4.2-1_all.deb
-```
- 
 ---
  
 ### 🎩 Option 3: Fedora / RHEL / CentOS / Bazzite (.rpm)
-*Native RPM support.*
+*Native RPM support for **Fedora**, **RHEL**, **AlmaLinux**, **Bazzite**.*
  
 ```bash
 # Download the .rpm from Releases
 sudo dnf install ./heimdall-1.4.2-1.noarch.rpm
 ```
-
-#### 🔄 Update
-```bash
-sudo dnf upgrade ./heimdall-1.4.2-1.noarch.rpm
-```
  
 ---
 
 ### 🏔️ Option 4: Arch Linux / SteamOS / CachyOS
-*Native Arch Linux package.*
+*Native Arch-based integration for **Arch**, **CachyOS**, **Manjaro**, **SteamOS**.*
 
 ```bash
 # Build and install using the provided PKGBUILD
-makepkg -si
-```
-
-#### 🔄 Update
-```bash
-git pull origin main
 makepkg -si
 ```
 
@@ -173,17 +158,11 @@ makepkg -si
 
  
 ### 🐍 Option 5: Python / Pip
-*For Python users.*
- 
-You can install directly from PyPI:
+*For any distro with Python 3.6+.*
  
 ```bash
 pip3 install heimdall-linux
-```
-
-#### 🔄 Update
-```bash
-sudo pip3 install --upgrade heimdall-linux --break-system-packages
+# Usage: heimdall
 ```
  
 ---
