@@ -111,43 +111,51 @@ Choose the installation method that fits your workflow.
  
 ---
  
-### 🐧 Option 1: Debian / Ubuntu (.deb)
-*Native system integration.*
+### 🐧 Option 1: Standalone Binary (Universal Linux)
+*Works on ANY distro (SteamOS, Bazzite, Fedora, Arch, etc.). No Python required.*
+
+1. Download the `heimdall_standalone` binary from [Releases](https://github.com/sunels/heimdall/releases).
+2. Make it executable and move to your path:
+```bash
+chmod +x heimdall_standalone
+sudo mv heimdall_standalone /usr/local/bin/heimdall
+```
+
+---
+ 
+### 🐧 Option 2: Debian / Ubuntu (.deb)
+*Native system integration for Mint, Ubuntu, Debian.*
  
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
  
 ```bash
-sudo dpkg -i heimdall_1.4.1-1_all.deb
+sudo dpkg -i heimdall_1.4.2-1_all.deb
 ```
 
 #### 🔄 Update
 Download the new `.deb` file and run the same command:
 ```bash
-sudo dpkg -i heimdall_1.4.1-1_all.deb
+sudo dpkg -i heimdall_1.4.2-1_all.deb
 ```
  
 ---
  
-### 🎩 Option 2: Fedora / RHEL / CentOS (.rpm)
+### 🎩 Option 3: Fedora / RHEL / CentOS / Bazzite (.rpm)
 *Native RPM support.*
  
 ```bash
-# Build the RPM package
-rpmbuild -ba heimdall.rpm.spec
-
-# Install the generated RPM
-sudo dnf install ~/rpmbuild/RPMS/noarch/heimdall-1.4.1-1.noarch.rpm
+# Download the .rpm from Releases
+sudo dnf install ./heimdall-1.4.2-1.noarch.rpm
 ```
 
 #### 🔄 Update
-Rebuild and reinstall the RPM:
 ```bash
-sudo dnf upgrade ~/rpmbuild/RPMS/noarch/heimdall-1.4.1-1.noarch.rpm
+sudo dnf upgrade ./heimdall-1.4.2-1.noarch.rpm
 ```
  
 ---
 
-### 🏔️ Option 3: Arch Linux
+### 🏔️ Option 4: Arch Linux / SteamOS / CachyOS
 *Native Arch Linux package.*
 
 ```bash
@@ -156,7 +164,6 @@ makepkg -si
 ```
 
 #### 🔄 Update
-Pull the latest changes and rebuild:
 ```bash
 git pull origin main
 makepkg -si
@@ -165,7 +172,7 @@ makepkg -si
 ---
 
  
-### 🐍 Option 4: Python / Pip
+### 🐍 Option 5: Python / Pip
 *For Python users.*
  
 You can install directly from PyPI:
@@ -175,14 +182,13 @@ pip3 install heimdall-linux
 ```
 
 #### 🔄 Update
-To upgrade to the latest version via PyPI:
 ```bash
 sudo pip3 install --upgrade heimdall-linux --break-system-packages
 ```
  
 ---
  
-### 🛠️ Option 5: Development (Source)
+### 🛠️ Option 6: Development (Source)
 *For contributors.*
  
 Clone the repo and prepare the environment:
