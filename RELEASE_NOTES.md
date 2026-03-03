@@ -1,4 +1,26 @@
+## 🛠️ Command Viewer Plugins & UX Fix (v1.4.1)
+
+This patch adds 4 new built-in Linux monitoring plugins and restores the contextual tab bar hint.
+
+### **✨ New Plugins (v1.4.1)**
+- **ZFS Pools** (`zpool`): Live ZFS pool status + ARC cache summary. Auto-refreshes every 60 seconds.
+- **SMART Health** (`smartctl`): Full SMART attributes for all detected disks. Auto-refreshes every 5 minutes.
+- **Fail2Ban** (`fail2ban-client`): Active jail status + currently banned IPs. Auto-refreshes every 60 seconds.
+- **Firewall Rules** (`iptables` / `nft`): Active iptables and nftables ruleset. Auto-refreshes every 60 seconds.
+
+### **🏗️ Plugin Architecture (v1.4.1)**
+- Added `CommandViewerPlugin` base class (`plugins/_command_viewer.py`): generic scaffold for read-only scrollable command output plugins inside Heimdall.
+  - Navigation: `↑↓ / PgUp / PgDn / Home / End` — force refresh: `r` — exit: `ESC`
+- All new plugins **auto-skip** at startup if the required tool is not installed (no broken tabs).
+- Writing a new plugin now takes ~8 lines of Python — just inherit `CommandViewerPlugin` and set `shell_command`.
+
+### **🔧 Bug Fix (v1.4.1)**
+- **Restored contextual tab bar hint**: plugin tabs now show the correct exit key in the top bar:
+  - Fullscreen plugins (btop, lazydocker): `[q]: exit tool → Heimdall`
+  - Command viewer plugins (ZFS, SMART, Fail2Ban, Firewall): `[ESC]: ← Heimdall`
+
 ## 🔌 Native Plugin Experience (v1.4.0)
+
 
 This release completely overhauls the plugin system architecture for btop and lazydocker, delivering a 100% native tool experience.
 

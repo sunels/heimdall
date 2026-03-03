@@ -8303,6 +8303,22 @@ def draw_top_tabs(stdscr, active_tab_index):
         except:
             pass
         x += len(tab) + 7
+
+    # Show a contextual exit hint when a plugin tab is active
+    if active_tab_index > 0:
+        plugin_idx = active_tab_index - 1
+        if plugin_idx < len(LOADED_PLUGINS):
+            plugin_mode = getattr(LOADED_PLUGINS[plugin_idx], 'mode', '')
+            if plugin_mode == 'fullscreen':
+                hint = " [q]: exit tool → Heimdall "
+            else:
+                hint = " [ESC]: ← Heimdall "
+            try:
+                stdscr.addstr(0, w - len(hint) - 1, hint,
+                              curses.color_pair(CP_WARN) | curses.A_BOLD)
+            except:
+                pass
+
     stdscr.chgat(0, 0, w, curses.color_pair(CP_HEADER) | curses.A_REVERSE)
 
 
