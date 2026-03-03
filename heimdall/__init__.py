@@ -8482,27 +8482,41 @@ def main(stdscr, args=None):
                     # Tool exited, return to Heimdall
                     active_tab = 0
                     stdscr.erase()
-                    # Re-apply Heimdall theme after curses restore
                     try:
                         apply_current_theme(stdscr)
                     except:
                         pass
                     continue
-                else:
-                    # Legacy embedded mode (pyte-based, for non-fullscreen plugins)
-                    plugin_win = stdscr.derwin(h-1, w, 1, 0)
+                elif getattr(plugin, 'mode', '') == 'command_viewer':
+                    # Read-only scrollable command output inside Heimdall
+                    plugin_win = stdscr.derwin(h - 1, w, 1, 0)
                     plugin.render(plugin_win)
-                    
                     curses.doupdate()
+                    stdscr.timeout(500)  # allow periodic auto-refresh
                     k = stdscr.getch()
-                    if k == -1: continue
-                    
+                    stdscr.timeout(-1)
+                    if k == -1:
+                        continue
                     if k == 27:
                         plugin.stop()
                         active_tab = 0
                         stdscr.erase()
                         continue
-                    
+                    plugin.on_key(k)
+                    continue
+                else:
+                    # Legacy embedded mode (kept for any future pyte-based plugins)
+                    plugin_win = stdscr.derwin(h - 1, w, 1, 0)
+                    plugin.render(plugin_win)
+                    curses.doupdate()
+                    k = stdscr.getch()
+                    if k == -1:
+                        continue
+                    if k == 27:
+                        plugin.stop()
+                        active_tab = 0
+                        stdscr.erase()
+                        continue
                     plugin.on_key(k)
                     continue
 

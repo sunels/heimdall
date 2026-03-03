@@ -128,8 +128,50 @@ Unlike classic tools that show *only one layer* (`ss`, `netstat`, `lsof`),
 
 ## 📸 Screenshots
 
-### 🔌 Plugin System & Real-Terminal Emulation (Pyte)
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-24.png" alt="heimdall plugin system btop" width="100%"/>
+### 🔌 Plugin System — Native TUI & Command Viewers
+
+Heimdall's plugin system adds extra tabs for integrated tooling. Plugins live in `heimdall/plugins/` and come in two flavours:
+
+| Mode | Tools | How it works |
+|------|-------|-------------|
+| **Fullscreen Native** | `btop`, `lazydocker` | Curses is suspended; tool runs at 100% native quality (colors, mouse, scrollbars) |
+| **Command Viewer** | `zfs`, `smartctl`, `fail2ban`, `firewall` | Shell command output displayed in a scrollable Heimdall pane with auto-refresh |
+
+#### Built-in Plugins
+
+| Tab | Tool | Refresh | Description |
+|-----|------|---------|-------------|
+| Btop | `btop` | live | System resource monitor — full colors, mouse, all shortcuts |
+| Lazydocker | `lazydocker` | live | Docker/container manager — full native experience |
+| ZFS Pools | `zpool` | 60 s | ZFS pool status + ARC summary |
+| SMART Health | `smartctl` | 5 min | SMART disk attributes for all drives |
+| Fail2Ban | `fail2ban-client` | 60 s | Banned IPs and jail status |
+| Firewall Rules | `iptables` / `nft` | 60 s | Active iptables + nftables rules |
+
+> Plugins that require a tool not installed on the system are **automatically skipped** at startup — they won't appear as tabs. Fallback messages are shown if a tool is missing at runtime.
+
+#### Navigation inside plugins
+- **Fullscreen plugins** (`btop`, `lazydocker`): use the tool's own keyboard shortcuts. Press `q` to exit and return to Heimdall automatically.
+- **Command viewer plugins** (`ZFS`, `SMART`, `Fail2Ban`, `Firewall`): use `↑↓ / PgUp / PgDn / Home / End` to scroll. Press `r` to force-refresh. Press `ESC` to return to Heimdall.
+
+#### Writing a new Command Viewer plugin
+Create `heimdall/plugins/myplugin.py`:
+```python
+from heimdall.plugins._command_viewer import CommandViewerPlugin
+
+class Plugin(CommandViewerPlugin):
+    name             = "My Tool"
+    description      = "One-line description"
+    tabTitle         = "My Tab"
+    tool_command     = "mytool"      # set to None to skip availability check
+    refresh_interval = 60
+    shell_command    = "mytool --status 2>/dev/null || echo 'not installed'"
+```
+That's it — Heimdall will discover and load it automatically on next launch.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-24.png" alt="heimdall plugin system" width="100%"/>
+
+
 
 ---
 
