@@ -369,6 +369,11 @@ That's it — Heimdall will discover and load it automatically on next launch.
 
 ---
 
+### 📔 Systemd Journal Logs — Real-time System Auditing (l)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-39.png" alt="heimdall journal logs" width="100%"/>
+
+---
+
 ### 📩 Vulnerability Scanner — Integrated NVD Security Feed (n)
 <img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-22.png" alt="heimdall vulnerability list" width="100%"/>
 

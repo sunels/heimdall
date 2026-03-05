@@ -8,6 +8,8 @@ This release introduces native support for auditing system-wide events and servi
 - **Sentinel Log Integration**: Behavioral engine now monitors journal logs for failure patterns (Killed, OOM, Auth Denied) and flags them with high urgency.
 - **Contextual Live Tail**: Real-time `journalctl -f` integration with smart filtering and semantic syntax highlighting.
 
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-39.png" alt="heimdall journal logs" width="100%"/>
+
 ## 🐋 Docker Testing & Security Hardening (v1.6.0)
 
 This release focuses on easing the adoption of Heimdall with Docker and hardening the project's security via GitHub Advanced Security.
