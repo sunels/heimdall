@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys
+import getpass
+import platform
 import curses
 import subprocess
 import re
@@ -23,6 +25,7 @@ except ImportError:
     psutil = None
 from shutil import which, get_terminal_size
 from collections import Counter
+import urllib.request
 import ipaddress
 import functools
 import threading
@@ -49,12 +52,33 @@ import math
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
 
-def debug_log(msg):
-    """Write a timestamped message to the debug log."""
+import logging
+from logging.handlers import RotatingFileHandler
+_debug_logger = None
+
+def debug_log(msg, context=None):
+    """Write an audited message to the debug log."""
+    global _debug_logger
     try:
         os.makedirs(os.path.dirname(DEBUG_LOG_PATH), exist_ok=True)
-        with open(DEBUG_LOG_PATH, "a") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        if _debug_logger is None:
+            _debug_logger = logging.getLogger("heimdall_debug")
+            _debug_logger.setLevel(logging.INFO)
+            handler = RotatingFileHandler(DEBUG_LOG_PATH, maxBytes=1024*1024, backupCount=5, encoding="utf-8")
+            # Clear standard formatting because we prefix it
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            _debug_logger.addHandler(handler)
+            _debug_logger.propagate = False
+            
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        os_info = platform.system() + " " + platform.release()
+        try:
+            user_info = getpass.getuser()
+        except:
+            user_info = "Unknown"
+        shell_info = os.environ.get('SHELL', 'Unknown')
+        ctx_str = f" [{context}]" if context else ""
+        _debug_logger.info(f"[{ts}] [OS: {os_info}] [User: {user_info}] [Shell: {shell_info}]{ctx_str} {msg}")
     except:
         pass
 
@@ -889,6 +913,7 @@ def draw_ipc_alert_modal(stdscr, alert):
         except: pass
         
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_ipc_alert_modal')
         if k == ord('y') or k == ord('Y'):
             allow = True
             break
@@ -1283,6 +1308,7 @@ def draw_guardian_settings_modal(stdscr):
         win.refresh()
         
         key = win.getch()
+        if key not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {key} (chr: {chr(key) if isinstance(key, int) and 32<=key<127 else ""})', context='draw_guardian_settings_modal')
         if key == 27: # ESC
             break
         elif key in (ord('s'), ord('S')):
@@ -3528,6 +3554,7 @@ def draw_renice_modal(stdscr, pid, prog):
     win.refresh()
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_renice_modal')
         if k == 27: break # ESC
         if ord('1') <= k <= ord('4'):
             val = options[k - ord('1')][1]
@@ -3581,6 +3608,7 @@ def draw_oom_modal(stdscr, pid, prog):
     win.refresh()
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_oom_modal')
         if k == 27: break
         if ord('1') <= k <= ord('5'):
             val = options[k - ord('1')][1]
@@ -4280,6 +4308,7 @@ def show_full_inspection_preview(stdscr, report_lines):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='show_full_inspection_preview')
         
         if k in (ord('q'), 27):
             win.erase(); win.refresh(); del win
@@ -4333,6 +4362,7 @@ def show_inspect_modal(stdscr, port, prog, pid, username):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='show_inspect_modal')
         
         if k in (ord('q'), 27):
             break
@@ -4460,6 +4490,7 @@ def draw_period_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_period_modal')
         if k == 27 or k == ord('q'): break
         elif k == curses.KEY_UP: idx = (idx - 1) % len(options)
         elif k == curses.KEY_DOWN: idx = (idx + 1) % len(options)
@@ -4504,6 +4535,7 @@ def draw_auto_update_settings_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_auto_update_settings_modal')
         if k == ord('q') or k == 27: break
         elif k == ord('t'):
             with CONFIG_LOCK:
@@ -4559,6 +4591,7 @@ def draw_settings_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_settings_modal')
         if k == ord('q') or k == 27: break
         elif k == ord('s'):
             draw_auto_update_settings_modal(stdscr)
@@ -4596,6 +4629,7 @@ def draw_outbound_interval_settings_modal(stdscr):
         win.addstr(bh-2, 4, "[ESC/q] Save and Close")
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_outbound_interval_settings_modal')
         if k == 27 or k == ord('q'): break
         elif k == ord('+'):
             CONFIG["outbound_refresh_interval"] = min(60, curr + 5)
@@ -4642,6 +4676,7 @@ def draw_vuln_settings_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_vuln_settings_modal')
         
         if editing:
             if k == 27: # ESC
@@ -4699,6 +4734,7 @@ def draw_daemon_settings_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_daemon_settings_modal')
         if k in (curses.KEY_ENTER, 10, 13, ord('q'), 27):
             break
         elif k == ord(' '):
@@ -4751,6 +4787,7 @@ def draw_auto_scan_settings_modal(stdscr):
                 
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_auto_scan_settings_modal')
         if k == 27 or k == ord('q'): break
         elif k == curses.KEY_UP: idx = (idx - 1) % len(options)
         elif k == curses.KEY_DOWN: idx = (idx + 1) % len(options)
@@ -4799,6 +4836,7 @@ def draw_vuln_settings_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_vuln_settings_modal')
         
         if editing:
             if k == 27: # ESC
@@ -4868,6 +4906,7 @@ def draw_vuln_interval_settings_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_vuln_interval_settings_modal')
         if k == ord('q') or k == 27: break
         elif k == curses.KEY_UP:
             idx = (idx - 1) % len(options)
@@ -4918,6 +4957,7 @@ def show_env_vars_modal(stdscr, pid, prog):
         win.refresh()
         
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='show_env_vars_modal')
         if k in (27, ord('q'), ord('Q'), 10, curses.KEY_ENTER): break
         elif k == curses.KEY_UP and scroll > 0: scroll -= 1
         elif k == curses.KEY_DOWN and scroll < len(envs) - max_rows: scroll += 1
@@ -4962,6 +5002,7 @@ def show_redirections_modal(stdscr, pid, prog):
         win.refresh()
         
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='show_redirections_modal')
         if k in (27, ord('q'), ord('Q')): break
         elif k == curses.KEY_UP and sel > 0: sel -= 1
         elif k == curses.KEY_DOWN and sel < 2: sel += 1
@@ -5156,6 +5197,7 @@ def handle_services_modal(stdscr):
         win = draw_services_modal(stdscr, services, selected, offset, mode=mode)
         win.timeout(-1)
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='handle_services_modal')
         if k == 27: break
         elif k == curses.KEY_UP and selected > 0:
             selected -= 1
@@ -5279,6 +5321,7 @@ def show_service_help_modal(stdscr, service_entry, legend):
     
     win.refresh()
     win.getch()
+    debug_log('Any key hit', context='show_service_help_modal')
     del win
 
 def execute_service_action(unit, action, stdscr):
@@ -5334,6 +5377,7 @@ def show_service_details_modal(stdscr, unit):
         except: pass
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='show_service_details_modal')
         if k in (27, ord('q')): break
         elif k == curses.KEY_UP and scroll > 0: scroll -= 1
         elif k == curses.KEY_DOWN and scroll < len(content) - (bh - 4): scroll += 1
@@ -5374,6 +5418,7 @@ def confirm_dialog(stdscr, question):
     win.refresh()
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='confirm_dialog')
         if k in (ord('y'), ord('Y')):
             return True
         if k in (ord('n'), ord('N'), 27):
@@ -5395,6 +5440,7 @@ def confirm_tree_kill_dialog(stdscr, pid, prog, action_name):
     win.refresh()
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='confirm_tree_kill_dialog')
         if k in (ord('t'), ord('T')): return "tree"
         if k == ord('9'): return "process"
         if k == 27: return "cancel"
@@ -6184,7 +6230,7 @@ def draw_help_bar(stdscr, active_pane=0):
             bar_win.box()
 
         # Branding / Title at the top
-        title = " 🛡️ HEIMDALL "
+        title = f" 🛡️ HEIMDALL v{_get_app_version()} "
         try:
             bar_win.addstr(0, max(1, (bar_w - len(title)) // 2), title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
         except: pass
@@ -6371,6 +6417,7 @@ def handle_action_center_input(stdscr, rows, selected, cache, firewall_status):
     win = draw_action_center_modal(stdscr)
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='handle_action_center_input')
         if k == 27:  # ESC
             # cleanly remove modal and refresh main screen
             try:
@@ -6853,6 +6900,7 @@ def draw_block_ip_modal(stdscr, port, conn_info, cache, firewall_status):
 
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_block_ip_modal')
         # ESC: cancel and cleanup
         if k == 27:
             try:
@@ -7003,6 +7051,7 @@ def draw_kill_connections_modal(stdscr, port, cache):
         win.noutrefresh()
         curses.doupdate()
         win.getch()
+        debug_log('Any key hit', context='draw_kill_connections_modal')
         try:
             win.erase(); win.refresh(); del win
         except Exception:
@@ -7048,6 +7097,7 @@ def draw_kill_connections_modal(stdscr, port, cache):
     # Wait for user input
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_kill_connections_modal')
         
         # ESC: cancel
         if k == 27:
@@ -7176,6 +7226,7 @@ def draw_connection_limit_modal(stdscr, port):
     
     while True:
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_connection_limit_modal')
         
         if k == 27: # ESC
             break
@@ -7973,6 +8024,7 @@ def draw_filter_modal(stdscr, filters):
 
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_filter_modal')
 
         if editing:
             if k == 27: # ESC cancels edit
@@ -8152,6 +8204,7 @@ def draw_outbound_modal(stdscr):
 
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_outbound_modal')
         if k == -1: continue # refresh timeout
         if k == ord(' '): 
             paused = not paused
@@ -8177,6 +8230,7 @@ def draw_outbound_modal(stdscr):
             msg = "Sort by: " + " ".join([f"[{k}] {l}" for k, l, f in sort_opts])
             show_message(stdscr, msg)
             sk = stdscr.getch()
+            if sk not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {sk} (chr: {chr(sk) if isinstance(sk, int) and 32<=sk<127 else ""})', context='draw_outbound_modal')
             for key_char, label, field in sort_opts:
                 if sk == ord(key_char):
                     sort_key = field
@@ -8281,6 +8335,7 @@ def draw_tail_window(stdscr, cmd_str):
         
         twin.refresh()
         k = twin.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_tail_window')
         if k in (ord('q'), ord('Q'), 27): break
             
     tproc.terminate()
@@ -8308,7 +8363,8 @@ def draw_log_explorer_modal(stdscr):
         "3: /var/log",
         "4: journalctl deep",
         "5: dmesg",
-        "6: logrotate"
+        "6: logrotate",
+        "7: Heimdall"
     ]
     active_tab = 0
     tab2_focus = 0
@@ -8326,7 +8382,8 @@ def draw_log_explorer_modal(stdscr):
         2: {"files": [], "content": [], "last_upd": 0},
         3: {"lines": [], "usage": "", "boots": [], "last_upd": 0},
         4: {"lines": [], "last_upd": 0},
-        5: {"status": [], "conf": [], "last_upd": 0}
+        5: {"status": [], "conf": [], "last_upd": 0},
+        6: {"lines": [], "last_upd": 0}
     }
     
     req_events[0].set()
@@ -8445,6 +8502,20 @@ def draw_log_explorer_modal(stdscr):
                         except: pass
                         res["data"]["conf"] = conf
                         res["data"]["status"] = status
+                        
+                    elif t_idx == 6:
+                        lines = []
+                        if os.path.exists(DEBUG_LOG_PATH):
+                            try:
+                                if flt:
+                                    out = subprocess.check_output(f"grep -i '{flt}' {DEBUG_LOG_PATH} | tail -n {limit}", shell=True, text=True, errors='ignore')
+                                else:
+                                    out = subprocess.check_output(["tail", "-n", str(limit), DEBUG_LOG_PATH], text=True, errors='ignore')
+                                lines = out.splitlines()
+                            except: pass
+                        else:
+                            lines = ["Heimdall debug log not found."]
+                        res["data"]["lines"] = lines
                         
                     res["last_upd"] = time.time()
                     data_q.put(res)
@@ -8623,6 +8694,17 @@ def draw_log_explorer_modal(stdscr):
                 try: win.addstr(draw_y + i, 4, l[:bw-6], curses.color_pair(CP_TEXT))
                 except: break
 
+        elif active_tab == 6:
+            st = state[6]
+            win.addstr(draw_y, 2, f"HEIMDALL LOG ({DEBUG_LOG_PATH}):", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            lines = st["lines"]
+            view_h = bh - draw_y - 2
+            if scrolls[6] > max(0, len(lines) - view_h): scrolls[6] = max(0, len(lines) - view_h)
+            for i, l in enumerate(lines[scrolls[6] : scrolls[6] + view_h]):
+                try: win.addstr(draw_y + i, 2, l[:bw-4], curses.color_pair(CP_TEXT))
+                except: break
+
         footer = []
         if active_tab == 0: footer = ["[Enter] Details", "[r/s/S] Svc Act", "[t] Tail", "[e] Export",  "[f] Filter"]
         elif active_tab == 1: footer = ["[t] Tail", "[e] Export", "[r] Refresh Daemon"]
@@ -8630,6 +8712,7 @@ def draw_log_explorer_modal(stdscr):
         elif active_tab == 3: footer = ["[t] Tail", "[e] Export", "[v] Vacuum 2w"]
         elif active_tab == 4: footer = ["[t] Tail", "[e] Export", "[c] Clear (ROOT)"]
         elif active_tab == 5: footer = ["[r] Manual Rotate", "[e] Export Config"]
+        elif active_tab == 6: footer = ["[t] Tail", "[e] Export", "[c] Clear"]
         
         common = ["[TAB] Switch", "[M] Maximize", "[Esc] Close"] if not maximized else ["[M] Unmaximize", "[Esc] Close"]
         f_str = f" Filter: '{flt}' | " + " | ".join(footer + common)
@@ -8638,6 +8721,7 @@ def draw_log_explorer_modal(stdscr):
         
         win.refresh()
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_log_explorer_modal')
         
         if k == 27:
             if maximized:
@@ -8757,6 +8841,21 @@ def draw_log_explorer_modal(stdscr):
                 req_events[5].set()
             elif k == ord('e'):
                 log_explorer_export(stdscr, state[5]["conf"], "logrotate_conf.txt")
+                
+        elif active_tab == 6:
+            if k == ord('t'):
+                draw_tail_window(stdscr, f"tail -f {DEBUG_LOG_PATH}")
+                win.touchwin()
+            elif k == ord('e'):
+                log_explorer_export(stdscr, state[6]["lines"], "heimdall_debug_export.txt")
+            elif k == ord('c'):
+                if confirm_dialog(stdscr, "Clear Heimdall debug log?"):
+                    try:
+                        open(DEBUG_LOG_PATH, 'w').close()
+                        show_modal_message(stdscr, "Debug log cleared", duration=2.0)
+                        req_events[6].set()
+                    except Exception as e:
+                        show_modal_message(stdscr, f"Error clearing: {e}", duration=2.0)
 
     stop_event.set()
     del win
@@ -8798,6 +8897,7 @@ def get_input_modal(stdscr, prompt, current=""):
         win.refresh()
         
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='get_input_modal')
         if k == 27: # ESC
             curses.curs_set(0)
             return None
@@ -8902,6 +9002,7 @@ def draw_traffic_tail_window(stdscr, conn_info):
         win.refresh()
         
         k = win.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_traffic_tail_window')
         if k == 27: break
 
     # Clean up
@@ -9120,6 +9221,7 @@ def draw_file_tail_window(stdscr, pid, prog, target_path=None):
             
             fwin.refresh()
             k = fwin.getch()
+            if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_file_tail_window')
             if k in (ord('q'), 27): del fwin; return
             if k == curses.KEY_UP and fsel > 0: fsel -= 1
             elif k == curses.KEY_DOWN and fsel < len(files)-1: fsel += 1
@@ -9214,6 +9316,7 @@ def draw_file_tail_window(stdscr, pid, prog, target_path=None):
         
         twin.refresh()
         k = twin.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='draw_file_tail_window')
         if k in (ord('q'), ord('Q'), 27): break
         if k in (ord('s'), ord('S')):
             # Pause/Stop stream toggle (simulated by stop reading)
@@ -9316,6 +9419,33 @@ def exit_animation(stdscr):
     except:
         pass
 
+def check_heimdall_update(stdscr):
+    try:
+        req = urllib.request.Request("https://api.github.com/repos/sunels/heimdall/releases/latest", headers={"User-Agent": "Heimdall"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            latest_version = data.get("tag_name", "").lstrip("v")
+            current_version = _get_app_version()
+            if latest_version and latest_version != current_version:
+                res = confirm_dialog(stdscr, f"New Heimdall v{latest_version} available! Your version is v{current_version}. Update now?")
+                if res:
+                    base_url = "https://github.com/sunels/heimdall/releases/latest/download"
+                    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                        show_modal_message(stdscr, "Downloading standalone binary...", duration=1.5)
+                        subprocess.Popen(f"sudo sh -c 'curl -L -s -o /tmp/heimdall_standalone {base_url}/heimdall_standalone && chmod +x /tmp/heimdall_standalone && mv /tmp/heimdall_standalone {sys.executable}'", shell=True)
+                    elif subprocess.call(["dpkg", "-V", "heimdall"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                        show_modal_message(stdscr, "Downloading DEB package...", duration=1.5)
+                        subprocess.Popen(f"sudo sh -c 'curl -L -s -o /tmp/heimdall.deb {base_url}/heimdall_{latest_version}-1_all.deb && dpkg -i /tmp/heimdall.deb'", shell=True)
+                    elif subprocess.call(["rpm", "-q", "heimdall"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                        show_modal_message(stdscr, "Downloading RPM package...", duration=1.5)
+                        subprocess.Popen(f"sudo sh -c 'curl -L -s -o /tmp/heimdall.rpm {base_url}/heimdall-{latest_version}-1.noarch.rpm && rpm -Uvh /tmp/heimdall.rpm'", shell=True)
+                    else:
+                        show_modal_message(stdscr, "Updating via pip...", duration=1.5)
+                        subprocess.Popen(f"sudo -H {sys.executable} -m pip install --upgrade heimdall-linux", shell=True)
+                    show_modal_message(stdscr, "Update initiated in the background. Please restart soon.", duration=3.0)
+    except Exception as e:
+        debug_log(f"Update check failed: {e}", context="check_heimdall_update")
+
 def main(stdscr, args=None):
     global TRIGGER_REFRESH, TRIGGER_LIST_ONLY, SCANNING_STATUS_EXP, SNAPSHOT_MODE
     global PENDING_IPC_ALERT, CURRENT_THEME_INDEX
@@ -9331,6 +9461,9 @@ def main(stdscr, args=None):
     # Load Plugins
     load_plugins(HeimdallDummyInstance())
     active_tab = 0 # 0 = Heimdall, 1+ = Plugins
+    
+    # Check for update on startup
+    check_heimdall_update(stdscr)
     
     # Start the background services updater
     start_services_updater()
@@ -9450,6 +9583,7 @@ def main(stdscr, args=None):
                     curses.doupdate()
                     stdscr.timeout(500)  # allow periodic auto-refresh
                     k = stdscr.getch()
+                    if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='main')
                     stdscr.timeout(-1)
                     if k == -1:
                         continue
@@ -9466,6 +9600,7 @@ def main(stdscr, args=None):
                     plugin.render(plugin_win)
                     curses.doupdate()
                     k = stdscr.getch()
+                    if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='main')
                     if k == -1:
                         continue
                     if k == 27:
@@ -9703,6 +9838,7 @@ def main(stdscr, args=None):
             continue
 
         k = stdscr.getch()
+        if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='main')
 
         # if no key pressed (timeout), continue loop so cached parse and selection debounce can update UI
         if k == -1:
@@ -9711,6 +9847,7 @@ def main(stdscr, args=None):
         if k == 27: # ESC
             stdscr.nodelay(True)
             next_k = stdscr.getch()
+            if next_k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {next_k} (chr: {chr(next_k) if isinstance(next_k, int) and 32<=next_k<127 else ""})', context='main')
             stdscr.nodelay(False)
             if next_k == -1:
                 if maximized_pane is not None:
@@ -10498,6 +10635,7 @@ def _open_vuln_modal(stdscr):
 
         win.refresh()
         key = stdscr.getch()
+        if key not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {key} (chr: {chr(key) if isinstance(key, int) and 32<=key<127 else ""})', context='_open_vuln_modal')
         if key in (27, ord('q')): break
         elif key == curses.KEY_UP:
             if sel > 0:
@@ -10609,6 +10747,7 @@ def _open_vuln_detail(stdscr, alert):
 
         win.refresh()
         key = stdscr.getch()
+        if key not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {key} (chr: {chr(key) if isinstance(key, int) and 32<=key<127 else ""})', context='_open_vuln_detail')
         if key in (27, ord('q')): break
         elif key == ord('o'):
             safe_open_url(alert.get("link", f"https://nvd.nist.gov/vuln/detail/{alert['cve_id']}"))
