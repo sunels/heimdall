@@ -196,6 +196,33 @@ git pull origin main
 
 ---
 
+## Quick Testing in Docker
+
+To quickly test Heimdall in an isolated environment without affecting your host system, use this one-liner Docker command (Alpine-based, lightweight):
+
+```bash
+docker run --rm -it \
+  --privileged \
+  --pid=host \
+  --network=host \
+  -v /proc:/host/proc:ro \
+  -v /sys:/host/sys:ro \
+  -v ~/.config/heimdall:/root/.config/heimdall \
+  python:3.12-alpine sh -c "
+    apk add --no-cache git sudo ncurses libcap iptables iproute2 procps net-tools curl \
+    && curl -L -o /usr/local/bin/witr https://github.com/pranshuparmar/witr/releases/latest/download/witr-linux-amd64 \
+    && chmod +x /usr/local/bin/witr \
+    && echo 'witr binary installed to /usr/local/bin (standalone executable)' \
+    && pip install --no-cache-dir heimdall-linux \
+    && echo '' \
+    && echo 'Container ready. witr is installed → Deep Inspection will work.' \
+    && echo 'Guardian Mode: press g. Exit: q or Ctrl+C.' \
+    && sudo heimdall
+  "
+```
+
+---
+
 ## Core Navigation
 
 ```text

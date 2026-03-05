@@ -1,3 +1,15 @@
+## 🐋 Docker Testing & Security Hardening (v1.6.0)
+
+This release focuses on easing the adoption of Heimdall with Docker and hardening the project's security via GitHub Advanced Security.
+
+### **✨ New Features (v1.6.0)**
+- **Quick Testing in Docker**: Added a one-liner Alpine-based Docker command for isolated testing without host contamination.
+- **GitHub Advanced Security**: Fully integrated CodeQL (SAST), Dependabot (SCA), and Secret Scanning into the project core.
+
+### **🔧 CI/CD & Documentation**
+- **Enhanced Release Script**: Improved extraction of release notes for cleaner GitHub Releases.
+- **Standalone Binary Fixes**: Resolved path issues in PyInstaller build process for the Steam Deck/Atomic Linux package.
+
 ## 🛡️ Guardian Mode & Multi-layered Protection (v1.5.0)
 
 This major release introduces **Guardian Mode**, a high-performance autonomous mitigation engine, along with a re-architected multi-layered security stack.
