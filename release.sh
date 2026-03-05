@@ -130,8 +130,8 @@ echo "🎩 Building RPM Package (.rpm)..."
 if command -v rpmbuild &> /dev/null; then
     # We build only from spec for now, assumes source is available locally
     mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-    tar --exclude='.git' -czf ~/rpmbuild/SOURCES/v${VERSION}.tar.gz .
-    rpmbuild -ba heimdall.spec > /dev/null || echo "⚠️ RPM build failed, skipping..."
+    tar --exclude='.git' --transform "s,^\.,heimdall-${VERSION}," -czf ~/rpmbuild/SOURCES/v${VERSION}.tar.gz .
+    rpmbuild -ba --nodeps heimdall.spec > /dev/null || echo "⚠️ RPM build failed, skipping..."
     cp ~/rpmbuild/RPMS/noarch/heimdall-${VERSION}-1*.rpm dist/ 2>/dev/null || true
 else
     echo "⚠️ 'rpmbuild' not found. Skipping .rpm build."
@@ -139,10 +139,21 @@ fi
 
 # 10. Build Standalone Binary (PyInstaller)
 echo "📦 Building Standalone Binary (PyInstaller)..."
-if command -v pyinstaller &> /dev/null; then
-    pyinstaller --onefile --name heimdall_standalone --distpath dist/ --workpath /tmp/heimdall_build --specpath /tmp \
-      --add-data "heimdall/services.json:." --add-data "heimdall/system-services.json:." \
-      --add-data "heimdall/sentinel_rules.json:." --add-data "heimdall/VERSION:." \
+PYI_CMD="pyinstaller"
+if [[ -f ".venv/bin/pyinstaller" ]]; then
+    PYI_CMD=".venv/bin/pyinstaller"
+elif [[ -f "venv/bin/pyinstaller" ]]; then
+    PYI_CMD="venv/bin/pyinstaller"
+fi
+
+if command -v $PYI_CMD &> /dev/null; then
+    # Use absolute paths for add-data to avoid issues with --specpath
+    ROOT_DIR=$(pwd)
+    $PYI_CMD --onefile --name heimdall_standalone --distpath dist/ --workpath /tmp/heimdall_build --specpath /tmp \
+      --add-data "$ROOT_DIR/heimdall/services.json:heimdall" \
+      --add-data "$ROOT_DIR/heimdall/system-services.json:heimdall" \
+      --add-data "$ROOT_DIR/heimdall/sentinel_rules.json:heimdall" \
+      --add-data "$ROOT_DIR/heimdall/VERSION:heimdall" \
       --hidden-import psutil --hidden-import curses --strip --log-level WARN heimdall/__main__.py || echo "⚠️ PyInstaller build failed."
 else
     echo "⚠️ 'pyinstaller' not found. Skipping binary build."
@@ -151,11 +162,11 @@ fi
 # 11. Upload to PyPI
 if [ "$TEST_MODE" = true ]; then
     echo "🧪 Uploading to TestPyPI..."
-    $TWINE_CMD upload --repository testpypi dist/*.tar.gz dist/*.whl
+    $TWINE_CMD upload --repository testpypi dist/*.tar.gz dist/*.whl || echo "⚠️ TestPyPI upload failed."
     PYPI_URL="https://test.pypi.org/project/heimdall-linux/$VERSION/"
 else
     echo "🚀 Uploading to PyPI..."
-    $TWINE_CMD upload dist/*.tar.gz dist/*.whl
+    $TWINE_CMD upload dist/*.tar.gz dist/*.whl || echo "⚠️ PyPI upload failed (possibly version already exists)."
     PYPI_URL="https://pypi.org/project/heimdall-linux/$VERSION/"
 fi
 
@@ -173,10 +184,16 @@ fi
 # 11. GitHub Release (Optional)
 if command -v gh &> /dev/null; then
     echo "🚀 Creating GitHub Release..."
+    
+    # Extract only the latest version's notes (everything until the next ## header)
     if [ -f "RELEASE_NOTES.md" ]; then
-        gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes-file "RELEASE_NOTES.md" || echo "⚠️ GitHub release might already exist."
+        awk '/^## /{count++} count==1{print} count==2{exit}' RELEASE_NOTES.md > /tmp/current_notes.md
+        gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes-file /tmp/current_notes.md || \
+        gh release edit "v$VERSION" --notes-file /tmp/current_notes.md
+        gh release upload "v$VERSION" dist/* --clobber
     else
-        gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes "Release v$VERSION via release.sh" || echo "⚠️ GitHub release might already exist."
+        gh release create "v$VERSION" dist/* --title "Heimdall v$VERSION" --notes "Release v$VERSION via release.sh" || \
+        gh release upload "v$VERSION" dist/* --clobber
     fi
 fi
 
