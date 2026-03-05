@@ -1,3 +1,20 @@
+## 📋 Log Explorer & Unified Log Auditing (v1.8.0)
+
+This release introduces the **Log Explorer Modal**, a unified interface for system-wide log auditing that aggregates everything from Systemd Journals to raw `/var/log` files into a single, highly interactive workspace.
+
+### **✨ New Features (v1.8.0)**
+- **Unified Log Explorer (`l` / `j`)**: A comprehensive multi-tabbed interface for system logs.
+  - **Tab 1: Systemd Journal**: Failed services and critical unit logs.
+  - **Tab 2: rsyslog**: Syslog service state and tailing of `/var/log/syslog`.
+  - **Tab 3: /var/log Directory**: Browse, inspect, and tail any log file by size and modification date.
+  - **Tab 4: journalctl Deep Dive**: Pre-filtered urgent errors (`-p err`) across all boot namespaces and vacuuming ops.
+  - **Tab 5: dmesg (Kernel Logs)**: Human-readable ring buffer output and real-time buffer trailing.
+  - **Tab 6: logrotate Management**: View rotation status and trigger forced rotations instantly.
+- **Background Intelligence**: All log fetches and streams run non-blocking via threaded workers, ensuring instant UI responsiveness.
+- **Export & Filtering**: Native capability to run `grep`-like real-time filtering and save outputs to `$HOME` for deep forensic analysis.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-40.png" alt="heimdall log explorer" width="100%"/>
+
 ## 📔 Systemd Journal Auditing & Real-time Logs (v1.7.0)
 
 This release introduces native support for auditing system-wide events and service failures directly within the Heimdall interface.
@@ -22,7 +39,7 @@ This release focuses on easing the adoption of Heimdall with Docker and hardenin
 - **Enhanced Release Script**: Improved extraction of release notes for cleaner GitHub Releases.
 - **Standalone Binary Fixes**: Resolved path issues in PyInstaller build process for the Steam Deck/Atomic Linux package.
 
-## 🛡️ Guardian Mode & Multi-layered Protection (v1.5.0)
+## �🛡️ Guardian Mode & Multi-layered Protection (v1.5.0)
 
 This major release introduces **Guardian Mode**, a high-performance autonomous mitigation engine, along with a re-architected multi-layered security stack.
 
@@ -41,52 +58,9 @@ This major release introduces **Guardian Mode**, a high-performance autonomous m
 - **Enhanced Settings Modal**: Dedicated, masked password field for improved UX and privacy.
 - **SMTP Diagnostics**: Improved logging for troubleshooting email configuration issues (Gmail App Passwords).
 
-## 🛠️ Command Viewer Plugins & UX Fix (v1.4.1)
-
-This patch adds 4 new built-in Linux monitoring plugins and restores the contextual tab bar hint.
-
-### **✨ New Plugins (v1.4.1)**
-- **ZFS Pools** (`zpool`): Live ZFS pool status + ARC cache summary. Auto-refreshes every 60 seconds.
-- **SMART Health** (`smartctl`): Full SMART attributes for all detected disks. Auto-refreshes every 5 minutes.
-- **Fail2Ban** (`fail2ban-client`): Active jail status + currently banned IPs. Auto-refreshes every 60 seconds.
-- **Firewall Rules** (`iptables` / `nft`): Active iptables and nftables ruleset. Auto-refreshes every 60 seconds.
-
-### **🏗️ Plugin Architecture (v1.4.1)**
-- Added `CommandViewerPlugin` base class (`plugins/_command_viewer.py`): generic scaffold for read-only scrollable command output plugins inside Heimdall.
-  - Navigation: `↑↓ / PgUp / PgDn / Home / End` — force refresh: `r` — exit: `ESC`
-- All new plugins **auto-skip** at startup if the required tool is not installed (no broken tabs).
-- Writing a new plugin now takes ~8 lines of Python — just inherit `CommandViewerPlugin` and set `shell_command`.
-
-### **🔧 Bug Fix (v1.4.1)**
-- **Restored contextual tab bar hint**: plugin tabs now show the correct exit key in the top bar:
-  - Fullscreen plugins (btop, lazydocker): `[q]: exit tool → Heimdall`
-  - Command viewer plugins (ZFS, SMART, Fail2Ban, Firewall): `[ESC]: ← Heimdall`
-
-## 🔌 Native Plugin Experience (v1.4.0)
-
-
-This release completely overhauls the plugin system architecture for btop and lazydocker, delivering a 100% native tool experience.
-
-### **✨ New Features (v1.4.0)**
-- **Fullscreen Native Plugin Mode**: Plugins now run with full native terminal access instead of degraded embedded rendering.
-  - **All original colors preserved** — lazydocker's blue theme, btop's color scheme displayed exactly as standalone.
-  - **Mouse support** — click navigation works in lazydocker/btop.
-  - **Scrollbars & visual elements** — all TUI features render natively.
-  - **All keyboard shortcuts work** — number keys (1-9), arrows, and tool-specific bindings no longer conflict with Heimdall.
-- **Plugin Keyboard Isolation**: Eliminated shortcut conflicts between Heimdall tab-switching (1-9) and embedded tool shortcuts.
-- **Automatic Return**: When the plugin tool exits (e.g., pressing `q` in btop/lazydocker), Heimdall automatically resumes with full theme restoration.
-
-### **🔧 Architecture Changes**
-- **Removed pyte dependency** for plugin rendering — no more virtual terminal emulation overhead.
-- **Replaced `TERM=vt100`** limitation — plugins now inherit the host terminal's full capabilities (xterm-256color).
-- **curses suspend/resume pattern**: Uses `curses.endwin()` / `stdscr.refresh()` for clean handoff, same proven technique as vim's `:!command`.
-
-
-
 ## 📜 User Intelligence & history Tail (v1.3.3)
 
 This release significantly expands user-level diagnostics with deep command history tracking and real-time history tailing.
-
 
 ### **✨ New Features (v1.3.3)**
 - **User History Tail (`t`)**: Press 't' while the User Profile pane is active to instantly tail the owner's `.bash_history`.
