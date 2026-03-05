@@ -369,8 +369,8 @@ That's it — Heimdall will discover and load it automatically on next launch.
 
 ---
 
-### 📔 Systemd Journal Logs — Real-time System Auditing (l)
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-39.png" alt="heimdall journal logs" width="100%"/>
+### 📋 Log Explorer — Unified System Logs & Auditing (l)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-40.png" alt="heimdall log explorer" width="100%"/>
 
 ---
 
@@ -437,7 +437,7 @@ That's it — Heimdall will discover and load it automatically on next launch.
 | o | Outbound Connections Modal (**Space**: Freeze, **t**: Tail, **f**: Tail Files, **S**: HTTP Summary) |
 | d | Full System Dump (Reports all services/units to file) |
 | p | Settings (Auto-update, etc.) |
-| l / j | Systemd Journal Logs modal (Failed services & Recent logs) |
+| l / j | Log Explorer Modal (`l` tuşu log explorer modalını açar. Tab ile farklı log kategorileri arasında geçiş yapın.) |
 | q | Quit |
 
 ### 📜 Detail View (witr output)

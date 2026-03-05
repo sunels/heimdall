@@ -182,6 +182,8 @@ CONFIG = {
     },
     "journal_refresh_interval": 30.0,
     "journal_lines": 100,
+    "log_refresh_interval": 30.0,
+    "log_lines": 100,
 }
 SERVICES_DB = {}
 SYSTEM_SERVICES_DB = {}
@@ -8221,8 +8223,8 @@ def draw_outbound_modal(stdscr):
     del win
     return
 
-def draw_journal_tail_window(stdscr, cmd_str):
-    """Real-time journal output viewer."""
+def draw_tail_window(stdscr, cmd_str):
+    """Real-time output viewer."""
     h, w = stdscr.getmaxyx()
     twin = curses.newwin(h-6, w-10, 3, 5)
     twin.box()
@@ -8247,15 +8249,16 @@ def draw_journal_tail_window(stdscr, cmd_str):
     fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
     
     tlines = []
-    title = f" 📔 Journal Tail: {cmd_str} "
+    disp_cmd = cmd_str if len(cmd_str) < 40 else cmd_str[:37] + "..."
+    title = f" 📔 Real-time Tail: {disp_cmd} "
     help_text = " [q/ESC] Close Stream "
     
     while True:
         try:
             line_bytes = tproc.stdout.readline()
             if line_bytes:
-                line = line_bytes.decode('utf-8', 'replace').rstrip('\n')
-                tlines.append(line)
+                line_str = line_bytes.decode('utf-8', 'replace').rstrip('\n')
+                tlines.append(line_str)
                 if len(tlines) > h - 10:
                     tlines.pop(0)
         except (IOError, TypeError):
@@ -8264,16 +8267,16 @@ def draw_journal_tail_window(stdscr, cmd_str):
         twin.erase()
         twin.box()
         try:
-            twin.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
-            twin.addstr(h-7, (w-10-len(help_text))//2, help_text, curses.color_pair(CP_ACCENT))
+            twin.addstr(0, max(0, (w-10-len(title))//2), title[:w-12], curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            twin.addstr(h-7, max(0, (w-10-len(help_text))//2), help_text, curses.color_pair(CP_ACCENT))
             
-            for i, l in enumerate(tlines):
+            for i_line, l in enumerate(tlines):
                 clean_l = "".join(c for c in l if c.isprintable())
                 color = CP_TEXT
                 low_l = clean_l.lower()
                 if any(kw in low_l for kw in ["error", "fail", "crit", "denied", "oom"]):
                     color = CP_GUARDIAN
-                twin.addstr(1+i, 2, clean_l[:w-14], curses.color_pair(color))
+                twin.addstr(1+i_line, 2, clean_l[:w-14], curses.color_pair(color))
         except: pass
         
         twin.refresh()
@@ -8285,119 +8288,479 @@ def draw_journal_tail_window(stdscr, cmd_str):
     except: pass
     del twin
 
-def draw_journal_modal(stdscr):
-    """Centered modal for systemd journal auditing."""
-    if which("journalctl") is None:
-        show_message(stdscr, "journalctl not available or no permissions!")
-        # If no journalctl, let's at least check if we are in a non-systemd environment
-        return
+def log_explorer_export(stdscr, content_lines, default_name="log_export.txt"):
+    try:
+        path = os.path.expanduser(f"~/{default_name}")
+        with open(path, "w", encoding='utf-8') as f:
+            for l in content_lines:
+                f.write(l + "\n")
+        show_modal_message(stdscr, f"✅ Exported {len(content_lines)} lines to {path}", duration=2.5)
+    except Exception as e:
+        show_modal_message(stdscr, f"❌ Export failed: {e}", duration=2.5)
 
+def draw_log_explorer_modal(stdscr):
     h, w = stdscr.getmaxyx()
-    bh, bw = int(h * 0.8), int(w * 0.9)
-    y, x = (h - bh) // 2, (w - bw) // 2
+    maximized = False
     
-    win = curses.newwin(bh, bw, y, x)
-    win.keypad(True)
-    win.timeout(1000)
+    tabs = [
+        "1: Journal",
+        "2: rsyslog",
+        "3: /var/log",
+        "4: journalctl deep",
+        "5: dmesg",
+        "6: logrotate"
+    ]
+    active_tab = 0
+    tab2_focus = 0
+    filters = {idx: "" for idx in range(len(tabs))}
+    scrolls = {idx: 0 for idx in range(len(tabs))}
+    sel_idx = {idx: 0 for idx in range(len(tabs))}
     
-    filter_text = ""
-    scroll_pos = 0
+    data_q = queue.Queue()
+    stop_event = threading.Event()
+    req_events = {idx: threading.Event() for idx in range(len(tabs))}
+    
+    state = {
+        0: {"last_upd": 0},
+        1: {"syslog": [], "active": False, "conf": [], "last_upd": 0},
+        2: {"files": [], "content": [], "last_upd": 0},
+        3: {"lines": [], "usage": "", "boots": [], "last_upd": 0},
+        4: {"lines": [], "last_upd": 0},
+        5: {"status": [], "conf": [], "last_upd": 0}
+    }
+    
+    req_events[0].set()
+    
+    def fetch_worker():
+        while not stop_event.is_set():
+            refreshed_any = False
+            for t_idx in range(len(tabs)):
+                if req_events[t_idx].is_set() or (t_idx == active_tab and time.time() - state[t_idx]["last_upd"] > CONFIG.get("log_refresh_interval", 30.0)):
+                    req_events[t_idx].clear()
+                    refreshed_any = True
+                    flt = filters[t_idx]
+                    limit = CONFIG.get("log_lines", 100)
+                    
+                    res = {"tab": t_idx, "data": {}}
+                    if t_idx == 0:
+                        pass 
+                        
+                    elif t_idx == 1:
+                        res["data"]["active"] = False
+                        try:
+                            if subprocess.run(["systemctl", "is-active", "rsyslog"], capture_output=True).returncode == 0:
+                                res["data"]["active"] = True
+                        except: pass
+                        cf = []
+                        if os.path.exists("/etc/rsyslog.conf"):
+                            try:
+                                with open("/etc/rsyslog.conf", "r", errors='ignore') as f:
+                                    cf = [l.strip() for l in f.readlines() if not l.strip().startswith('#') and l.strip()][:10]
+                            except: pass
+                        res["data"]["conf"] = cf
+                        
+                        syslog_path = "/var/log/syslog" if os.path.exists("/var/log/syslog") else "/var/log/messages"
+                        lines = []
+                        if os.path.exists(syslog_path):
+                            try:
+                                if flt:
+                                    out = subprocess.check_output(f"grep -i '{flt}' {syslog_path} | tail -n {limit}", shell=True, text=True, errors='ignore')
+                                else:
+                                    out = subprocess.check_output(["tail", "-n", str(limit), syslog_path], text=True, errors='ignore')
+                                lines = out.splitlines()
+                            except: pass
+                        else:
+                            lines = ["rsyslog not available or no syslog/messages file present."]
+                        res["data"]["syslog"] = lines
+                        
+                    elif t_idx == 2:
+                        files = []
+                        try:
+                            for base in ["auth.log", "syslog", "kern.log", "dmesg", "dpkg.log", "daemon.log"]:
+                                p = os.path.join("/var/log", base)
+                                if os.path.exists(p):
+                                    st = os.stat(p)
+                                    files.append((base, st.st_size, st.st_mtime))
+                            if os.path.exists("/var/log"):
+                                for f in os.listdir("/var/log"):
+                                    if f.endswith(".log") and not any(f == x[0] for x in files):
+                                        p = os.path.join("/var/log", f)
+                                        if os.path.isfile(p):
+                                            st = os.stat(p)
+                                            files.append((f, st.st_size, st.st_mtime))
+                            files.sort(key=lambda x: x[2], reverse=True)
+                        except: pass
+                        res["data"]["files"] = files
+                        
+                        target = None
+                        s_idx = sel_idx[t_idx]
+                        if files and s_idx < len(files):
+                            target = files[s_idx][0]
+                        if not target and files: target = files[0][0]
+                        
+                        content = []
+                        if target:
+                            tp = os.path.join("/var/log", target)
+                            try:
+                                if flt:
+                                    c_out = subprocess.check_output(f"grep -i '{flt}' {tp} | tail -n 50", shell=True, text=True, errors='ignore')
+                                else:
+                                    c_out = subprocess.check_output(["tail", "-n", "50", tp], text=True, errors='ignore')
+                                content = c_out.splitlines()
+                            except: pass
+                        res["data"]["content"] = content
+                        
+                    elif t_idx == 3:
+                        try:
+                            cmd_str = f"journalctl -p err -b -n {limit} --no-pager"
+                            if flt: cmd_str = f"journalctl -p err -b -n {limit} -g '{flt}' --no-pager"
+                            res["data"]["lines"] = subprocess.check_output(cmd_str, shell=True, text=True, errors='ignore').splitlines()
+                            res["data"]["usage"] = subprocess.check_output(["journalctl", "--disk-usage"], text=True, errors='ignore').strip()
+                            res["data"]["boots"] = subprocess.check_output(["journalctl", "--list-boots"], text=True, errors='ignore').splitlines()[-5:]
+                        except: pass
+                        
+                    elif t_idx == 4:
+                        try:
+                            cmd = ["dmesg", "-H"]
+                            out = subprocess.check_output(cmd, text=True, errors='ignore').splitlines()
+                            err_lines = []
+                            for l in out[-limit*2:]:
+                                if flt and flt.lower() not in l.lower(): continue
+                                err_lines.append(l)
+                            res["data"]["lines"] = err_lines[-limit:]
+                        except: pass
+                        
+                    elif t_idx == 5:
+                        conf = []
+                        status = []
+                        try:
+                            if os.path.exists("/etc/logrotate.conf"):
+                                with open("/etc/logrotate.conf", "r", errors='ignore') as f:
+                                    conf = [l.strip() for l in f.readlines() if not l.strip().startswith('#') and l.strip()][:10]
+                            if os.path.exists("/var/lib/logrotate/status"):
+                                with open("/var/lib/logrotate/status", "r", errors='ignore') as f:
+                                    s_txt = [l.strip() for l in f.readlines()[1:]]
+                                    if flt: s_txt = [l for l in s_txt if flt.lower() in l.lower()]
+                                    status = s_txt[-limit:]
+                        except: pass
+                        res["data"]["conf"] = conf
+                        res["data"]["status"] = status
+                        
+                    res["last_upd"] = time.time()
+                    data_q.put(res)
+            
+            if not refreshed_any:
+                time.sleep(1)
+                
+    t = threading.Thread(target=fetch_worker, daemon=True)
+    t.start()
     
     while True:
+        while not data_q.empty():
+            msg = data_q.get_nowait()
+            tab = msg["tab"]
+            state[tab].update(msg["data"])
+            state[tab]["last_upd"] = msg["last_upd"]
+            
+        bh = int(h * 0.9) if not maximized else h
+        bw = int(w * 0.9) if not maximized else w
+        y = (h - bh) // 2 if not maximized else 0
+        x = (w - bw) // 2 if not maximized else 0
+        
+        win = curses.newwin(bh, bw, y, x)
+        win.keypad(True)
+        win.timeout(500)
         win.erase()
         win.box()
         
-        # Header
-        title = " 📔 Systemd Journal Logs – Last 100 Lines / Failed Services "
-        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        title = " 📋 Log Explorer – All System Logs in One Place "
+        win.addstr(0, max(0, (bw - len(title)) // 2), title[:bw-2], curses.color_pair(CP_HEADER) | curses.A_BOLD)
         
-        with JOURNAL_LOCK:
-            failed = list(JOURNAL_DATA.get("failed", {}).keys())
-            logs = JOURNAL_DATA.get("logs", [])
-            last_upd = JOURNAL_DATA.get("last_update", 0)
-
-        # 1. Failed Services (Top section)
-        win.addstr(1, 4, "🚩 FAILED SERVICES:", curses.A_BOLD | curses.A_UNDERLINE)
-        curr_y = 2
-        if not failed:
-            win.addstr(curr_y, 6, "✨ All systems nominal. No failed units.", curses.color_pair(CP_ACCENT))
-            curr_y += 2
-        else:
-            for i, unit in enumerate(failed[: (bw // 30) * 3]): # Simple grid
-                col_width = 35
-                col = (i % 3) * col_width
-                row = curr_y + (i // 3)
-                if row >= bh // 4: break
-                try: win.addstr(row, 6 + col, f"● {unit[:33]}", curses.color_pair(CP_GUARDIAN) | curses.A_BOLD)
+        if not maximized:
+            tab_x = 2
+            for i, t_name in enumerate(tabs):
+                attr = curses.A_REVERSE | curses.color_pair(CP_HEADER) if i == active_tab else curses.A_DIM | curses.color_pair(CP_TEXT)
+                txt = f" {t_name} "
+                if tab_x + len(txt) < bw - 2:
+                    win.addstr(1, tab_x, txt, attr)
+                    tab_x += len(txt) + 1
+            win.addstr(2, 1, "─" * (bw - 2))
+        
+        draw_y = 3 if not maximized else 1
+        flt = filters[active_tab]
+        limit = CONFIG.get("log_lines", 100)
+        
+        if active_tab == 0:
+            with JOURNAL_LOCK:
+                failed = list(JOURNAL_DATA.get("failed", {}).keys())
+                logs = JOURNAL_DATA.get("logs", [])
+                
+            win.addstr(draw_y, 2, "🚩 FAILED SERVICES:", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            if not failed:
+                win.addstr(draw_y, 4, "✨ All systems nominal. No failed units.", curses.color_pair(CP_ACCENT))
+                draw_y += 2
+            else:
+                for i, unit in enumerate(failed[: (bw // 30) * 2]):
+                    col = (i % 3) * 35
+                    r = draw_y + (i // 3)
+                    if r >= (bh // 3 if not maximized else bh // 4): break
+                    try: win.addstr(r, 4 + col, f"● {unit[:30]}", curses.color_pair(CP_GUARDIAN) | curses.A_BOLD)
+                    except: pass
+                    draw_y = max(draw_y, r + 1)
+                draw_y += 1
+                
+            win.addstr(draw_y, 2, "📝 CRITICAL EVENTS:", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            d_logs = logs if not flt else [l for l in logs if flt.lower() in l['msg'].lower() or flt.lower() in l['unit'].lower()]
+            
+            view_h = bh - draw_y - 2
+            if scrolls[0] > max(0, len(d_logs) - view_h): scrolls[0] = max(0, len(d_logs) - view_h)
+            
+            for i, entry in enumerate(d_logs[scrolls[0] : scrolls[0] + view_h]):
+                ts = f"{entry.get('ts', '')} "
+                unit = f"[{entry.get('unit', '')[:18]:<18s}] "
+                msg_txt = entry.get('msg', '')
+                try: prio = entry.get('priority', 6)
+                except: prio = 6
+                c = CP_TEXT
+                if prio <= 3 or entry.get('is_crit'): c = CP_GUARDIAN
+                elif prio == 4: c = CP_WARN
+                try:
+                    win.addstr(draw_y + i, 2, ts, curses.A_DIM)
+                    win.addstr(draw_y + i, 2 + len(ts), unit, curses.color_pair(CP_ACCENT))
+                    win.addstr(draw_y + i, 2 + len(ts) + len(unit), msg_txt[:bw - len(ts) - len(unit) - 4], curses.color_pair(c))
+                except: break
+                
+        elif active_tab == 1:
+            st = state[1]
+            act = "ACTIVE" if st["active"] else "INACTIVE/NOT INSTALLED"
+            c_color = CP_GUARDIAN if not st["active"] else CP_ACCENT
+            win.addstr(draw_y, 2, f"RSYSLOG STATUS: {act}", curses.color_pair(c_color) | curses.A_BOLD)
+            draw_y += 2
+            win.addstr(draw_y, 2, "📝 SYSLOG TAIL:", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            lines = st["syslog"]
+            view_h = bh - draw_y - 2
+            if scrolls[1] > max(0, len(lines) - view_h): scrolls[1] = max(0, len(lines) - view_h)
+            for i, l in enumerate(lines[scrolls[1] : scrolls[1] + view_h]):
+                try: win.addstr(draw_y + i, 2, l[:bw-4], curses.color_pair(CP_TEXT))
+                except: break
+                
+        elif active_tab == 2:
+            st = state[2]
+            view_h = bh - draw_y - 2
+            left_w = 30
+            win.addstr(draw_y, 2, "FILES (/var/log)", curses.A_BOLD | curses.A_UNDERLINE | (curses.color_pair(CP_HEADER) if tab2_focus == 0 else 0))
+            files = st["files"]
+            if sel_idx[2] > max(0, len(files) - 1): sel_idx[2] = max(0, len(files) - 1)
+            
+            for i, f in enumerate(files[:view_h-2]):
+                attr = curses.A_REVERSE if i == sel_idx[2] else curses.A_NORMAL
+                fname, fsize, _ = f
+                sz = format_bytes(fsize)
+                disp = f"{fname[:20]:<20} {sz:>6}"
+                try: win.addstr(draw_y + 1 + i, 2, disp, curses.color_pair(CP_TEXT) | attr)
                 except: pass
-                curr_y = max(curr_y, row + 1)
-            curr_y += 1
-        
-        # 2. Critical Logs
-        win.addstr(curr_y, 4, "📝 CRITICAL EVENTS:", curses.A_BOLD | curses.A_UNDERLINE)
-        curr_y += 1
-        
-        # Filter logic
-        display_logs = logs
-        if filter_text:
-            display_logs = [l for l in logs if filter_text.lower() in l['msg'].lower() or filter_text.lower() in l['unit'].lower()]
             
-        log_view_h = bh - curr_y - 3
-        if scroll_pos > max(0, len(display_logs) - log_view_h):
-            scroll_pos = max(0, len(display_logs) - log_view_h)
+            win.addstr(draw_y, left_w + 4, "CONTENT HEAD/TAIL:", curses.A_BOLD | curses.A_UNDERLINE | (curses.color_pair(CP_HEADER) if tab2_focus == 1 else 0))
+            for i in range(view_h):
+                try: win.addstr(draw_y + i, left_w + 2, "│", curses.A_DIM)
+                except: pass
             
-        for i, entry in enumerate(display_logs[scroll_pos : scroll_pos + log_view_h]):
-            ts = f"{entry['ts']} "
-            unit = f"[{entry['unit'][:18]:<18s}] "
-            msg = entry['msg']
+            lines = st["content"]
+            if scrolls[2] > max(0, len(lines) - view_h + 1): scrolls[2] = max(0, len(lines) - view_h + 1)
+            for i, l in enumerate(lines[scrolls[2] : scrolls[2] + view_h - 1]):
+                try: win.addstr(draw_y + 1 + i, left_w + 4, l[:bw - left_w - 6], curses.color_pair(CP_TEXT))
+                except: break
+                
+        elif active_tab == 3:
+            st = state[3]
+            win.addstr(draw_y, 2, "INFO:", curses.A_BOLD)
+            try: win.addstr(draw_y, 8, str(st["usage"]), curses.A_DIM)
+            except: pass
+            draw_y += 2
+            win.addstr(draw_y, 2, "DEEP DIVE LOGS (-p err):", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            lines = st["lines"]
+            view_h = bh - draw_y - 2
+            if scrolls[3] > max(0, len(lines) - view_h): scrolls[3] = max(0, len(lines) - view_h)
+            for i, l in enumerate(lines[scrolls[3] : scrolls[3] + view_h]):
+                try: win.addstr(draw_y + i, 2, l[:bw-4], curses.color_pair(CP_TEXT))
+                except: break
+                
+        elif active_tab == 4:
+            st = state[4]
+            win.addstr(draw_y, 2, "DMESG OUTPUT:", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            lines = st["lines"]
+            view_h = bh - draw_y - 2
+            if scrolls[4] > max(0, len(lines) - view_h): scrolls[4] = max(0, len(lines) - view_h)
+            for i, l in enumerate(lines[scrolls[4] : scrolls[4] + view_h]):
+                c = CP_TEXT
+                low = l.lower()
+                if "error" in low or "fail" in low or "warn" in low: c = CP_WARN
+                if "crit" in low or "bug" in low or "segfault" in low: c = CP_GUARDIAN
+                try: win.addstr(draw_y + i, 2, l[:bw-4], curses.color_pair(c))
+                except: break
+                
+        elif active_tab == 5:
+            st = state[5]
+            win.addstr(draw_y, 2, "LOGROTATE CONFIG:", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            for i, l in enumerate(st["conf"]):
+                if draw_y + i >= bh - 2: break
+                try: win.addstr(draw_y + i, 4, l[:bw-6], curses.A_DIM)
+                except: pass
+            draw_y += len(st["conf"]) + 1
             
-            prio = entry['priority'] # 0-7
-            color = CP_TEXT
-            if prio <= 3 or entry.get('is_crit'): color = CP_GUARDIAN # Red for critical
-            elif prio == 4: color = CP_WARN # Yellow for warning
-            
-            try:
-                win.addstr(curr_y + i, 4, ts, curses.A_DIM)
-                win.addstr(curr_y + i, 4 + len(ts), unit, curses.color_pair(CP_ACCENT))
-                win.addstr(curr_y + i, 4 + len(ts) + len(unit), msg[:bw - len(ts) - len(unit) - 8], curses.color_pair(color))
-            except: break
-            
-        # Footer
-        footer = f" [f] Filter: {filter_text or 'ALL':<10s} | [r] Refresh | [t] Live Tail | [Esc] Close "
-        try: win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
-        except: pass
-        
-        age = int(time.time() - last_upd)
-        upd_str = f"Sync: {age}s ago"
-        try: win.addstr(bh-1, bw - len(upd_str) - 3, upd_str, curses.A_DIM)
-        except: pass
+            win.addstr(draw_y, 2, "ROTATION STATUS (/var/lib/logrotate/status):", curses.A_BOLD | curses.A_UNDERLINE)
+            draw_y += 1
+            lines = st["status"]
+            view_h = bh - draw_y - 2
+            if scrolls[5] > max(0, len(lines) - view_h): scrolls[5] = max(0, len(lines) - view_h)
+            for i, l in enumerate(lines[scrolls[5] : scrolls[5] + view_h]):
+                try: win.addstr(draw_y + i, 4, l[:bw-6], curses.color_pair(CP_TEXT))
+                except: break
 
+        footer = []
+        if active_tab == 0: footer = ["[Enter] Details", "[r/s/S] Svc Act", "[t] Tail", "[e] Export",  "[f] Filter"]
+        elif active_tab == 1: footer = ["[t] Tail", "[e] Export", "[r] Refresh Daemon"]
+        elif active_tab == 2: footer = ["[Enter] Details", "[t] Tail", "[e] Export", "[r] Force Rotate"]
+        elif active_tab == 3: footer = ["[t] Tail", "[e] Export", "[v] Vacuum 2w"]
+        elif active_tab == 4: footer = ["[t] Tail", "[e] Export", "[c] Clear (ROOT)"]
+        elif active_tab == 5: footer = ["[r] Manual Rotate", "[e] Export Config"]
+        
+        common = ["[TAB] Switch", "[M] Maximize", "[Esc] Close"] if not maximized else ["[M] Unmaximize", "[Esc] Close"]
+        f_str = f" Filter: '{flt}' | " + " | ".join(footer + common)
+        try: win.addstr(bh-1, max(0, (bw - len(f_str)) // 2), f_str[:bw-2], curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+        except: pass
+        
         win.refresh()
         k = win.getch()
         
-        if k == 27: break
-        elif k in (ord('q'), ord('Q')): break
-        elif k in (ord('f'), ord('F')):
-            new_f = get_input_modal(stdscr, "Filter (Unit/Text):", filter_text)
-            if new_f is not None: 
-                filter_text = new_f
-                scroll_pos = 0
-        elif k in (ord('r'), ord('R')):
-            # Signal background thread (optional, it polls anyway)
-            pass
+        if k == 27:
+            if maximized:
+                maximized = False
+                win.erase()
+                stdscr.clear()
+            else:
+                break
+        elif k == 9 or (hasattr(curses, "KEY_TAB") and k == curses.KEY_TAB): 
+            if not maximized:
+                active_tab = (active_tab + 1) % len(tabs)
+                req_events[active_tab].set()
+        elif k == curses.KEY_BTAB:
+            if not maximized:
+                active_tab = (active_tab - 1) % len(tabs)
+                req_events[active_tab].set()
         elif k == curses.KEY_UP:
-            if scroll_pos > 0: scroll_pos -= 1
+            if active_tab == 2:
+                if tab2_focus == 0:
+                    if sel_idx[2] > 0:
+                        sel_idx[2] -= 1
+                        req_events[2].set()
+                else:
+                    if scrolls[2] > 0: scrolls[2] -= 1
+            else:
+                if scrolls[active_tab] > 0: scrolls[active_tab] -= 1
         elif k == curses.KEY_DOWN:
-            if scroll_pos < len(display_logs) - log_view_h: scroll_pos += 1
-        elif k in (ord('t'), ord('T')):
-            cmd = "journalctl -f"
-            if filter_text: cmd += f" -g \"{filter_text}\""
-            draw_journal_tail_window(stdscr, cmd)
-            win.touchwin()
-            
+            if active_tab == 2:
+                if tab2_focus == 0:
+                    sel_idx[2] += 1
+                    req_events[2].set()
+                else:
+                    scrolls[2] += 1
+            else:
+                scrolls[active_tab] += 1
+        elif k == curses.KEY_LEFT and active_tab == 2:
+            tab2_focus = 0
+            win.erase()
+        elif k == curses.KEY_RIGHT and active_tab == 2:
+            tab2_focus = 1
+            win.erase()
+        elif k in (ord('M'), ord('m'), 10, curses.KEY_ENTER):
+            maximized = not maximized
+            if not maximized: stdscr.clear()
+        
+        elif k == ord('f'):
+            new_f = get_input_modal(stdscr, "Filter:", filters[active_tab])
+            if new_f is not None:
+                filters[active_tab] = new_f
+                scrolls[active_tab] = 0
+                req_events[active_tab].set()
+        
+        elif active_tab == 0:
+            if k == ord('e'):
+                log_explorer_export(stdscr, [l.get('msg', '') for l in JOURNAL_DATA.get("logs", [])], "journal_export.txt")
+            elif k == ord('t'):
+                draw_tail_window(stdscr, "journalctl -f")
+                win.touchwin()
+            elif k in (ord('r'), ord('s'), ord('S')):
+                op = "restart" if k == ord('r') else ("stop" if k == ord('s') else "start")
+                svc = get_input_modal(stdscr, f"Service to {op}:", "")
+                if svc:
+                    subprocess.run(["sudo", "systemctl", op, svc])
+                    show_modal_message(stdscr, f"Command executed: systemctl {op} {svc}", duration=2.0)
+                    
+        elif active_tab == 1:
+            if k == ord('t'):
+                syslog_path = "/var/log/syslog" if os.path.exists("/var/log/syslog") else "/var/log/messages"
+                draw_tail_window(stdscr, f"tail -f {syslog_path}")
+                win.touchwin()
+            elif k == ord('e'):
+                log_explorer_export(stdscr, state[1]["syslog"], "rsyslog_export.txt")
+            elif k == ord('r'):
+                subprocess.run(["sudo", "systemctl", "restart", "rsyslog"])
+                show_modal_message(stdscr, "rsyslog restarted", duration=2.0)
+                req_events[1].set()
+                
+        elif active_tab == 2:
+            if k == ord('t'):
+                target = state[2]["files"][sel_idx[2]][0] if state[2]["files"] and sel_idx[2] < len(state[2]["files"]) else "syslog"
+                tp = os.path.join("/var/log", target)
+                draw_tail_window(stdscr, f"tail -f {tp}")
+                win.touchwin()
+            elif k == ord('e'):
+                log_explorer_export(stdscr, state[2]["content"], f"varlog_export.txt")
+            elif k == ord('r'):
+                subprocess.run(["sudo", "logrotate", "-f", "/etc/logrotate.conf"])
+                show_modal_message(stdscr, "Logrotate forced", duration=2.0)
+                
+        elif active_tab == 3:
+            if k == ord('t'):
+                draw_tail_window(stdscr, "journalctl -f")
+                win.touchwin()
+            elif k == ord('e'):
+                log_explorer_export(stdscr, state[3]["lines"], "journal_deep_export.txt")
+            elif k == ord('v'):
+                subprocess.run(["sudo", "journalctl", "--vacuum-time=2weeks"])
+                show_modal_message(stdscr, "Journal vacuumed (2weeks)", duration=2.0)
+                req_events[3].set()
+                
+        elif active_tab == 4:
+            if k == ord('t'):
+                draw_tail_window(stdscr, "dmesg -w")
+                win.touchwin()
+            elif k == ord('e'):
+                log_explorer_export(stdscr, state[4]["lines"], "dmesg_export.txt")
+            elif k == ord('c'):
+                if confirm_dialog(stdscr, "Clear dmesg ring buffer?"):
+                    subprocess.run(["sudo", "dmesg", "-c"])
+                    show_modal_message(stdscr, "dmesg cleared", duration=2.0)
+                    req_events[4].set()
+                    
+        elif active_tab == 5:
+            if k == ord('r'):
+                subprocess.run(["sudo", "logrotate", "-f", "/etc/logrotate.conf"])
+                show_modal_message(stdscr, "Logrotate executed", duration=2.0)
+                req_events[5].set()
+            elif k == ord('e'):
+                log_explorer_export(stdscr, state[5]["conf"], "logrotate_conf.txt")
+
+    stop_event.set()
     del win
     return
-
 def format_bytes(b):
     if b < 1024: return f"{b} B"
     if b < 1024*1024: return f"{b/1024:.1f} KB"
@@ -9387,7 +9750,7 @@ def main(stdscr, args=None):
             continue
             
         elif k == ord('l') or k == ord('j'):
-            draw_journal_modal(stdscr)
+            draw_log_explorer_modal(stdscr)
             stdscr.touchwin()
             continue
             

@@ -1,3 +1,20 @@
+## 📋 Log Explorer & Unified Log Auditing (v1.8.0)
+
+This release introduces the **Log Explorer Modal**, a unified interface for system-wide log auditing that aggregates everything from Systemd Journals to raw `/var/log` files into a single, highly interactive workspace.
+
+### **✨ New Features (v1.8.0)**
+- **Unified Log Explorer (`l` / `j`)**: A comprehensive multi-tabbed interface for system logs.
+  - **Tab 1: Systemd Journal**: Failed services and critical unit logs.
+  - **Tab 2: rsyslog**: Syslog service state and tailing of `/var/log/syslog`.
+  - **Tab 3: /var/log Directory**: Browse, inspect, and tail any log file by size and modification date.
+  - **Tab 4: journalctl Deep Dive**: Pre-filtered urgent errors (`-p err`) across all boot namespaces and vacuuming ops.
+  - **Tab 5: dmesg (Kernel Logs)**: Human-readable ring buffer output and real-time buffer trailing.
+  - **Tab 6: logrotate Management**: View rotation status and trigger forced rotations instantly.
+- **Background Intelligence**: All log fetches and streams run non-blocking via threaded workers, ensuring instant UI responsiveness.
+- **Export & Filtering**: Native capability to run `grep`-like real-time filtering and save outputs to `$HOME` for deep forensic analysis.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-40.png" alt="heimdall log explorer" width="100%"/>
+
 ## 📔 Systemd Journal Auditing & Real-time Logs (v1.7.0)
 
 This release introduces native support for auditing system-wide events and service failures directly within the Heimdall interface.
