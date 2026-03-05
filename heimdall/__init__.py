@@ -179,7 +179,7 @@ CONFIG = {
         "sender_email": "",
         "sender_password": "",
         "recipient_email": ""
-    }
+    },
     "journal_refresh_interval": 30.0,
     "journal_lines": 100,
 }
