@@ -46,6 +46,11 @@
 - 📩 **Background Vulnerability Scanner (v)**: Polls the NVD API for HIGH/CRITICAL CVEs matching installed packages. Press `n` or `v` to view pending alerts, `i` to ignore, `o` to open in browser.
 - 🔓 **Deep Vulnerability Audit**: Injected into both the `Inspect (i)` modal and the `Full System Dump (d)`, showing exactly which CVEs affect each running process.
 - 🏷️ **Smart Runtime Classification**: Detects the underlying technology stack (Java/Spring Boot, Node.js/Electron, Python, Go, Rust, PHP, etc.) and execution mode (Native, Containerized, Interpreted).
+- 🛡️ **Guardian Mode (g)** (v1.5.0): Real-time autonomous threat response.
+  - 🤖 **Auto-Mitigation**: Automatically kill high-risk processes and perform tree strikes.
+  - 📧 **SMTP Alerts**: Instant email notifications with threat metadata and ancestry logs.
+  - 🎨 **Pulsing Borders**: Visual TUI animation signifying active state.
+  - ⚙️ **Custom Configuration**: Fine-tune mitigation strategies via a dedicated settings sub-modal.
 - 🖥️ **System Health Panel**: Live CPU/RAM/Swap/Disk/Battery bars + OS/Kernel/Host/DE info in the detail view.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
@@ -131,7 +136,7 @@ sudo mv heimdall_standalone /usr/local/bin/heimdall
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
  
 ```bash
-sudo apt install ./heimdall_1.4.2-1_all.deb
+sudo apt install ./heimdall_1.5.0-1_all.deb
 ```
 
 ---
@@ -141,7 +146,7 @@ sudo apt install ./heimdall_1.4.2-1_all.deb
  
 ```bash
 # Download the .rpm from Releases
-sudo dnf install ./heimdall-1.4.2-1.noarch.rpm
+sudo dnf install ./heimdall-1.5.0-1.noarch.rpm
 ```
  
 ---
@@ -448,76 +453,50 @@ That's it — Heimdall will discover and load it automatically on next launch.
     - full `/proc` visibility
 
 
-## 🛡️ Daemon Mode (Background Protection)
+## 🛡️ Multi-layered Protection with Heimdall
 
-Heimdall can run as a background daemon to monitor your system 24/7. It specifically watches for **new outbound connections** from processes that are already flagged as "Suspicious" by the Sentinel logic.
+Heimdall provides a comprehensive security stack that adapts to your needs, whether you're using the interactive TUI or running it as a background service.
 
-### 🚀 Usage
-```bash
-# Start manually in background
-sudo heimdall --daemon
-
-# Or enable via Settings (p) -> Daemon Mode: ON
-```
-
-### 🧠 How it protects
-1. **Detection**: Daemon polls connections every few seconds.
-2. **Flagging**: If a process with a HIGH/CRIT danger level (e.g. deleted binary, /tmp CWD) tries to connect to the internet.
-3. **Suspension**: Daemon immediately sends `SIGSTOP` to the process.
-4. **Approval**: 
-   - If the Heimdall TUI is open, it pops up a **Priority Alert Modal** for you to Allow or Kill.
-   - If the TUI is closed, it sends a System Notification (`notify-send`) and waits 30s.
-5. **Enforcement**: If denied or timed out, the process is **Permanently Killed** (`SIGKILL`).
-
-### ⚙️ Systemd Installation
-To run Heimdall as a persistent system service:
-
-1. Copy the provided service file:
-   `sudo cp heimdall.service /etc/systemd/system/`
-2. Enable and start:
-   `sudo systemctl enable --now heimdall`
-3. Check status/logs:
-   `sudo systemctl status heimdall`
-   `journalctl -u heimdall -f`
-
----
-
-## 🛡️ Sentinel & Daemon Mode: The Safety Story
-
-Heimdall isn't just a viewer; it's a **proactive guardian**. Here is how the Sentinel engine and Daemon mode work together to protect your system:
-
-### 1. Advanced Risk Auditing
-When you use the TUI, Heimdall Sentinel performs a deep dive into every listener. Below, it identifies an outdated `vsftpd` service running as **root** and flags it as **High Risk**, explaining exactly why it's a brute-force magnet.
-
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-17.png" alt="Sentinel risk audit" width="100%"/>
-
----
-
-### 2. Going "Hands-Free" with Daemon Mode
-By running `heimdall --daemon`, you move the security logic into the background. It stays silent until a truly suspicious event occurs — like a script-managed backdoor attempt.
+### 1. Daemon Mode (Background Monitor)
+The most non-intrusive layer. It monitors the system 24/7 as a background service.
+- **Goal**: Silent background monitoring.
+- **Action**: Detects suspicious outbound connections from processes flagged by the Sentinel engine.
+- **Intervention**: Sends system notifications and wall broadcasts. It suspends (`SIGSTOP`) the process and waits for manual approval before it can connect.
 
 <img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-18.png" alt="Starting daemon mode" width="100%"/>
 
+### 2. Active TUI Protection (Interactive Sentry)
+When the Daemon is not running, the Heimdall TUI itself becomes a proactive guard during active sessions.
+- **Goal**: Immediate manual oversight.
+- **Action**: Automatically suspends suspicious processes detected during a scan.
+- **UI**: A high-priority modal appears, allowing you to **Allow**, **Kill**, or **Kill Parent Tree**.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/ss-32.png" alt="Active TUI Protection Modal" width="100%"/>
+
+### 3. Guardian Mode (Autonomous Interceptor)
+The most powerful layer, designed for zero-latency autonomous mitigation. **Guardian Mode** is the "Nuclear" option—it assumes you want high-risk threats neutralized immediately.
+
+- **🤖 Auto-Mitigation**: Instantly executes **Tree Strikes** (Precision Kill) on high-risk threats without waiting for confirmation.
+- **📧 Forensic Email Alerts**: Sends real-time SMTP notifications containing the threat reason, command line, and full process ancestry.
+- **📂 Forensic Vault**: One of Heimdall's most advanced features. Before a process is terminated, Guardian performs a sub-second deep-scan and saves a **Forensics JSON Report** to `~/.config/heimdall/vault/`.
+  - **Captured Data**: Environment Variables, Open File Descriptors, Network Connections, and deep Process Ancestry.
+- **SMTP Security**: Built-in support for Gmail App Passwords with **Base64 Obfuscation** and owner-only filesystem permissions (600) for secure credential storage.
+
+#### Workflow & Logs
+Guardian creates a clear audit trail in the Heimdall Journal.
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-35.png" alt="Guardian Workflow Logs" width="100%"/>
+
+#### Real-time Email Notifications
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-36.png" alt="Forensic Email Alert" width="100%"/>
+
+#### Deep Forensic Evidence (JSON Vault)
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-37.png" alt="Forensic JSON Report" width="100%"/>
+
+#### Secure Configuration
+Easily configure SMTP settings and auto-kill behavior via the dedicated Guardian Modal (`g` -> Settings).
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-34.png" alt="Guardian Settings" width="48%"/> <img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-33.png" alt="Google App Password Setup" width="48%"/>
+
 ---
-
-### 3. Real-time Intervention
-The moment a suspicious process (like a hidden `nc` listener) tries to open a port, the Daemon **immediately suspends** it and prompts you with a high-priority intervention modal.
-
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-19.png" alt="Daemon interception modal" width="100%"/>
-
----
-
-### 4. System-Wide Alerts
-If you are working in another terminal, Heimdall sends a **wall broadcast** to all TTYs and a **native desktop notification**, ensuring you never miss a security event even if the TUI is closed.
-
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-20.png" alt="Broadcast alert" width="100%"/>
-
----
-
-### 5. Active TUI Protection (Proactive Intervention)
-When the Daemon is not running, the Heimdall TUI takes over security enforcement. It instantly **suspends** any suspicious process detected during a scan and prompts you via a high-priority modal to decide its fate.
-
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-21.png" alt="Active TUI Protection Modal" width="100%"/>
 
 ---
 

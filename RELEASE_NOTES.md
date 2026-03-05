@@ -1,3 +1,22 @@
+## 🛡️ Guardian Mode & Multi-layered Protection (v1.5.0)
+
+This major release introduces **Guardian Mode**, a high-performance autonomous mitigation engine, along with a re-architected multi-layered security stack.
+
+### **✨ New Features (v1.5.0)**
+- **Guardian Mode (g)**: Autonomous threat response for zero-latency mitigation.
+- **Forensics Vault**: Automatically captures deep forensic evidence (Env Vars, Open Files, Connections, Ancestry) into a JSON report before process termination.
+- **Autonomous Tree Strikes**: Instant nuclear termination for high-risk script-managed threats.
+- **SMTP Security Alerts**: Real-time email notifications with threat metadata and forensic links.
+- **Secure Credential Storage**: Password obfuscation (Base64) and hardened file permissions (600) for SMTP settings.
+- **Multi-layered Security Stack**: Consolidated documentation and logic for Daemon Mode, Active TUI Protection, and Guardian Mode.
+- **Enhanced Journal Logging**: Detailed audit trail for all mitigation and forensic operations.
+- **Visual Status Bar**: Matrix-style "Robotic Typist" status animation during active Guardian oversight.
+
+### **🔧 Improvements & Security**
+- **KeyError Fix**: Resolved a critical dictionary key mismatch in the Guardian interception logic.
+- **Enhanced Settings Modal**: Dedicated, masked password field for improved UX and privacy.
+- **SMTP Diagnostics**: Improved logging for troubleshooting email configuration issues (Gmail App Passwords).
+
 ## 🛠️ Command Viewer Plugins & UX Fix (v1.4.1)
 
 This patch adds 4 new built-in Linux monitoring plugins and restores the contextual tab bar hint.

@@ -8,10 +8,15 @@ import os
 import time
 import argparse
 import json
+import base64
+import copy
 import pty
 import importlib
 from datetime import datetime, timedelta
 import unicodedata
+import random
+import smtplib
+from email.mime.text import MIMEText
 try:
     import psutil
 except ImportError:
@@ -40,10 +45,6 @@ except ImportError:
 import webbrowser
 from pathlib import Path
 import math
-import queue
-import threading
-import select
-import signal
 
 # Debug logging
 DEBUG_LOG_PATH = os.path.expanduser("~/.config/heimdall/debug.log")
@@ -167,7 +168,18 @@ CONFIG = {
     "daemon_enabled": False,
     "alert_timeout": 30,
     "vuln_scan_interval_hours": 0.5,
-    "outbound_refresh_interval": 10.0
+    "outbound_refresh_interval": 10.0,
+    "guardian_enabled": False,
+    "guardian_auto_kill": True,
+    "guardian_auto_block": False,
+    "guardian_email_alert": False,
+    "guardian_email_config": {
+        "smtp_server": "smtp.gmail.com",
+        "smtp_port": 587,
+        "sender_email": "",
+        "sender_password": "",
+        "recipient_email": ""
+    }
 }
 SERVICES_DB = {}
 SYSTEM_SERVICES_DB = {}
@@ -183,8 +195,10 @@ VULN_STATUS_COLOR = 0
 VULN_NEXT_CHECK_TIME = 0.0
 VULN_IS_FETCHING = False
 VULN_LAST_NEW_COUNT = 0
+GUARDIAN_MODE_ACTIVE = False
 SERVICE_SYNC_ERROR = False
 CONFIG_DIR = os.path.expanduser("~/.config/heimdall")
+VAULT_DIR = os.path.join(CONFIG_DIR, "vault")
 PENDING_ALERTS = [] # Global queue for both Daemon IPC and Local TUI Alerts
 PENDING_IPC_RESULT = {} # id -> (allow, kill_parent)
 
@@ -838,6 +852,13 @@ def init_config():
             with open(config_path, 'r') as f:
                 saved = json.load(f)
                 CONFIG.update(saved)
+                # Decode password if encoded (obfuscation)
+                email_cfg = CONFIG.get("guardian_email_config", {})
+                if email_cfg.get("sender_password"):
+                    try:
+                        pwd = email_cfg["sender_password"]
+                        email_cfg["sender_password"] = base64.b64decode(pwd.encode()).decode()
+                    except: pass
         except Exception as e:
             debug_log(f"CONFIG: Error loading: {e}")
     else:
@@ -846,8 +867,19 @@ def init_config():
 def save_config():
     config_path = os.path.join(CONFIG_DIR, "config.json")
     try:
+        # Obfuscate password before saving
+        save_data = copy.deepcopy(CONFIG)
+        email_cfg = save_data.get("guardian_email_config", {})
+        if email_cfg.get("sender_password"):
+            pwd = email_cfg["sender_password"]
+            email_cfg["sender_password"] = base64.b64encode(pwd.encode()).decode()
+            
         with open(config_path, 'w') as f:
-            json.dump(CONFIG, f, indent=2)
+            json.dump(save_data, f, indent=2)
+            
+        # Ensure only current user (often root) can read
+        try: os.chmod(config_path, 0o600)
+        except: pass
     except Exception as e:
         debug_log(f"CONFIG: Error saving: {e}")
 
@@ -885,6 +917,20 @@ def check_active_tui_protection(pid, port, prog, user, findings):
     is_suspicious = any(f['level'] in ['HIGH', 'CRITICAL'] for f in findings)
     if not is_suspicious: return
     
+    # 🛡️ GUARDIAN MODE INTERCEPTION
+    if GUARDIAN_MODE_ACTIVE:
+        reason = ", ".join([f"{f['type']}:{f['rule']}" for f in findings])
+        run_guardian_mitigation(pid_int, prog, reason)
+        # We don't return here because we might still want to add it to PENDING_ALERTS 
+        # (marked as mitigated) for UI feedback, but avoid suspending it manually again.
+        # For now, let's just mark it handled and skip manual modal.
+        try:
+            p = psutil.Process(pid_int)
+            handle_key = (pid_int, p.create_time())
+            TUI_PROTECTION_HANDLED.add(handle_key)
+        except: pass
+        return
+
     # Avoid duplicate handling for the same process instance
     try:
         p = psutil.Process(pid_int)
@@ -940,6 +986,270 @@ def apply_tui_protection_action(stdscr, alert, result):
                 debug_log(f"TUI-PROTECT: Killed suspicious process {pid} ({prog}).")
                 show_message(stdscr, f"Killed Suspicious: {prog}")
         except: pass
+
+# --------------------------------------------------
+# 🛡️ GUARDIAN MODE ENGINE
+# --------------------------------------------------
+
+def draw_guardian_border(stdscr):
+    """Robotic typing status on the bottom border of the witr pane."""
+    if not GUARDIAN_MODE_ACTIVE: return
+    
+    h, w = stdscr.getmaxyx()
+    t = time.time()
+    
+    # Robotic/Matrix Green
+    color = curses.color_pair(CP_TRAFFIC_MID) | curses.A_BOLD
+    
+    msg = " HEIMDALL IS WORKING ON GUARDIAN MODE ... "
+    
+    # Animation cycle: 5.0 seconds (3.5s typing, 1.5s pause)
+    cycle = 5.0
+    progress = t % cycle
+    
+    if progress < 3.5:
+        idx = int((progress / 3.5) * len(msg))
+    else:
+        idx = len(msg)
+        
+    display_text = msg[:idx]
+    
+    # Matrix glitch effect on the typing head
+    if idx < len(msg):
+        glitches = "01X#$%&/?"
+        display_text += glitches[int(t * 22) % len(glitches)]
+    
+    try:
+        # Position: Bottom-left border line of the details pane
+        y = h - 1
+        x = 4
+        
+        # Overwrite the border line with the status
+        stdscr.addstr(y, x, display_text, color)
+    except: pass
+
+def send_guardian_email(subject, body):
+    """Send threat alert via SMTP."""
+    cfg = CONFIG.get("guardian_email_config", {})
+    if not cfg.get("smtp_server") or not cfg.get("smtp_port"):
+        debug_log("GUARDIAN: SMTP server/port missing, skipping alert.")
+        return False
+        
+    if not cfg.get("sender_email") or not cfg.get("recipient_email"):
+        debug_log("GUARDIAN: Email credentials (sender/recipient) missing, skipping alert.")
+        return False
+    
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = f"🛡️ HEIMDALL GUARDIAN: {subject}"
+        msg['From'] = cfg["sender_email"]
+        msg['To'] = cfg["recipient_email"]
+
+        with smtplib.SMTP(cfg["smtp_server"], cfg["smtp_port"]) as server:
+            if cfg["smtp_port"] == 587:
+                server.starttls()
+            if cfg["sender_password"]:
+                server.login(cfg["sender_email"], cfg["sender_password"])
+            server.send_message(msg)
+            debug_log(f"GUARDIAN: Email alert sent to {cfg['recipient_email']}")
+            return True
+    except Exception as e:
+        debug_log(f"GUARDIAN: Failed to send email: {e}")
+        return False
+
+def save_forensic_vault_report(pid, prog, reason):
+    """Collect deep forensic evidence from a process before it vanishes."""
+    try:
+        if not os.path.exists(VAULT_DIR):
+            os.makedirs(VAULT_DIR, exist_ok=True)
+            
+        p = psutil.Process(pid)
+        ts = int(time.time())
+        filename = f"forensics_{prog}_{pid}_{ts}.json"
+        target_path = os.path.join(VAULT_DIR, filename)
+        
+        report = {
+            "threat_info": {
+                "prog": prog,
+                "pid": pid,
+                "reason": reason,
+                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+            },
+            "process_metadata": {
+                "name": p.name(),
+                "exe": p.exe(),
+                "cwd": p.cwd(),
+                "cmdline": p.cmdline(),
+                "status": p.status(),
+                "create_time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(p.create_time())),
+                "username": p.username(),
+                "uids": p.uids()._asdict() if hasattr(p, 'uids') else None,
+                "gids": p.gids()._asdict() if hasattr(p, 'gids') else None
+            },
+            "environment": p.environ(),
+            "open_files": [f.path for f in p.open_files()],
+            "connections": [
+                {
+                    "fd": c.fd,
+                    "family": str(c.family),
+                    "type": str(c.type),
+                    "laddr": f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else None,
+                    "raddr": f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else None,
+                    "status": c.status
+                } for c in p.connections()
+            ],
+            "ancestry": [
+                {"pid": pp.pid, "name": pp.name(), "cmdline": pp.cmdline()} 
+                for pp in p.parents()
+            ]
+        }
+        
+        with open(target_path, 'w') as f:
+            json.dump(report, f, indent=2)
+            
+        # Secure the file
+        try: os.chmod(target_path, 0o600)
+        except: pass
+        
+        return target_path
+    except Exception as e:
+        debug_log(f"FORENSICS: Failed to save report for {pid}: {e}")
+        return None
+
+def run_guardian_mitigation(pid, prog, reason, severity="HIGH"):
+    """Automatic mitigation engine for Guardian Mode."""
+    debug_log(f"GUARDIAN: Mitigating {severity} threat: {prog} (PID:{pid}) - {reason}")
+    
+    mitigation_log = []
+    
+    # 1. Take forensics report (Forensics Vault)
+    try:
+        report_path = save_forensic_vault_report(pid, prog, reason)
+        if report_path:
+            mitigation_log.append(f"Forensics: Saved to {report_path}")
+            debug_log(f"GUARDIAN: Forensics report saved to {report_path}")
+            
+        p = psutil.Process(pid)
+        cmdline = " ".join(p.cmdline())
+        mitigation_log.append(f"Command: {cmdline}")
+        mitigation_log.append(f"Ancestry: {' -> '.join([pp.name() for pp in p.parents()])}")
+    except: pass
+
+    # 2. Block IP (If applicable and enabled)
+    # Since we often detect by PID, block IP might need mapping.
+    # Placeholder for firewall blocking logic
+    if CONFIG.get("guardian_auto_block", False):
+        mitigation_log.append("Firewall: Auto-blocking not yet fully automated in this version.")
+
+    # 3. Kill Process (Default/Recommended)
+    if CONFIG.get("guardian_auto_kill", True):
+        try:
+            # Tree strike for Maximum Prejudice
+            perform_tree_strike(pid)
+            mitigation_log.append(f"Action: TREE STRIKE EXECUTED (Killed PID {pid} and children)")
+        except Exception as e:
+            mitigation_log.append(f"Action: Kill failed: {e}")
+
+    # 4. Notify
+    if CONFIG.get("guardian_email_alert", False):
+        debug_log(f"GUARDIAN: Email alert triggered for {prog}, spawning thread.")
+        body = f"Heimdall Guardian has intercepted a {severity} threat.\n\n"
+        body += f"Process: {prog}\nPID: {pid}\nReason: {reason}\n\n"
+        body += "Mitigation Actions:\n" + "\n".join(mitigation_log)
+        threading.Thread(target=send_guardian_email, args=(f"Mitigated {prog}", body), daemon=True).start()
+    else:
+        debug_log("GUARDIAN: Email alerts are DISABLED in settings, skipping notification.")
+
+    return mitigation_log
+
+def draw_guardian_settings_modal(stdscr):
+    """Special modal for Guardian configuration."""
+    # Use local state to support Cancel (ESC)
+    working_cfg = CONFIG.get("guardian_email_config", {}).copy()
+    auto_kill = CONFIG.get("guardian_auto_kill", True)
+    auto_block = CONFIG.get("guardian_auto_block", False)
+    email_alert = CONFIG.get("guardian_email_alert", False)
+
+    h, w = stdscr.getmaxyx()
+    win_h = 16
+    win_w = 72
+    y = (h - win_h) // 2
+    x = (w - win_w) // 2
+    
+    try:
+        win = curses.newwin(win_h, win_w, y, x)
+        win.keypad(True)
+        win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: return
+
+    sel = 0
+    title = " 🛡️  GUARDIAN MODE SETTINGS "
+    
+    while True:
+        win.erase()
+        win.box()
+        win.addstr(0, (win_w - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+
+        items = [
+            ("Auto-Kill High Risk", "ENABLED" if auto_kill else "DISABLED"),
+            ("Auto-Block IP", "ENABLED" if auto_block else "DISABLED"),
+            ("Email Alerts", "ENABLED" if email_alert else "DISABLED"),
+            ("SMTP Server", working_cfg.get("smtp_server", "")),
+            ("SMTP Port", str(working_cfg.get("smtp_port", 587))),
+            ("Sender Email", working_cfg.get("sender_email", "")),
+            ("Sender Password", "********" if working_cfg.get("sender_password") else ""),
+            ("Recipient Email", working_cfg.get("recipient_email", "")),
+        ]
+        
+        for i, (label, val) in enumerate(items):
+            # Highlight value portion with fixed width for visibility
+            val_attr = curses.A_REVERSE if i == sel else curses.A_NORMAL
+            label_attr = curses.color_pair(CP_ACCENT)
+            if i == sel: label_attr |= curses.A_BOLD
+            
+            win.addstr(2 + i, 4, f"{label:<25}: ", label_attr)
+            
+            # Show placeholder for empty strings so selection is visible
+            display_val = val if val else "(not set)"
+            win.addstr(2 + i, 30, f" {display_val} ".ljust(35), val_attr)
+        
+        footer = " [↑↓] Navigate  [Enter] Edit/Toggle  [s] Save  [Esc] Cancel "
+        win.addstr(win_h - 2, (win_w - len(footer)) // 2, footer, curses.A_DIM)
+        win.refresh()
+        
+        key = win.getch()
+        if key == 27: # ESC
+            break
+        elif key in (ord('s'), ord('S')):
+            # Apply and Save
+            CONFIG["guardian_auto_kill"] = auto_kill
+            CONFIG["guardian_auto_block"] = auto_block
+            CONFIG["guardian_email_alert"] = email_alert
+            CONFIG["guardian_email_config"] = working_cfg
+            save_config()
+            show_message(stdscr, "Guardian settings saved.", duration=2.0)
+            break
+        elif key == curses.KEY_UP: sel = (sel - 1) % len(items)
+        elif key == curses.KEY_DOWN: sel = (sel + 1) % len(items)
+        elif key in (10, 13, curses.KEY_ENTER):
+            if sel == 0: auto_kill = not auto_kill
+            elif sel == 1: auto_block = not auto_block
+            elif sel == 2: email_alert = not email_alert
+            else:
+                fields = [None, None, None, "smtp_server", "smtp_port", "sender_email", "sender_password", "recipient_email"]
+                field = fields[sel]
+                if field == "smtp_port":
+                    res = get_input_modal(stdscr, "SMTP Port:", str(working_cfg.get("smtp_port", 587)))
+                    if res and res.isdigit(): working_cfg["smtp_port"] = int(res)
+                elif field == "sender_password":
+                    res = get_input_modal(stdscr, "Sender Password:", "")
+                    if res is not None:
+                        working_cfg["sender_password"] = res
+                elif field:
+                    res = get_input_modal(stdscr, f"Edit {items[sel][0]}:", working_cfg.get(field, ""))
+                    if res is not None: working_cfg[field] = res
+
+    del win
 
 class DaemonManager:
     def __init__(self):
@@ -1388,6 +1698,7 @@ CP_TRAFFIC_LOW = 6
 CP_TRAFFIC_MID = 7
 CP_TRAFFIC_HIGH = 8
 CP_TRAFFIC_BURST = 9
+CP_GUARDIAN = 10     # Guardian Mode Active - Border pulse
 
 THEMES = [
     {
@@ -1402,7 +1713,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (curses.COLOR_CYAN, -1),
             CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
             CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
-            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1),
+            CP_GUARDIAN: (curses.COLOR_RED, -1)
         },
         # Precise 256-color map (FG, BG)
         "colors_256": {
@@ -1414,7 +1726,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (244, 234),   # Dim Grey
             CP_TRAFFIC_MID: (76, 234),    # Green
             CP_TRAFFIC_HIGH: (214, 234),  # Orange
-            CP_TRAFFIC_BURST: (196, 234)  # Red
+            CP_TRAFFIC_BURST: (196, 234), # Red
+            CP_GUARDIAN: (196, 234)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1429,7 +1742,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
             CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
             CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
-            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1),
+            CP_GUARDIAN: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (214, 235),   # Orange1 on Black/Grey (Gruvbox BG)
@@ -1440,7 +1754,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (240, 235),
             CP_TRAFFIC_MID: (142, 235),
             CP_TRAFFIC_HIGH: (172, 235),
-            CP_TRAFFIC_BURST: (167, 235)
+            CP_TRAFFIC_BURST: (167, 235),
+            CP_GUARDIAN: (167, 235)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1455,7 +1770,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
             CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
             CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
-            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1),
+            CP_GUARDIAN: (curses.COLOR_MAGENTA, -1)
         },
         "colors_256": {
             CP_HEADER: (135, 234),   # MediumPurple on DarkBG
@@ -1466,7 +1782,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (60, 234),
             CP_TRAFFIC_MID: (120, 234),
             CP_TRAFFIC_HIGH: (215, 234),
-            CP_TRAFFIC_BURST: (203, 234)
+            CP_TRAFFIC_BURST: (203, 234),
+            CP_GUARDIAN: (135, 234)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1481,7 +1798,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
             CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
             CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
-            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1),
+            CP_GUARDIAN: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (117, 235),   # SkyBlue on DeepDark
@@ -1492,7 +1810,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (242, 235),
             CP_TRAFFIC_MID: (114, 235),
             CP_TRAFFIC_HIGH: (216, 235),
-            CP_TRAFFIC_BURST: (204, 235)
+            CP_TRAFFIC_BURST: (204, 235),
+            CP_GUARDIAN: (210, 235)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     },
@@ -1507,7 +1826,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (curses.COLOR_WHITE, -1),
             CP_TRAFFIC_MID: (curses.COLOR_GREEN, -1),
             CP_TRAFFIC_HIGH: (curses.COLOR_YELLOW, -1),
-            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1)
+            CP_TRAFFIC_BURST: (curses.COLOR_RED, -1),
+            CP_GUARDIAN: (curses.COLOR_RED, -1)
         },
         "colors_256": {
             CP_HEADER: (39, 236),    # DeepSkyBlue on DarkGreyBlue
@@ -1518,7 +1838,8 @@ THEMES = [
             CP_TRAFFIC_LOW: (241, 236),
             CP_TRAFFIC_MID: (114, 236),
             CP_TRAFFIC_HIGH: (208, 236),
-            CP_TRAFFIC_BURST: (197, 236)
+            CP_TRAFFIC_BURST: (197, 236),
+            CP_GUARDIAN: (203, 236)
         },
         "attrs": { CP_HEADER: curses.A_BOLD, CP_ACCENT: curses.A_BOLD, CP_BORDER: curses.A_DIM }
     }
@@ -1596,6 +1917,7 @@ def parse_args():
     parser.add_argument('--pid', type=str, help='Filter view by specific Process ID')
     parser.add_argument('--user', type=str, help='Filter view by Process Owner (User)')
     parser.add_argument('--daemon', '--background', action='store_true', help='Run in Daemon (background) monitoring mode')
+    parser.add_argument('--guardian', action='store_true', help='Enable Guardian Mode (Real-time Threat Mitigation)')
     return parser.parse_args()
 
 
@@ -3290,6 +3612,8 @@ def perform_security_heuristics(pid, port, prog, username, is_outbound=False):
                 msg = rule["message"]
                 
             findings.append({
+                "type": rule["level"],
+                "rule": rule["name"],
                 "level": rule["level"],
                 "msg": msg,
                 "icon": rule["icon"]
@@ -4128,7 +4452,7 @@ def draw_auto_update_settings_modal(stdscr):
 
 def draw_settings_modal(stdscr):
     h, w = stdscr.getmaxyx()
-    bh, bw = 10, 45
+    bh, bw = 12, 55
     y, x = (h - bh) // 2, (w - bw) // 2
     win = curses.newwin(bh, bw, y, x)
     win.keypad(True)
@@ -4147,6 +4471,7 @@ def draw_settings_modal(stdscr):
         win.addstr(5, 4, "[v] Vulnerability Scanner (NVD API Key)", curses.color_pair(CP_TEXT))
         win.addstr(6, 4, "[i] Vuln. Scan Interval", curses.color_pair(CP_TEXT))
         win.addstr(7, 4, "[o] Outbound Refresh Interval", curses.color_pair(CP_TEXT))
+        win.addstr(8, 4, "[g] Guardian Mode Configuration", curses.color_pair(CP_TEXT))
         
         daemon_status = "ON" if CONFIG.get("daemon_enabled") else "OFF"
         win.addstr(4, bw - 10, f"[{daemon_status}]", curses.color_pair(CP_ACCENT) if daemon_status == "ON" else curses.A_DIM)
@@ -4154,6 +4479,9 @@ def draw_settings_modal(stdscr):
         api_key = CONFIG.get("nvd_api_key")
         key_status = "SET" if api_key else "MISSING"
         win.addstr(5, bw - 10, f"[{key_status}]", curses.color_pair(CP_ACCENT) if api_key else curses.color_pair(CP_WARN))
+
+        guardian_status = "ACTIVE" if GUARDIAN_MODE_ACTIVE else "READY"
+        win.addstr(8, bw - 10, f"[{guardian_status}]", curses.color_pair(CP_GUARDIAN) if GUARDIAN_MODE_ACTIVE else curses.A_DIM)
 
         vuln_interval = CONFIG.get("vuln_scan_interval_hours", 1.0)
         win.addstr(6, bw - 10, f"[{vuln_interval}h]", curses.color_pair(CP_TEXT) | curses.A_BOLD)
@@ -4179,6 +4507,8 @@ def draw_settings_modal(stdscr):
             draw_vuln_interval_settings_modal(stdscr)
         elif k == ord('o'):
             draw_outbound_interval_settings_modal(stdscr)
+        elif k == ord('g'):
+            draw_guardian_settings_modal(stdscr)
             
     win.erase(); win.refresh(); del win
     stdscr.touchwin()
@@ -5806,6 +6136,7 @@ def draw_help_bar(stdscr, active_pane=0):
             (" 📋 [d Full Inspect]", curses.color_pair(CP_ACCENT)),
             (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
             (" 🌐 [o Outbound]", curses.color_pair(CP_ACCENT)),
+            (" 🛡️  [g Guardian]", curses.color_pair(CP_GUARDIAN) | curses.A_BOLD),
             (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
             (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
             (" 🌍 [e Env Vars]", curses.color_pair(CP_ACCENT)),
@@ -8715,6 +9046,8 @@ def main(stdscr, args=None):
             try:
                 stdscr.addstr(h-2, 2, f_str, curses.color_pair(CP_HEADER) | curses.A_BOLD)
             except: pass
+
+        draw_guardian_border(stdscr)
         curses.doupdate()
 
         # If any modal/action requested a full refresh, do the same sequence used for 'r'
@@ -8967,6 +9300,16 @@ def main(stdscr, args=None):
             
         elif k == ord('o'):
             draw_outbound_modal(stdscr)
+            
+        elif k == ord('g'):
+            global GUARDIAN_MODE_ACTIVE
+            if not GUARDIAN_MODE_ACTIVE:
+                if confirm_dialog(stdscr, "ACTIVATE GUARDIAN MODE? (Sudo required for mitigation)"):
+                    GUARDIAN_MODE_ACTIVE = True
+                    show_message(stdscr, "🛡️ GUARDIAN MODE ACTIVE - AUTO MITIGATION ON", duration=2.0)
+            else:
+                GUARDIAN_MODE_ACTIVE = False
+                show_message(stdscr, "🛡️ GUARDIAN MODE DISABLED", duration=2.0)
             
         elif k == ord('c'):
             CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
@@ -9705,6 +10048,11 @@ def cli_entry():
         check_witr_exists()
         run_daemon()
         return
+
+    global GUARDIAN_MODE_ACTIVE
+    if args.guardian:
+        GUARDIAN_MODE_ACTIVE = True
+        debug_log("CLI: Guardian Mode enabled via --guardian.")
 
     # Check terminal size after args so --help works in small terminals
     check_and_show_terminal_size_then_exit()
