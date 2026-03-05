@@ -1,4 +1,14 @@
-## � Docker Testing & Security Hardening (v1.6.0)
+## 📔 Systemd Journal Auditing & Real-time Logs (v1.7.0)
+
+This release introduces native support for auditing system-wide events and service failures directly within the Heimdall interface.
+
+### **✨ New Features (v1.7.0)**
+- **Systemd Journal Logs (l/j)**: New high-priority modal for real-time log auditing.
+- **Fail-Fast Service Monitoring**: Automatically identifies and lists failing systemd units with one-click inspection.
+- **Sentinel Log Integration**: Behavioral engine now monitors journal logs for failure patterns (Killed, OOM, Auth Denied) and flags them with high urgency.
+- **Contextual Live Tail**: Real-time `journalctl -f` integration with smart filtering and semantic syntax highlighting.
+
+## 🐋 Docker Testing & Security Hardening (v1.6.0)
 
 This release focuses on easing the adoption of Heimdall with Docker and hardening the project's security via GitHub Advanced Security.
 
