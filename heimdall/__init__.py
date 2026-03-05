@@ -180,10 +180,15 @@ CONFIG = {
         "sender_password": "",
         "recipient_email": ""
     }
+    "journal_refresh_interval": 30.0,
+    "journal_lines": 100,
 }
 SERVICES_DB = {}
 SYSTEM_SERVICES_DB = {}
 SENTINEL_RULES = []
+JOURNAL_QUEUE = queue.Queue()
+JOURNAL_DATA = {"logs": [], "failed": {}, "last_update": 0.0}
+JOURNAL_LOCK = threading.Lock()
 CONFIG_LOCK = threading.Lock()
 UPDATING_SERVICES_EVENT = threading.Event()
 UPDATE_STATUS_MSG = ""
@@ -444,11 +449,69 @@ def _outbound_poller_thread():
             for k in list(OUTBOUND_HISTORY.keys()):
                 if now - OUTBOUND_HISTORY[k]["last_seen"] > 600: # 10 min
                     OUTBOUND_HISTORY.pop(k, None)
-                    
         except Exception as e:
             debug_log(f"OUTBOUND_POLLER Error: {e}")
             
         time.sleep(globals().get("OUTBOUND_REFRESH_INTERVAL", 3.0))
+
+def _journal_poller_thread():
+    """Background thread: periodically audits systemd journal for failed units and critical events."""
+    while True:
+        try:
+            interval = CONFIG.get("journal_refresh_interval", 30.0)
+            log_limit = CONFIG.get("journal_lines", 100)
+            
+            # 1. Fetch failing units
+            failed_units = {}
+            try:
+                # systemctl --failed --no-legend
+                out = subprocess.run(["systemctl", "list-units", "--state=failed", "--no-legend"], capture_output=True, text=True, timeout=5)
+                if out.returncode == 0:
+                    for line in out.stdout.strip().splitlines():
+                        if line.strip():
+                            parts = line.split()
+                            if parts:
+                                unit = parts[0]
+                                failed_units[unit] = {"status": "failed"}
+            except: pass
+
+            # 2. Fetch recent critical logs
+            log_entries = []
+            try:
+                # Fetch recent logs with priority <= 4 (warning and up)
+                cmd = ["journalctl", "-n", str(log_limit), "-p", "4", "-o", "json", "--no-pager"]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if proc.returncode == 0:
+                    lines = proc.stdout.strip().splitlines()
+                    for line in lines:
+                        if not line.strip(): continue
+                        try:
+                            d = json.loads(line)
+                            msg = d.get("MESSAGE", "")
+                            prio = int(d.get("PRIORITY", 6))
+                            # Sentinel integration: mark critical if specific keywords found
+                            is_crit = prio <= 3 or any(kw in msg.lower() for kw in ["failed", "denied", "killed", "oom", "error"])
+                            
+                            entry = {
+                                "ts": datetime.fromtimestamp(int(d.get("__REALTIME_TIMESTAMP", 0))/1000000).strftime("%H:%M:%S"),
+                                "unit": d.get("_SYSTEMD_UNIT") or d.get("SYSLOG_IDENTIFIER") or "syslog",
+                                "msg": msg,
+                                "priority": prio,
+                                "is_crit": is_crit
+                            }
+                            log_entries.append(entry)
+                        except: continue
+            except: pass
+
+            with JOURNAL_LOCK:
+                JOURNAL_DATA["failed"] = failed_units
+                JOURNAL_DATA["logs"] = log_entries
+                JOURNAL_DATA["last_update"] = time.time()
+                
+        except Exception as e:
+            debug_log(f"JOURNAL_POLLER: {e}")
+            
+        time.sleep(max(5, interval))
 
 def get_traffic_for_pid(pid):
     """Thread-safe getter for traffic data of a specific pid."""
@@ -6136,6 +6199,7 @@ def draw_help_bar(stdscr, active_pane=0):
             (" 📋 [d Full Inspect]", curses.color_pair(CP_ACCENT)),
             (" 🎨 [c Color]", curses.color_pair(CP_ACCENT)),
             (" 🌐 [o Outbound]", curses.color_pair(CP_ACCENT)),
+            (" 📔 [l Logs]", curses.color_pair(CP_ACCENT)),
             (" 🛡️  [g Guardian]", curses.color_pair(CP_GUARDIAN) | curses.A_BOLD),
             (" ⚙️  [p Settings]", curses.color_pair(CP_ACCENT)),
             (" 🔍 [F Filter]", curses.color_pair(CP_ACCENT)),
@@ -8157,6 +8221,183 @@ def draw_outbound_modal(stdscr):
     del win
     return
 
+def draw_journal_tail_window(stdscr, cmd_str):
+    """Real-time journal output viewer."""
+    h, w = stdscr.getmaxyx()
+    twin = curses.newwin(h-6, w-10, 3, 5)
+    twin.box()
+    twin.timeout(200)
+    twin.keypad(True)
+    
+    import shlex
+    cmd = shlex.split(cmd_str)
+    
+    try:
+        tproc = subprocess.Popen(cmd, 
+                                 stdout=subprocess.PIPE, 
+                                 stderr=subprocess.STDOUT, 
+                                 text=False)
+    except Exception as e:
+        show_message(stdscr, f"Tail error: {e}")
+        return
+    
+    import fcntl
+    fd = tproc.stdout.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+    
+    tlines = []
+    title = f" 📔 Journal Tail: {cmd_str} "
+    help_text = " [q/ESC] Close Stream "
+    
+    while True:
+        try:
+            line_bytes = tproc.stdout.readline()
+            if line_bytes:
+                line = line_bytes.decode('utf-8', 'replace').rstrip('\n')
+                tlines.append(line)
+                if len(tlines) > h - 10:
+                    tlines.pop(0)
+        except (IOError, TypeError):
+            pass
+            
+        twin.erase()
+        twin.box()
+        try:
+            twin.addstr(0, (w-10-len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+            twin.addstr(h-7, (w-10-len(help_text))//2, help_text, curses.color_pair(CP_ACCENT))
+            
+            for i, l in enumerate(tlines):
+                clean_l = "".join(c for c in l if c.isprintable())
+                color = CP_TEXT
+                low_l = clean_l.lower()
+                if any(kw in low_l for kw in ["error", "fail", "crit", "denied", "oom"]):
+                    color = CP_GUARDIAN
+                twin.addstr(1+i, 2, clean_l[:w-14], curses.color_pair(color))
+        except: pass
+        
+        twin.refresh()
+        k = twin.getch()
+        if k in (ord('q'), ord('Q'), 27): break
+            
+    tproc.terminate()
+    try: tproc.wait(timeout=0.5)
+    except: pass
+    del twin
+
+def draw_journal_modal(stdscr):
+    """Centered modal for systemd journal auditing."""
+    if which("journalctl") is None:
+        show_message(stdscr, "journalctl not available or no permissions!")
+        # If no journalctl, let's at least check if we are in a non-systemd environment
+        return
+
+    h, w = stdscr.getmaxyx()
+    bh, bw = int(h * 0.8), int(w * 0.9)
+    y, x = (h - bh) // 2, (w - bw) // 2
+    
+    win = curses.newwin(bh, bw, y, x)
+    win.keypad(True)
+    win.timeout(1000)
+    
+    filter_text = ""
+    scroll_pos = 0
+    
+    while True:
+        win.erase()
+        win.box()
+        
+        # Header
+        title = " 📔 Systemd Journal Logs – Last 100 Lines / Failed Services "
+        win.addstr(0, (bw - len(title)) // 2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        
+        with JOURNAL_LOCK:
+            failed = list(JOURNAL_DATA.get("failed", {}).keys())
+            logs = JOURNAL_DATA.get("logs", [])
+            last_upd = JOURNAL_DATA.get("last_update", 0)
+
+        # 1. Failed Services (Top section)
+        win.addstr(1, 4, "🚩 FAILED SERVICES:", curses.A_BOLD | curses.A_UNDERLINE)
+        curr_y = 2
+        if not failed:
+            win.addstr(curr_y, 6, "✨ All systems nominal. No failed units.", curses.color_pair(CP_ACCENT))
+            curr_y += 2
+        else:
+            for i, unit in enumerate(failed[: (bw // 30) * 3]): # Simple grid
+                col_width = 35
+                col = (i % 3) * col_width
+                row = curr_y + (i // 3)
+                if row >= bh // 4: break
+                try: win.addstr(row, 6 + col, f"● {unit[:33]}", curses.color_pair(CP_GUARDIAN) | curses.A_BOLD)
+                except: pass
+                curr_y = max(curr_y, row + 1)
+            curr_y += 1
+        
+        # 2. Critical Logs
+        win.addstr(curr_y, 4, "📝 CRITICAL EVENTS:", curses.A_BOLD | curses.A_UNDERLINE)
+        curr_y += 1
+        
+        # Filter logic
+        display_logs = logs
+        if filter_text:
+            display_logs = [l for l in logs if filter_text.lower() in l['msg'].lower() or filter_text.lower() in l['unit'].lower()]
+            
+        log_view_h = bh - curr_y - 3
+        if scroll_pos > max(0, len(display_logs) - log_view_h):
+            scroll_pos = max(0, len(display_logs) - log_view_h)
+            
+        for i, entry in enumerate(display_logs[scroll_pos : scroll_pos + log_view_h]):
+            ts = f"{entry['ts']} "
+            unit = f"[{entry['unit'][:18]:<18s}] "
+            msg = entry['msg']
+            
+            prio = entry['priority'] # 0-7
+            color = CP_TEXT
+            if prio <= 3 or entry.get('is_crit'): color = CP_GUARDIAN # Red for critical
+            elif prio == 4: color = CP_WARN # Yellow for warning
+            
+            try:
+                win.addstr(curr_y + i, 4, ts, curses.A_DIM)
+                win.addstr(curr_y + i, 4 + len(ts), unit, curses.color_pair(CP_ACCENT))
+                win.addstr(curr_y + i, 4 + len(ts) + len(unit), msg[:bw - len(ts) - len(unit) - 8], curses.color_pair(color))
+            except: break
+            
+        # Footer
+        footer = f" [f] Filter: {filter_text or 'ALL':<10s} | [r] Refresh | [t] Live Tail | [Esc] Close "
+        try: win.addstr(bh-2, (bw - len(footer)) // 2, footer, curses.color_pair(CP_ACCENT) | curses.A_BOLD)
+        except: pass
+        
+        age = int(time.time() - last_upd)
+        upd_str = f"Sync: {age}s ago"
+        try: win.addstr(bh-1, bw - len(upd_str) - 3, upd_str, curses.A_DIM)
+        except: pass
+
+        win.refresh()
+        k = win.getch()
+        
+        if k == 27: break
+        elif k in (ord('q'), ord('Q')): break
+        elif k in (ord('f'), ord('F')):
+            new_f = get_input_modal(stdscr, "Filter (Unit/Text):", filter_text)
+            if new_f is not None: 
+                filter_text = new_f
+                scroll_pos = 0
+        elif k in (ord('r'), ord('R')):
+            # Signal background thread (optional, it polls anyway)
+            pass
+        elif k == curses.KEY_UP:
+            if scroll_pos > 0: scroll_pos -= 1
+        elif k == curses.KEY_DOWN:
+            if scroll_pos < len(display_logs) - log_view_h: scroll_pos += 1
+        elif k in (ord('t'), ord('T')):
+            cmd = "journalctl -f"
+            if filter_text: cmd += f" -g \"{filter_text}\""
+            draw_journal_tail_window(stdscr, cmd)
+            win.touchwin()
+            
+    del win
+    return
+
 def format_bytes(b):
     if b < 1024: return f"{b} B"
     if b < 1024*1024: return f"{b/1024:.1f} KB"
@@ -8746,6 +8987,11 @@ def main(stdscr, args=None):
     outbound_thread.start()
     debug_log("OUTBOUND_POLLER: Background thread started.")
 
+    # Start Journal Poller thread
+    journal_thread = threading.Thread(target=_journal_poller_thread, daemon=True)
+    journal_thread.start()
+    debug_log("JOURNAL_POLLER: Background thread started.")
+
     rows = parse_ss_cached()
     cache = {}
     firewall_status = {}
@@ -9138,6 +9384,11 @@ def main(stdscr, args=None):
 
         elif k == ord('v') or k == ord('n'):
             _open_vuln_modal(stdscr)
+            continue
+            
+        elif k == ord('l') or k == ord('j'):
+            draw_journal_modal(stdscr)
+            stdscr.touchwin()
             continue
             
         if k == 9 or k == KEY_TAB:

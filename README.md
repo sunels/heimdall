@@ -432,6 +432,7 @@ That's it — Heimdall will discover and load it automatically on next launch.
 | o | Outbound Connections Modal (**Space**: Freeze, **t**: Tail, **f**: Tail Files, **S**: HTTP Summary) |
 | d | Full System Dump (Reports all services/units to file) |
 | p | Settings (Auto-update, etc.) |
+| l / j | Systemd Journal Logs modal (Failed services & Recent logs) |
 | q | Quit |
 
 ### 📜 Detail View (witr output)
