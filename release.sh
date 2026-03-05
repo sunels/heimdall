@@ -40,6 +40,7 @@ fi
 # 2. Check Prerequisites
 PYTHON_CMD="python3"
 TWINE_CMD="twine"
+MISSING_TOOLS=()
 
 if [[ -d ".venv" ]]; then
     PYTHON_CMD=".venv/bin/python3"
@@ -49,9 +50,28 @@ elif [[ -d "venv" ]]; then
     TWINE_CMD="venv/bin/twine"
 fi
 
+# Essential Python Tools
 if ! $TWINE_CMD --version &> /dev/null || ! $PYTHON_CMD -m build --help &> /dev/null; then
     echo "❌ ERROR: 'build' or 'twine' not found. Install them with: pip install --upgrade build twine"
     exit 1
+fi
+
+# System Packaging Tools
+if ! command -v dpkg-buildpackage &> /dev/null; then MISSING_TOOLS+=("dpkg-buildpackage"); fi
+if ! command -v rpmbuild &> /dev/null; then MISSING_TOOLS+=("rpmbuild"); fi
+if ! command -v pyinstaller &> /dev/null && ! [[ -f ".venv/bin/pyinstaller" ]] && ! [[ -f "venv/bin/pyinstaller" ]]; then 
+    MISSING_TOOLS+=("pyinstaller"); 
+fi
+
+if [ ${#MISSING_TOOLS[@]} -ne 0 ]; then
+    echo "⚠️  WARNING: Missing build tools: [${MISSING_TOOLS[*]}]"
+    echo "This release will be INCOMPLETE and missing certain assets."
+    read -p "Do you want to continue anyway? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "❌ Aborting release. Please install missing tools first."
+        exit 1
+    fi
 fi
 
 if [[ -z "$TWINE_PASSWORD" ]]; then
