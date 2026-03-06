@@ -51,7 +51,12 @@
   - 📧 **SMTP Alerts**: Instant email notifications with threat metadata and ancestry logs.
   - 🎨 **Pulsing Borders**: Visual TUI animation signifying active state.
   - ⚙️ **Custom Configuration**: Fine-tune mitigation strategies via a dedicated settings sub-modal.
-- 🖥️ **System Health Panel**: Live CPU/RAM/Swap/Disk/Battery bars + OS/Kernel/Host/DE info in the detail view.
+- 🔏 **Verifiable Integrity Dashboard (4)** (v1.9.0): Hardware & Runtime Trust.
+  - 🔑 **Measured Boot**: PCR-based validation of current boot stage vs trusted baseline.
+  - 🔩 **TPM Discovery**: Deep audit of TPM2 chips, firmware, and hash banks.
+  - 🕵️ **IMA Monitoring**: Tracking Integrity Measurement Architecture events in the kernel.
+  - 🏔️ **Distro-Agnostic Intelligence**: Smart package manager discovery for `apt`, `dnf`, `zypper`, `pacman`, and `apk`.
+- 🖥️ **System Health Panel**: Live CPU/RAM/Swap/Disk/Battery bars + OS/Kernel/Host/DE info in the detail view. Now including **TPM & ZFS health monitoring**.
 - ⚖️ **Process Priority (Renice)**: Detailed modal to change CPU priority with real-time feedback.
 - ☠️ **OOM Score Adjustment**: Control which processes Linux sacrifices during RAM shortage.
 - ⏸️ **Tree-Aware Pause/Continue**: Freezes both the process and its script loop parent.
@@ -136,7 +141,7 @@ sudo mv heimdall_standalone /usr/local/bin/heimdall
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
  
 ```bash
-sudo apt install ./heimdall_1.5.0-1_all.deb
+sudo apt install ./heimdall_1.9.0-1_all.deb
 ```
 
 ---
@@ -146,7 +151,7 @@ sudo apt install ./heimdall_1.5.0-1_all.deb
  
 ```bash
 # Download the .rpm from Releases
-sudo dnf install ./heimdall-1.5.0-1.noarch.rpm
+sudo dnf install ./heimdall-1.9.0-1.noarch.rpm
 ```
  
 ---
@@ -369,21 +374,26 @@ That's it — Heimdall will discover and load it automatically on next launch.
 
 ---
 
-### 📋 Log Explorer — Unified System Logs & Auditing (l)
-<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-40.png" alt="heimdall log explorer" width="100%"/>
+## 🔏 Verifiable Integrity Dashboard (TPM2 + Measured Boot)
+
+Inspired by **Amutable's** (Lennart Poettering & Christian Brauner) verifiable integrity vision, Heimdall provides cryptographic verification of your system's boot and runtime state.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-41.png" alt="Integrity Dashboard" width="100%"/>
+
+### **Key Components**
+- **Boot Integrity Verification**: Audits TPM2 PCR banks (0-7) to verify Secure Boot, Kernel, and Bootloader state against a trusted baseline.
+- **Hardware Audit**: Deep discovery of TPM2 manufacturer, firmware version, and supported cryptographic banks (SHA1/SHA256).
+- **Measured UKI Detection**: Automatically identifies if the system is running a "Measured Unified Kernel Image" for modern, high-security boot chains.
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-42.png" alt="TPM Audit" width="100%"/>
 
 ---
 
-### 🔏 Verifiable Integrity Dashboard — Boot & Runtime Cryptographic Checks (Plugin Tab)
+## 🖥️ System Health & Storage Integrity
 
-Inspired by **Amutable's** (Lennart Poettering & Christian Brauner) verifiable integrity vision.
-Heimdall ships a built-in **Integrity Dashboard** plugin that performs cryptographic verification at three levels:
+Heimdall now integrates **TPM presence** and **ZFS pool health** directly into the main System Health dashboard, providing a "single pane of glass" for core system reliability.
 
-- **Boot Integrity** — Reads TPM2 PCR 0-7 (Secure Boot, kernel, bootloader) and compares against a stored baseline. Detects measured boot chain tampering.
-- **Runtime Integrity** — Parses Linux IMA (`/sys/kernel/security/ima/ascii_runtime_measurements`) for critical paths (`/bin`, `/usr/bin`, `/etc`, systemd units). Checks `security.ima` extended attributes for appraisal status.
-- **Anomaly Detection** — Hashes all systemd `.service`/`.timer`/`.socket` unit files and alerts on any modification, addition, or deletion since baseline. Integrates with Sentinel risk scoring and Guardian Mode auto-mitigation.
-
-Optional dependencies: `tpm2-pytss` (TPM), `tpm2-tools` (CLI fallback), `ima-evm-utils` (appraisal). All checks degrade gracefully without them.
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-43.png" alt="System Health" width="100%"/>
 
 ---
 

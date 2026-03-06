@@ -1094,16 +1094,16 @@ class Plugin:
                 val_display = val[:64] if val != "N/A" else "N/A"
 
                 if idx in mismatch_set:
-                    status_icon = "🔴 FAIL"
+                    status_icon = "🔴 FAIL "   # 2(emoji)+1(space)+4(FAIL)+1(space)=8
                     attr = curses.color_pair(4) | A_BOLD
                 elif k in baseline:
-                    status_icon = "🟢 OK  "
+                    status_icon = "🟢 OK   "     # 2(emoji)+1(space)+2(OK)+3(spaces)=8
                     attr = curses.color_pair(2)
                 else:
-                    status_icon = "⚪ N/A "
+                    status_icon = "⚪ N/A  "      # 2(emoji)+1(space)+3(N/A)+2(spaces)=8
                     attr = A_DIM
 
-                lines.append((f"  │  {idx}  │ {val_display:<68s} │ {status_icon} │", attr))
+                lines.append((f"  │  {idx}  │ {val_display:<67s} │ {status_icon} │", attr))
 
             lines.append(("  └─────┴────────────────────────────────────────────────────────────────────┴──────────┘", A_DIM))
 

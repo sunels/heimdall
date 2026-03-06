@@ -1,3 +1,26 @@
+## 🔏 Verifiable Integrity & Distro-Agnostic Intelligence (v1.9.0)
+
+This major release introduces the **Verifiable Integrity Dashboard**, providing deep visibility into boot and runtime integrity using TPM2, PCR measurements, and systemd measured boot. It also makes Heimdall truly distro-agnostic with intelligent package manager detection and cross-distro support.
+
+### **✨ New Features (v1.9.0)**
+- **Verifiable Integrity Dashboard (`4`)**: A dedicated three-panel panel for hardware and runtime trust.
+  - **Tab 1: Boot Integrity**: TPM2 status, Secure Boot validation, Measured UKI detection, and live PCR table auditing.
+  - **Tab 2: IMA/Runtime**: Integrity Measurement Architecture tracking for critical system files.
+  - **Tab 3: Anomalies**: Real-time detection of baseline mismatches in system targets.
+- **TPM Hardware Discovery**: Detailed reporting of TPM version, manufacturer, firmware, and PCR hash banks (SHA1/SHA256).
+- **Distro-Agnostic Intelligence**: 
+  - Dynamic discovery of package managers (`apt`, `dnf`, `zypper`, `pacman`, `apk`).
+  - Distro-aware installation hints for required tools (e.g., `tpm2-tools`, `btop`, `smartctl`).
+  - Cross-distro package metadata retrieval and reverse file-to-package lookups.
+- **System Health & Security Summary**: TPM and ZFS status integrated directly into the main Dashboard View.
+- **UX Refinements**: 
+  - Fixed keyboard navigation: All global shortcuts are now accessible while inside plugin tabs.
+  - Case-insensitive panel navigation (Support for `B`, `I`, `A` keys).
+
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-41.png" alt="heimdall integrity dashboard" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-42.png" alt="heimdall tpm discovery" width="100%"/>
+<img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-43.png" alt="heimdall system health integrity" width="100%"/>
+
 ## 📋 Log Explorer & Unified Log Auditing (v1.8.0)
 
 This release introduces the **Log Explorer Modal**, a unified interface for system-wide log auditing that aggregates everything from Systemd Journals to raw `/var/log` files into a single, highly interactive workspace.

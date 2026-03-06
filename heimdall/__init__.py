@@ -754,6 +754,18 @@ def get_system_health():
                 health['shell'] = shell_name
         except:
             health['shell'] = "-"
+
+        # --- TPM / Storage Health ---
+        health['tpm_present'] = os.path.exists('/dev/tpm0') or os.path.exists('/dev/tpmrm0')
+        health['zfs_pools'] = []
+        if which('zpool'):
+            try:
+                z_res = subprocess.run(['zpool', 'list', '-H', '-o', 'name,health'], capture_output=True, text=True, timeout=1)
+                if z_res.returncode == 0:
+                    for line in z_res.stdout.splitlines():
+                        if line.strip():
+                            health['zfs_pools'].append(line.split())
+            except: pass
         
         # DE / WM
         try:
@@ -6046,6 +6058,22 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None, is_active=Fal
                 health_add(hy, f" 📊 Load   : {health.get('load_avg', '-')}")
                 hy += 1
                 health_add(hy, f" 🏠 Host   : {health.get('hostname', '-')}")
+                hy += 2
+
+                # ── Security & Integrity ──
+                health_add(hy, "🛡️ Integrity & Security", curses.A_BOLD | curses.A_UNDERLINE)
+                hy += 1
+                tpm = "PRESENT" if health.get('tpm_present') else "NOT FOUND"
+                t_color = curses.color_pair(CP_ACCENT) if health.get('tpm_present') else curses.A_DIM
+                health_add(hy, f" 🔐 TPM    : {tpm} (See tab 4)", t_color)
+                hy += 1
+                
+                zfs = health.get('zfs_pools', [])
+                if zfs:
+                    p_info = ", ".join([f"{p[0]}:{p[1]}" for p in zfs])
+                    health_add(hy, f" 🗄️ ZFS    : {p_info} (See tab 6)", curses.color_pair(CP_ACCENT))
+                else:
+                    health_add(hy, f" 🗄️ Storage: No ZFS detected", curses.A_DIM)
                 hy += 2
                 
                 # ── System Info ──
