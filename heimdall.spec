@@ -1,5 +1,5 @@
 Name:           heimdall
-Version:        1.8.0
+Version:        1.9.0
 Release:        1%{?dist}
 Summary:        Interactive terminal-based port and process viewer for Linux
 License:        MIT
