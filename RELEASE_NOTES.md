@@ -8,6 +8,12 @@ This minor release focuses on refining the **Verifiable Integrity** user experie
 - **Rock-Solid PCR Alignment**: Implemented a new "pixel-perfect" grid system for the PCR table that accounts for emoji visual width, ensuring consistent alignment on all terminal types.
 - **Enhanced Plugin API**: Added new UI bridge methods to the internal plugin system, allowing plugins to directly trigger Heimdall's native notification and modal components.
 
+### 🧩 **Optional Dependencies for Advanced Features**
+Heimdall gracefully falls back if these are missing:
+- **TPM2 support**: `pip install tpm2-pytss` and system package `tpm2-tools`.
+- **IMA appraisal**: `apt install ima-evm-utils` (or equivalent). Kernel must have `CONFIG_INTEGRITY=y`.
+- **Systemd Integration**: `dbus-python` for deeper unit tracking.
+
 ### **🔧 Bug Fixes**
 - **Plugin Overlay Issue**: Fixed a bug where plugin drawing windows would overwrite the global status notification area.
 - **PCR Table Drift**: Resolved an alignment issue in the Boot Integrity panel where long hash values would cause column headers to drift.

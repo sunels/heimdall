@@ -141,7 +141,7 @@ sudo mv heimdall_standalone /usr/local/bin/heimdall
 Download the `.deb` package from [Releases](https://github.com/sunels/heimdall/releases):
  
 ```bash
-sudo apt install ./heimdall_1.9.0-1_all.deb
+sudo apt install ./heimdall_1.10.0-1_all.deb
 ```
 
 ---
@@ -151,7 +151,7 @@ sudo apt install ./heimdall_1.9.0-1_all.deb
  
 ```bash
 # Download the .rpm from Releases
-sudo dnf install ./heimdall-1.9.0-1.noarch.rpm
+sudo dnf install ./heimdall-1.10.0-1.noarch.rpm
 ```
  
 ---
@@ -507,6 +507,23 @@ Heimdall now integrates **TPM presence** and **ZFS pool health** directly into t
     - stopping processes/services
     - firewall rule management
     - full `/proc` visibility
+
+### 🧩 Optional Dependencies for Advanced Features
+
+Heimdall gracefully falls back if these are missing (read-only or partial functionality):
+
+- **TPM2 support** (Verifiable Integrity Dashboard - Measured Boot & TPM Discovery):
+  - `tpm2-pytss` (Python library for TPM2 access): `pip install tpm2-pytss`
+  - System package: `tpm2-tools` (for tpm2_pcrread etc., but Heimdall uses direct sysfs where possible)
+
+- **IMA appraisal/enhanced monitoring** (IMA events + file integrity checks):
+  - `ima-evm-utils` (evmctl for extended attributes): Install via distro package manager (e.g., `apt install ima-evm-utils`)
+  - Kernel must have IMA enabled (CONFIG_INTEGRITY=y, most modern distros have it)
+
+- **Other**:
+  - `python3-dbus` or `dbus-python` for deeper systemd integration (optional)
+
+Note: Core features work without these. For full TPM/IMA power, install the above.
 
 
 ## 🛡️ Multi-layered Protection with Heimdall
