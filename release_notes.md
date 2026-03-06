@@ -1,3 +1,17 @@
+## 💁 Integrated Help System & User Guidance (v1.11.0)
+
+This release introduces a comprehensive **Integrated Help System**, making Heimdall more accessible to new users and providing deep insights into your system's configuration.
+
+### **✨ New Features (v1.11.0)**
+- **Unified Help Modal (`h`)**: A new scrollable help window that explains every hotkey, panel, and hidden feature. No more guessing what keys do!
+- **Plugin Environment Audit**: The Help system now actively reports which plugins are active and which were skipped due to missing system tools (e.g., `btop`, `zpool`), with hints on how to enable them.
+- **Log & Diagnostic Tracking**: Quick reference for all log locations (`debug.log`, `forensic vault`, `system journals`) directly within the TUI.
+- **Community & Feedback**: New easy-access contact information for feature requests (`serkan.sunel@gmail.com`) and project contributions.
+
+### **🔧 Bug Fixes**
+- **Help Bar UI**: Integrated the `[h] Help` shortcut into the global shortcuts bar for better visibility.
+- **Plugin Loading**: Improved tracking of skipped plugins during the startup sequence to provide better user feedback.
+
 ## 🌀 Interactive Integrity Feedback & Plugin UI Stability (v1.10.0)
 
 This minor release focuses on refining the **Verifiable Integrity** user experience with real-time audio-visual feedback and critical UI stability fixes for the plugin ecosystem.

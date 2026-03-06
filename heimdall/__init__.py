@@ -6359,6 +6359,7 @@ def draw_help_bar(stdscr, active_pane=0):
             (" ⚙️  [z Services]", curses.color_pair(CP_ACCENT)),
             (" ↕️  [+/- Resize]", curses.color_pair(CP_ACCENT)),
             (" 🧭 [↑↓ Select]", curses.color_pair(CP_ACCENT)),
+            (" 💁 [h Help]", curses.color_pair(CP_ACCENT)),
             (f"{vuln_label}", curses.color_pair(CP_WARN) if vuln_count > 0 else curses.color_pair(CP_ACCENT)),
             (" ❌ [q Quit]", curses.color_pair(CP_ACCENT)),
         ]
@@ -8165,10 +8166,12 @@ def draw_filter_modal(stdscr, filters):
 # 🔌 Plugin System
 # --------------------------------------------------
 LOADED_PLUGINS = []
+SKIPPED_PLUGINS = [] # Track plugins missing tools
 
 def load_plugins(heimdall_instance=None):
-    global LOADED_PLUGINS
+    global LOADED_PLUGINS, SKIPPED_PLUGINS
     LOADED_PLUGINS = []
+    SKIPPED_PLUGINS = []
     plugins_dir = os.path.join(os.path.dirname(__file__), "plugins")
     if not os.path.exists(plugins_dir):
         return
@@ -8192,6 +8195,7 @@ def load_plugins(heimdall_instance=None):
                                     cmd_path = local_bin
                         if not cmd_path:
                             debug_log(f"Plugin {filename} skipped: tool '{tc}' not installed.")
+                            SKIPPED_PLUGINS.append({"name": getattr(mod.Plugin, "name", filename[:-3]), "tool": tc})
                             continue
                             
                     LOADED_PLUGINS.append(plugin_instance)
@@ -9559,6 +9563,113 @@ def check_heimdall_update(stdscr):
     except Exception as e:
         debug_log(f"Update check failed: {e}", context="check_heimdall_update")
 
+def draw_help_details_modal(stdscr):
+    """
+    Shows a comprehensive help window explaining the application features,
+    keybindings, and plugin status.
+    """
+    h, w = stdscr.getmaxyx()
+    win_h = min(h - 4, 32)
+    win_w = min(w - 4, 88)
+    win = curses.newwin(win_h, win_w, (h - win_h)//2, (w - win_w)//2)
+    win.keypad(True)
+    try: win.bkgd(' ', curses.color_pair(CP_TEXT))
+    except: pass
+    win.box()
+    
+    title = " [ 🛡️ HEIMDALL USER GUIDE & HELP ] "
+    try: win.addstr(0, (win_w - len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+    except: pass
+    
+    content = [
+        ("🛡️ MULTI-GRADE SECURITY ARCHITECTURE", curses.color_pair(CP_ACCENT) | curses.A_BOLD),
+        ("Heimdall employs a three-tier defensive strategy to protect your Linux system:", None),
+        ("1. Daemon Mode: 24/7 background monitoring that detects suspicious outbound", None),
+        ("   traffic and suspends threats until manual approval via system notifications.", None),
+        ("2. TUI Level Protection: Active session monitoring that auto-suspends anomalies", None),
+        ("   during live use, providing an immediate 'Allow or Kill' intervention modal.", None),
+        ("3. Guardian Mode: The autonomous power-user layer for zero-latency mitigation,", None),
+        ("   performing instant tree-strikes and capturing deep forensic JSON snapshots.", None),
+        ("", None),
+        ("⌨️ ALL SYSTEM HOTKEYS (SCROLL FOR MORE ↓)", curses.color_pair(CP_ACCENT) | curses.A_BOLD),
+        (" [r]       Refresh           Force clear all caches and re-scan the system", None),
+        (" [i]       Inspect           Deep behavioral analysis and security audit", None),
+        (" [a]       Actions           Operational panel (Stop, Kill, Block IP, Renice)", None),
+        (" [o]       Outbound          Real-time external traffic & HTTP endpoint tracker", None),
+        (" [f]       Firewall          Interactive IPTABLES toggle for selected port", None),
+        (" [s]       Stop              Stop or terminate the selected process/service", None),
+        (" [z]       Services          Systemd unit manager (Start/Stop/Edit/Reload)", None),
+        (" [l/j]     Logs              Unified Log Explorer (Journal, Syslog, Dmesg)", None),
+        (" [g]       Guardian          Toggle Autonomous Threat Response (AUTO-KILL)", None),
+        (" [F]       Filter            Instant TUI filtering by Port, PID, or User", None),
+        (" [d]       System Dump       Generate a massive diagnostic report to a file", None),
+        (" [n/v]     Vulnerabilities   View pending NVD alerts and CVSS risk scores", None),
+        (" [p]       Settings          Configure update speeds and global preferences", None),
+        (" [e]       Env Vars          View the environment block of any running process", None),
+        (" [u]       Redirects         Trace standard streams (stdin/out/err) targets", None),
+        (" [c]       Colors            Cycle through modern UI themes (Glass, Matrix...)", None),
+        (" [t]       History Tail      (In User Pane) Tail the owner's .bash_history", None),
+        (" [Tab]     Switch Pane       Focus between Port List, Files, User, and Details", None),
+        (" [Enter]   Maximize          Toggle focus panel to full-screen view", None),
+        (" [+/-]     Resize            Change the height of the active process table", None),
+        (" [↑/↓]     Select            Navigate lists and scroll through data", None),
+        (" [q]       Quit              Save state and exit Heimdall safely", None),
+        ("", None),
+        ("PLUGIN ECOSYSTEM (Keyboard: 1-9 to Switch Tabs)", curses.color_pair(CP_ACCENT) | curses.A_BOLD),
+    ]
+
+    if LOADED_PLUGINS:
+        lp_str = ", ".join([getattr(p, "name", "Unnamed") for p in LOADED_PLUGINS])
+        content.append((f"  ✅ Active: {lp_str}", curses.color_pair(CP_TEXT)))
+    
+    if SKIPPED_PLUGINS:
+        skipped_names = [p['name'] for p in SKIPPED_PLUGINS]
+        missing_tools = list(set([p['tool'] for p in SKIPPED_PLUGINS]))
+        content.append((f"  ❌ Missing: {', '.join(missing_tools)} (Check package manager)", curses.color_pair(CP_WARN)))
+    else:
+        content.append(("  ✅ All standard plugins are loaded and operational.", curses.color_pair(CP_TEXT)))
+
+    content.extend([
+        ("", None),
+        ("LOG LOCATIONS & AUDIT", curses.color_pair(CP_ACCENT) | curses.A_BOLD),
+        (" - App Debug Log:    ~/.config/heimdall/debug.log", None),
+        (" - Forensic Vault:   ~/.config/heimdall/vault/ (Guardian hits)", None),
+        (" - System Journal:   Integrated view available via [l] shortcut", None),
+        ("", None),
+        ("FEEDBACK & CONTRIBUTIONS", curses.color_pair(CP_ACCENT) | curses.A_BOLD),
+        (" Suggestions or bug reports? Contact me at:", None),
+        ("   📧 serkan.sunel@gmail.com (Subject: 'heimdall request')", curses.color_pair(CP_HEADER)),
+        (" Contributions are highly welcome! Join the project on GitHub.", None),
+        ("", None),
+        (" [ESC/q/h] to close", curses.color_pair(CP_ACCENT) | curses.A_BOLD),
+    ])
+
+    scroll = 0
+    while True:
+        win.erase()
+        win.box()
+        try: win.addstr(0, (win_w - len(title))//2, title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
+        except: pass
+        
+        y = 1
+        for i in range(scroll, len(content)):
+            if y >= win_h - 1: break
+            line, attr = content[i]
+            try:
+                if attr: win.addstr(y, 2, str(line)[:win_w-4], attr)
+                else: win.addstr(y, 2, str(line)[:win_w-4])
+            except: pass
+            y += 1
+            
+        win.refresh()
+        k = win.getch()
+        if k in (27, ord('q'), ord('h'), ord('H')):
+            break
+        elif k == curses.KEY_UP:
+            if scroll > 0: scroll -= 1
+        elif k == curses.KEY_DOWN:
+            if scroll < len(content) - (win_h - 2): scroll += 1
+
 def main(stdscr, args=None):
     global TRIGGER_REFRESH, TRIGGER_LIST_ONLY, SCANNING_STATUS_EXP, SNAPSHOT_MODE
     global PENDING_IPC_ALERT, CURRENT_THEME_INDEX
@@ -10198,6 +10309,10 @@ def main(stdscr, args=None):
             else:
                 GUARDIAN_MODE_ACTIVE = False
                 show_message(stdscr, "🛡️ GUARDIAN MODE DISABLED", duration=2.0)
+                
+        elif k == ord('h') or k == ord('H'):
+            draw_help_details_modal(stdscr)
+            stdscr.touchwin(); curses.doupdate(); continue
             
         elif k == ord('c'):
             CURRENT_THEME_INDEX = (CURRENT_THEME_INDEX + 1) % len(THEMES)
