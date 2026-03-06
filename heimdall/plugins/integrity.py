@@ -843,22 +843,22 @@ class Plugin:
             self._scroll = 0
         elif key in (curses.KEY_END,):
             self._scroll = max(0, len(self._lines) - 1)
-        elif key == ord('r'):
+        elif key in (ord('r'), ord('R')):
             self._last_run = 0.0
             self._checker._check()
             self._refresh()
-        elif key == ord('v'):
+        elif key in (ord('v'), ord('V')):
             self._save_baseline()
             self._refresh()
-        elif key == ord('b'):
+        elif key in (ord('b'), ord('B')):
             self._panel = PANEL_BOOT
             self._scroll = 0
             self._refresh()
-        elif key == ord('i'):
+        elif key in (ord('i'), ord('I')):
             self._panel = PANEL_IMA
             self._scroll = 0
             self._refresh()
-        elif key == ord('a'):
+        elif key in (ord('a'), ord('A')):
             self._panel = PANEL_ANOM
             self._scroll = 0
             self._refresh()

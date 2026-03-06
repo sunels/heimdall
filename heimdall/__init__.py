@@ -9657,14 +9657,34 @@ def main(stdscr, args=None):
                     k = stdscr.getch()
                     if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='main')
                     stdscr.timeout(-1)
+                    
                     if k == -1:
                         continue
+                    
                     if k == 27:
                         plugin.stop()
                         active_tab = 0
                         stdscr.erase()
                         continue
+                        
                     plugin.on_key(k)
+                    
+                    # Global fallbacks while in plugin
+                    if 49 <= k <= 57: # 1-9
+                        idx = k - 49
+                        if idx < len(LOADED_PLUGINS) + 1 and idx != active_tab:
+                            plugin.stop()
+                            active_tab = idx
+                            if active_tab > 0: LOADED_PLUGINS[active_tab-1].start()
+                            stdscr.erase()
+                    elif k == ord('q'):
+                        plugin.stop()
+                        exit_animation(stdscr)
+                        try:
+                            if os.path.exists(IPC_SOCKET_PATH):
+                                os.remove(IPC_SOCKET_PATH)
+                        except: pass
+                        break
                     continue
                 else:
                     # Legacy embedded mode (kept for any future pyte-based plugins)
