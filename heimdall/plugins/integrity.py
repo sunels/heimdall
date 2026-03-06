@@ -108,6 +108,345 @@ def _vault_append(entry: dict):
 # TPM / Boot Integrity
 # ═══════════════════════════════════════════════════════════════════════════
 
+def detect_tpm_hardware():
+    """
+    Comprehensive TPM hardware discovery.
+    Returns dict with: present, version, device, manufacturer, firmware,
+    interface, description, hash_banks.
+    """
+    info = {
+        "present": False,
+        "version": "N/A",
+        "device": "N/A",
+        "manufacturer": "N/A",
+        "firmware": "N/A",
+        "interface": "N/A",
+        "description": "N/A",
+        "hash_banks": [],
+    }
+
+    # Check device nodes
+    for dev in ["/dev/tpmrm0", "/dev/tpm0"]:
+        if os.path.exists(dev):
+            info["present"] = True
+            info["device"] = dev
+            break
+
+    if not info["present"]:
+        # Also check sysfs for TPM class
+        if os.path.isdir("/sys/class/tpm/tpm0"):
+            info["present"] = True
+            info["device"] = "/sys/class/tpm/tpm0 (sysfs)"
+
+    if not info["present"]:
+        info["description"] = "No TPM hardware detected"
+        return info
+
+    # Read version from sysfs
+    tpm_sysfs = "/sys/class/tpm/tpm0"
+    for vfile in ["tpm_version_major", "device/description"]:
+        fp = os.path.join(tpm_sysfs, vfile)
+        if os.path.exists(fp):
+            try:
+                with open(fp) as f:
+                    val = f.read().strip()
+                if vfile == "tpm_version_major":
+                    info["version"] = f"TPM {val}.0" if val in ("1", "2") else f"TPM {val}"
+                else:
+                    info["description"] = val
+            except Exception:
+                pass
+
+    # Try /sys/class/tpm/tpm0/caps (older kernels)
+    caps_path = os.path.join(tpm_sysfs, "caps")
+    if os.path.exists(caps_path):
+        try:
+            with open(caps_path) as f:
+                for line in f:
+                    if "Manufacturer" in line:
+                        info["manufacturer"] = line.split(":", 1)[1].strip()
+                    elif "TCG version" in line:
+                        info["version"] = "TPM " + line.split(":", 1)[1].strip()
+                    elif "Firmware version" in line:
+                        info["firmware"] = line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+
+    # Try tpm2_getcap for detailed info (TPM 2.0)
+    try:
+        out = subprocess.check_output(
+            ["tpm2_getcap", "properties-fixed"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL
+        )
+        for line in out.splitlines():
+            line_s = line.strip()
+            if "TPM2_PT_MANUFACTURER" in line_s and "value" in line_s:
+                # Usually has raw: "..." and value: "INTC" etc.
+                if '"' in line_s:
+                    info["manufacturer"] = line_s.split('"')[1]
+            elif "TPM2_PT_FIRMWARE_VERSION" in line_s:
+                # next line typically has the value
+                pass
+            elif "TPM2_PT_FAMILY_INDICATOR" in line_s and '"' in line_s:
+                fam = line_s.split('"')[1]
+                if fam:
+                    info["version"] = f"TPM {fam}"
+        # Parse manufacturer from raw hex approach
+        if info["manufacturer"] == "N/A":
+            for line in out.splitlines():
+                if "TPM2_PT_MANUFACTURER" in line and "raw" in line:
+                    pass
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    # Try tpm2_getcap for firmware version
+    try:
+        out = subprocess.check_output(
+            ["tpm2_getcap", "properties-fixed"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL
+        )
+        lines_list = out.splitlines()
+        for i, line in enumerate(lines_list):
+            if "TPM2_PT_FIRMWARE_VERSION_1" in line:
+                if i + 1 < len(lines_list) and "value" in lines_list[i + 1]:
+                    info["firmware"] = lines_list[i + 1].split(":", 1)[1].strip()
+    except Exception:
+        pass
+
+    # Detect available hash banks via tpm2_getcap
+    try:
+        out = subprocess.check_output(
+            ["tpm2_getcap", "pcrs"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL
+        )
+        for line in out.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("selected-pcrs") or line_s.startswith("- "):
+                continue
+            if ":" in line_s and not line_s.startswith("-"):
+                bank = line_s.split(":")[0].strip()
+                if bank and bank not in info["hash_banks"]:
+                    info["hash_banks"].append(bank)
+    except Exception:
+        pass
+
+    # Detect interface type
+    for iface_path in ["/sys/class/tpm/tpm0/device/driver"]:
+        if os.path.islink(iface_path):
+            try:
+                driver = os.path.basename(os.readlink(iface_path))
+                if "crb" in driver.lower():
+                    info["interface"] = "CRB (Command Response Buffer)"
+                elif "tis" in driver.lower():
+                    info["interface"] = "TIS (TPM Interface Spec)"
+                elif "ftpm" in driver.lower() or "firmware" in driver.lower():
+                    info["interface"] = "fTPM (Firmware TPM)"
+                else:
+                    info["interface"] = driver
+            except Exception:
+                pass
+
+    # Fallback version detection via /sys/class/tpm/tpm0/tpm_version_major
+    if info["version"] == "N/A":
+        try:
+            with open(os.path.join(tpm_sysfs, "tpm_version_major")) as f:
+                major = f.read().strip()
+                info["version"] = f"TPM {major}.0"
+        except Exception:
+            pass
+
+    if info["version"] == "N/A" and info["present"]:
+        # If /dev/tpmrm0 exists, it's likely TPM 2.0
+        if os.path.exists("/dev/tpmrm0"):
+            info["version"] = "TPM 2.0 (inferred from /dev/tpmrm0)"
+
+    if info["description"] == "N/A" and info["present"]:
+        info["description"] = f"{info['version']} — {info['manufacturer']}"
+
+    return info
+
+
+def detect_secure_boot():
+    """
+    Detect whether UEFI Secure Boot is enabled.
+    Returns: 'enabled', 'disabled', 'unknown', or 'not_uefi'.
+    """
+    # Method 1: EFI variables
+    sb_var = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    if os.path.exists(sb_var):
+        try:
+            with open(sb_var, "rb") as f:
+                data = f.read()
+                # Last byte: 1 = enabled, 0 = disabled
+                if len(data) >= 5 and data[4] == 1:
+                    return "enabled"
+                return "disabled"
+        except PermissionError:
+            pass
+        except Exception:
+            pass
+
+    # Method 2: mokutil
+    try:
+        out = subprocess.check_output(
+            ["mokutil", "--sb-state"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL
+        )
+        if "enabled" in out.lower():
+            return "enabled"
+        elif "disabled" in out.lower():
+            return "disabled"
+    except Exception:
+        pass
+
+    # Method 3: Check if EFI exists at all
+    if not os.path.isdir("/sys/firmware/efi"):
+        return "not_uefi"
+
+    return "unknown"
+
+
+def detect_measured_uki():
+    """
+    Detect if system booted with a Unified Kernel Image (UKI)
+    in measured boot mode.
+    Returns dict: {uki_boot, uki_path, cmdline_measured, stub_info}.
+    """
+    result = {
+        "uki_boot": False,
+        "uki_path": None,
+        "cmdline_measured": False,
+        "stub_info": "N/A",
+    }
+
+    # Check for systemd-stub (UKI uses this as EFI stub)
+    try:
+        cmdline = ""
+        with open("/proc/cmdline", "r") as f:
+            cmdline = f.read().strip()
+
+        # systemd-stub embeds STUB_INFO in EFI variables
+        stub_var = "/sys/firmware/efi/efivars/StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+        if os.path.exists(stub_var):
+            try:
+                with open(stub_var, "rb") as f:
+                    data = f.read()
+                    # Skip 4-byte attributes header
+                    stub_str = data[4:].decode("utf-16-le", errors="ignore").rstrip("\x00")
+                    if stub_str:
+                        result["stub_info"] = stub_str
+                        result["uki_boot"] = True
+            except Exception:
+                pass
+
+        # Check if kernel was loaded from an EFI binary (UKI indicator)
+        loader_var = "/sys/firmware/efi/efivars/LoaderImageIdentifier-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+        if os.path.exists(loader_var):
+            try:
+                with open(loader_var, "rb") as f:
+                    data = f.read()
+                    path = data[4:].decode("utf-16-le", errors="ignore").rstrip("\x00")
+                    if path and (".efi" in path.lower() or "uki" in path.lower()):
+                        result["uki_path"] = path
+                        result["uki_boot"] = True
+            except Exception:
+                pass
+
+        # Check if cmdline is measured (PCR 12 usage is indicator)
+        if "systemd.stub" in cmdline or result["uki_boot"]:
+            result["cmdline_measured"] = True
+
+    except Exception:
+        pass
+
+    return result
+
+
+def detect_srk_setup():
+    """
+    Detect if TPM2 Storage Root Key (SRK) is provisioned.
+    Returns dict: {provisioned, persistent_handles, endorsement_cert}.
+    """
+    result = {
+        "provisioned": False,
+        "persistent_handles": [],
+        "endorsement_cert": False,
+    }
+
+    # Check for persistent handles (SRK is typically at 0x81000001)
+    try:
+        out = subprocess.check_output(
+            ["tpm2_getcap", "handles-persistent"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL
+        )
+        for line in out.splitlines():
+            line_s = line.strip()
+            if line_s.startswith("- 0x"):
+                handle = line_s.replace("- ", "").strip()
+                result["persistent_handles"].append(handle)
+                # SRK standard handle
+                if handle.lower() in ("0x81000001", "0x81000000"):
+                    result["provisioned"] = True
+    except Exception:
+        pass
+
+    # Check for Endorsement Certificate
+    ek_cert_path = "/sys/class/tpm/tpm0/device/ek_cert"
+    if os.path.exists(ek_cert_path):
+        result["endorsement_cert"] = True
+    else:
+        # Try via tpm2_getekcertificate or nv read
+        try:
+            subprocess.check_output(
+                ["tpm2_getekcertificate", "-o", "/dev/null"],
+                timeout=5, stderr=subprocess.DEVNULL
+            )
+            result["endorsement_cert"] = True
+        except Exception:
+            pass
+
+    return result
+
+
+def detect_kernel_lockdown():
+    """
+    Check kernel lockdown mode.
+    Returns: 'integrity', 'confidentiality', 'none', or 'unknown'.
+    """
+    lockdown_path = "/sys/kernel/security/lockdown"
+    if os.path.exists(lockdown_path):
+        try:
+            with open(lockdown_path) as f:
+                content = f.read().strip()
+                # Format: "none [integrity] confidentiality" (active mode in brackets)
+                if "[integrity]" in content:
+                    return "integrity"
+                elif "[confidentiality]" in content:
+                    return "confidentiality"
+                elif "[none]" in content:
+                    return "none"
+                return content
+        except Exception:
+            pass
+    return "unknown"
+
+
+def collect_hardware_info():
+    """
+    Collect all hardware/boot environment discovery information.
+    Returns a comprehensive dict.
+    """
+    return {
+        "tpm": detect_tpm_hardware(),
+        "secure_boot": detect_secure_boot(),
+        "measured_uki": detect_measured_uki(),
+        "srk": detect_srk_setup(),
+        "kernel_lockdown": detect_kernel_lockdown(),
+    }
+
+
 def _read_pcrs_pytss():
     """Read PCR 0-7 via tpm2-pytss library."""
     pcrs = {}
@@ -342,7 +681,10 @@ class IntegrityChecker(threading.Thread):
         self._stop_event.set()
 
     def _check(self):
-        result = {"ts": time.time(), "boot": {}, "ima": [], "anomalies": []}
+        result = {"ts": time.time(), "boot": {}, "ima": [], "anomalies": [], "hw": {}}
+
+        # Hardware discovery
+        result["hw"] = collect_hardware_info()
 
         # Boot integrity
         pcrs = read_pcrs()
@@ -524,6 +866,153 @@ class Plugin:
         lines.append(("  ╔══════════════════════════════════════════════════════════════════╗", A_BOLD))
         lines.append(("  ║              🔐 BOOT INTEGRITY — TPM2 PCR VERIFICATION          ║", A_BOLD))
         lines.append(("  ╚══════════════════════════════════════════════════════════════════╝", A_BOLD))
+        lines.append(("", A_NORM))
+
+        # ══════════════════════════════════════════════════════════════
+        # HARDWARE DISCOVERY SECTION
+        # ══════════════════════════════════════════════════════════════
+        hw = result.get("hw", {})
+        tpm = hw.get("tpm", {})
+        sb = hw.get("secure_boot", "unknown")
+        uki = hw.get("measured_uki", {})
+        srk = hw.get("srk", {})
+        lockdown = hw.get("kernel_lockdown", "unknown")
+
+        lines.append(("  ═══════════════════════════════════════════════════════════════════", A_BOLD))
+        lines.append(("  🔧 HARDWARE & BOOT ENVIRONMENT DISCOVERY", A_BOLD))
+        lines.append(("  ═══════════════════════════════════════════════════════════════════", A_BOLD))
+        lines.append(("", A_NORM))
+
+        # TPM Hardware
+        tpm_present = tpm.get("present", False)
+        if tpm_present:
+            icon = "🟢"
+            attr = curses.color_pair(2)
+        else:
+            icon = "🔴"
+            attr = curses.color_pair(4)
+
+        lines.append((f"  {icon} TPM Hardware:     {'DETECTED' if tpm_present else 'NOT FOUND'}", attr | A_BOLD))
+        if tpm_present:
+            lines.append((f"     Version:          {tpm.get('version', 'N/A')}", A_NORM))
+            lines.append((f"     Device Node:      {tpm.get('device', 'N/A')}", A_NORM))
+            lines.append((f"     Manufacturer:     {tpm.get('manufacturer', 'N/A')}", A_NORM))
+            lines.append((f"     Firmware:         {tpm.get('firmware', 'N/A')}", A_NORM))
+            lines.append((f"     Interface:        {tpm.get('interface', 'N/A')}", A_NORM))
+            banks = tpm.get("hash_banks", [])
+            if banks:
+                lines.append((f"     Hash Banks:       {', '.join(banks)}", A_NORM))
+            else:
+                lines.append((f"     Hash Banks:       (unable to query — install tpm2-tools)", A_DIM))
+        else:
+            lines.append(("     No TPM chip found. Check BIOS/UEFI to enable.", A_DIM))
+            lines.append(("     Virtual/Cloud machines may lack TPM — use vTPM.", A_DIM))
+
+        lines.append(("", A_NORM))
+
+        # Secure Boot
+        sb_icons = {"enabled": ("🟢", curses.color_pair(2)), "disabled": ("🟡", curses.color_pair(4)),
+                    "not_uefi": ("⚫", A_DIM), "unknown": ("⚪", A_DIM)}
+        sb_icon, sb_attr = sb_icons.get(sb, ("⚪", A_DIM))
+        sb_label = {"enabled": "ENABLED", "disabled": "DISABLED", "not_uefi": "N/A (Legacy BIOS)", "unknown": "UNKNOWN"}
+        lines.append((f"  {sb_icon} Secure Boot:     {sb_label.get(sb, sb.upper())}", sb_attr | A_BOLD))
+        if sb == "disabled":
+            lines.append(("     ⚠️  Secure Boot is off — boot chain is NOT cryptographically verified.", curses.color_pair(4)))
+        elif sb == "enabled":
+            lines.append(("     ✅ UEFI Secure Boot is active — only signed bootloaders/kernels loaded.", curses.color_pair(2)))
+
+        lines.append(("", A_NORM))
+
+        # Measured UKI
+        uki_boot = uki.get("uki_boot", False)
+        if uki_boot:
+            lines.append((f"  🟢 Measured UKI:    ACTIVE — Unified Kernel Image boot detected", curses.color_pair(2) | A_BOLD))
+            if uki.get("stub_info"):
+                lines.append((f"     Stub Info:        {uki['stub_info']}", A_NORM))
+            if uki.get("uki_path"):
+                lines.append((f"     UKI Path:         {uki['uki_path']}", A_NORM))
+            if uki.get("cmdline_measured"):
+                lines.append(("     Cmdline:          Measured into PCR 12 ✅", curses.color_pair(2)))
+        else:
+            lines.append((f"  ⚪ Measured UKI:    NOT DETECTED — traditional boot (vmlinuz + initrd)", A_DIM))
+            lines.append(("     UKI bundles kernel + initrd + cmdline into a single signed EFI binary.", A_DIM))
+            lines.append(("     To enable: use systemd-ukify or ukify to build a UKI.", A_DIM))
+
+        lines.append(("", A_NORM))
+
+        # SRK (Storage Root Key)
+        srk_provisioned = srk.get("provisioned", False)
+        persistent = srk.get("persistent_handles", [])
+        ek_cert = srk.get("endorsement_cert", False)
+
+        if srk_provisioned:
+            lines.append((f"  🟢 SRK Setup:       PROVISIONED — TPM Storage Root Key found", curses.color_pair(2) | A_BOLD))
+        elif persistent:
+            lines.append((f"  🟡 SRK Setup:       PARTIAL — {len(persistent)} persistent handle(s) but no standard SRK", curses.color_pair(4)))
+        else:
+            lines.append((f"  ⚪ SRK Setup:       NOT PROVISIONED", A_DIM))
+            if tpm_present:
+                lines.append(("     Run: tpm2_createprimary -C o -c srk.ctx && tpm2_evictcontrol -C o -c srk.ctx 0x81000001", A_DIM))
+
+        if persistent:
+            lines.append((f"     Persistent Handles: {', '.join(persistent)}", A_NORM))
+        lines.append((f"     Endorsement Cert:  {'Found' if ek_cert else 'Not Found'}", A_NORM if ek_cert else A_DIM))
+
+        lines.append(("", A_NORM))
+
+        # Kernel Lockdown
+        ld_icons = {"integrity": ("🟢", curses.color_pair(2)), "confidentiality": ("🟢", curses.color_pair(2)),
+                    "none": ("🟡", curses.color_pair(4)), "unknown": ("⚪", A_DIM)}
+        ld_icon, ld_attr = ld_icons.get(lockdown, ("⚪", A_DIM))
+        lines.append((f"  {ld_icon} Kernel Lockdown: {lockdown.upper()}", ld_attr | A_BOLD))
+        if lockdown == "none":
+            lines.append(("     ⚠️  Kernel is not locked down — root can modify running kernel.", curses.color_pair(4)))
+        elif lockdown in ("integrity", "confidentiality"):
+            lines.append((f"     ✅ Kernel locked at '{lockdown}' level — hardened against runtime tampering.", curses.color_pair(2)))
+
+        # ══════════════════════════════════════════════════════════════
+        # OVERALL READINESS SCORE
+        # ══════════════════════════════════════════════════════════════
+        lines.append(("", A_NORM))
+        checks = [
+            ("TPM Present", tpm_present),
+            ("TPM 2.0", "2.0" in tpm.get("version", "") or "2" == tpm.get("version", "").split(".")[0][-1:] if tpm_present else False),
+            ("Secure Boot", sb == "enabled"),
+            ("Measured UKI", uki_boot),
+            ("SRK Provisioned", srk_provisioned),
+            ("Kernel Lockdown", lockdown in ("integrity", "confidentiality")),
+        ]
+        passed = sum(1 for _, v in checks if v)
+        total = len(checks)
+        pct = int(100 * passed / total)
+
+        bar_len = 30
+        filled = int(bar_len * passed / total)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        if pct >= 80:
+            bar_attr = curses.color_pair(2) | A_BOLD
+        elif pct >= 50:
+            bar_attr = curses.color_pair(4)
+        else:
+            bar_attr = curses.color_pair(4) | A_BOLD
+
+        lines.append(("  ═══════════════════════════════════════════════════════════════════", A_BOLD))
+        lines.append((f"  📊 BOOT READINESS SCORE: {passed}/{total} ({pct}%)", A_BOLD))
+        lines.append((f"     [{bar}]", bar_attr))
+        lines.append(("  ═══════════════════════════════════════════════════════════════════", A_BOLD))
+        lines.append(("", A_NORM))
+
+        for name, ok in checks:
+            icon = "✅" if ok else "❌"
+            lines.append((f"     {icon} {name}", curses.color_pair(2) if ok else curses.color_pair(4)))
+
+        # ══════════════════════════════════════════════════════════════
+        # PCR VERIFICATION SECTION (original)
+        # ══════════════════════════════════════════════════════════════
+        lines.append(("", A_NORM))
+        lines.append(("  ═══════════════════════════════════════════════════════════════════", A_BOLD))
+        lines.append(("  📋 TPM2 PCR VALUES", A_BOLD))
+        lines.append(("  ═══════════════════════════════════════════════════════════════════", A_BOLD))
         lines.append(("", A_NORM))
 
         boot = result.get("boot", {})
