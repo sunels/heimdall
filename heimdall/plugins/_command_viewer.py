@@ -22,6 +22,7 @@ Plugin authors inherit this class and set class-level attributes:
 import subprocess
 import time
 import curses
+import shutil
 
 
 class CommandViewerPlugin:
@@ -34,6 +35,24 @@ class CommandViewerPlugin:
     refresh_interval = 60            # Seconds between auto-refresh
     mode             = "command_viewer"
     # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _install_hint(pkg_name):
+        """Return a distro-aware install command string for the given package."""
+        checks = [
+            ("apt",          f"sudo apt install {pkg_name}"),
+            ("dnf",          f"sudo dnf install {pkg_name}"),
+            ("yum",          f"sudo yum install {pkg_name}"),
+            ("zypper",       f"sudo zypper install {pkg_name}"),
+            ("pacman",       f"sudo pacman -S {pkg_name}"),
+            ("apk",          f"sudo apk add {pkg_name}"),
+            ("emerge",       f"sudo emerge {pkg_name}"),
+            ("xbps-install", f"sudo xbps-install -S {pkg_name}"),
+        ]
+        for cmd, hint in checks:
+            if shutil.which(cmd):
+                return hint
+        return f"Install '{pkg_name}' via your package manager"
 
     def __init__(self, heimdall_instance):
         self.h            = heimdall_instance

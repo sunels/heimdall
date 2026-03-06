@@ -104,6 +104,26 @@ def _vault_append(entry: dict):
         pass
 
 
+def _detect_pkg_manager():
+    """Detect the system package manager and return (name, install_cmd_prefix)."""
+    import shutil
+    # Order matters: check most specific first
+    checks = [
+        ("apt",     "sudo apt install"),
+        ("dnf",     "sudo dnf install"),
+        ("yum",     "sudo yum install"),
+        ("zypper",  "sudo zypper install"),
+        ("pacman",  "sudo pacman -S"),
+        ("apk",     "sudo apk add"),
+        ("emerge",  "sudo emerge"),
+        ("xbps-install", "sudo xbps-install -S"),
+    ]
+    for cmd, prefix in checks:
+        if shutil.which(cmd):
+            return cmd, prefix
+    return "unknown", "# install via your package manager:"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TPM / Boot Integrity
 # ═══════════════════════════════════════════════════════════════════════════
@@ -903,7 +923,8 @@ class Plugin:
             if banks:
                 lines.append((f"     Hash Banks:       {', '.join(banks)}", A_NORM))
             else:
-                lines.append((f"     Hash Banks:       (unable to query — install tpm2-tools)", A_DIM))
+                _, pkg_hint = _detect_pkg_manager()
+                lines.append((f"     Hash Banks:       (unable to query — {pkg_hint} tpm2-tools)", A_DIM))
         else:
             lines.append(("     No TPM chip found. Check BIOS/UEFI to enable.", A_DIM))
             lines.append(("     Virtual/Cloud machines may lack TPM — use vTPM.", A_DIM))
@@ -1037,7 +1058,13 @@ class Plugin:
             lines.append(("", A_NORM))
             lines.append(("  💡 Possible solutions:", A_DIM))
             lines.append(("     • Enable TPM2 in BIOS/UEFI settings", A_DIM))
-            lines.append(("     • Install tpm2-tools: sudo apt install tpm2-tools", A_DIM))
+            pkg_mgr, pkg_cmd = _detect_pkg_manager()
+            # Distro-aware package name mapping
+            tpm_pkg = {
+                "apt": "tpm2-tools", "dnf": "tpm2-tools", "yum": "tpm2-tools",
+                "zypper": "tpm2-0-tss", "pacman": "tpm2-tools", "apk": "tpm2-tools",
+            }.get(pkg_mgr, "tpm2-tools")
+            lines.append((f"     • Install tpm2-tools: {pkg_cmd} {tpm_pkg}", A_DIM))
             lines.append(("     • Install tpm2-pytss: pip install tpm2-pytss", A_DIM))
             lines.append(("     • Load TPM kernel module: sudo modprobe tpm_tis", A_DIM))
         else:

@@ -7,9 +7,13 @@ class Plugin(CommandViewerPlugin):
     tabTitle         = "Fail2Ban"
     tool_command     = "fail2ban-client"   # skip if fail2ban not installed
     refresh_interval = 60
-    shell_command    = (
-        "fail2ban-client status 2>/dev/null && echo '' && "
-        "echo '── Active Bans ──' && "
-        "fail2ban-client banned 2>/dev/null || "
-        "echo 'Fail2Ban not installed  →  sudo apt install fail2ban'"
-    )
+
+    def __init__(self, heimdall_instance):
+        hint = self._install_hint("fail2ban")
+        self.shell_command = (
+            "fail2ban-client status 2>/dev/null && echo '' && "
+            "echo '── Active Bans ──' && "
+            "fail2ban-client banned 2>/dev/null || "
+            f"echo 'Fail2Ban not installed  →  {hint}'"
+        )
+        super().__init__(heimdall_instance)

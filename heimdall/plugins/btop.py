@@ -42,7 +42,9 @@ class Plugin:
             env['TERM'] = os.environ.get('TERM', 'xterm-256color')
             subprocess.call([cmd_path], env=env)
         except FileNotFoundError:
-            print(f"\n  ⚠️  '{self.tool_command}' bulunamadı. Kurulum: sudo apt install btop")
+            from heimdall.plugins._command_viewer import CommandViewerPlugin
+            hint = CommandViewerPlugin._install_hint(self.tool_command)
+            print(f"\n  ⚠️  '{self.tool_command}' bulunamadı. Kurulum: {hint}")
             print("  Devam etmek için Enter'a basın...")
             input()
         except Exception as e:

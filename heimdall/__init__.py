@@ -2868,31 +2868,28 @@ def get_local_package_info(prog, pid=None):
     # Strategy 0: Try systemd description (fastest and most direct for services)
     info = _try_systemd(prog)
 
-    # Strategy 1: Direct dpkg query by process name
+    # Strategy 1: System-native package query by process name
     if not info:
-        info = _try_dpkg(prog)
+        # Try dpkg (Debian), rpm (RHEL/Fedora/SUSE), pacman (Arch), zypper (SUSE), apk (Alpine)
+        info = _try_dpkg(prog) or _try_rpm(prog) or _try_pacman(prog) or _try_zypper(prog) or _try_apk(prog)
 
     # Strategy 2: Find binary path and reverse-lookup package
     if not info:
         binary_path = _find_binary_path(prog, pid=pid)
         if binary_path:
-            pkg_name = _dpkg_search_file(binary_path)
+            pkg_name = _reverse_search_package(binary_path)
             if pkg_name:
-                info = _try_dpkg(pkg_name)
+                info = _try_dpkg(pkg_name) or _try_rpm(pkg_name) or _try_pacman(pkg_name) or _try_zypper(pkg_name) or _try_apk(pkg_name)
 
-    # Strategy 3: Try rpm (RHEL/Fedora/SUSE)
-    if not info:
-        info = _try_rpm(prog)
-
-    # Strategy 4: Try snap
+    # Strategy 3: Try snap
     if not info:
         info = _try_snap(prog)
 
-    # Strategy 5: whatis (man page one-liner) as last resort
+    # Strategy 4: whatis (man page one-liner)
     if not info:
         info = _try_whatis(prog)
 
-    # Strategy 6: .desktop file search
+    # Strategy 5: .desktop file search
     if not info:
         info = _try_desktop_file(prog)
 
@@ -2950,13 +2947,38 @@ def _find_binary_path(prog, pid=None):
         pass
     return None
 
-def _dpkg_search_file(filepath):
-    """Reverse-lookup: which package owns this file?"""
+def _reverse_search_package(filepath):
+    """Reverse-lookup: which package owns this file? (distro-agnostic)"""
     try:
-        res = subprocess.run(["dpkg", "-S", filepath], capture_output=True, text=True, timeout=1)
-        if res.returncode == 0 and res.stdout.strip():
-            # Output format: "package-name: /path/to/file"
-            return res.stdout.strip().split(":")[0].strip()
+        # Debian/Ubuntu
+        if shutil.which("dpkg"):
+            res = subprocess.run(["dpkg", "-S", filepath], capture_output=True, text=True, timeout=1)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip().split(":")[0].strip()
+        
+        # RHEL/Fedora/SUSE
+        if shutil.which("rpm"):
+            res = subprocess.run(["rpm", "-qf", filepath], capture_output=True, text=True, timeout=1)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip().splitlines()[0].strip()
+        
+        # Arch Linux
+        if shutil.which("pacman"):
+            res = subprocess.run(["pacman", "-Qo", filepath], capture_output=True, text=True, timeout=1)
+            if res.returncode == 0 and res.stdout.strip():
+                # Format: "/path/is owned by package-name version"
+                parts = res.stdout.strip().split(" is owned by ")
+                if len(parts) > 1:
+                    return parts[1].split()[0]
+                    
+        # Alpine Linux
+        if shutil.which("apk"):
+            res = subprocess.run(["apk", "info", "-W", filepath], capture_output=True, text=True, timeout=1)
+            if res.returncode == 0 and res.stdout.strip():
+                # Format: "/path/is owned by package-name"
+                parts = res.stdout.strip().split(" is owned by ")
+                if len(parts) > 1:
+                    return parts[1].strip()
     except Exception:
         pass
     return None
@@ -3073,11 +3095,61 @@ def _try_whatis(prog):
         pass
     return None
 
+def _try_pacman(pkg_name):
+    """Query pacman for package metadata (Arch Linux)."""
+    try:
+        if not shutil.which("pacman"): return None
+        res = subprocess.run(["pacman", "-Qi", pkg_name], capture_output=True, text=True, timeout=1.5)
+        if res.returncode != 0:
+            return None
+        info = {"package": pkg_name}
+        for line in res.stdout.splitlines():
+            if line.startswith("Name"):
+                info["name"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Version"):
+                info["version"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Description"):
+                info["description"] = line.split(":", 1)[1].strip()
+            elif line.startswith("URL"):
+                info["homepage"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Installed Size"):
+                info["installed_size"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Packager"):
+                info["maintainer"] = line.split(":", 1)[1].strip()
+        if info.get("description"):
+            return info
+    except Exception: pass
+    return None
+
+def _try_zypper(pkg_name):
+    """Query zypper/rpm for openSUSE metadata."""
+    # Zypper is a wrapper around rpm, usually rpm -qi is enough but we check specifically
+    return _try_rpm(pkg_name)
+
+def _try_apk(pkg_name):
+    """Query apk for package metadata (Alpine)."""
+    try:
+        if not shutil.which("apk"): return None
+        res = subprocess.run(["apk", "info", "-d", "-v", pkg_name], capture_output=True, text=True, timeout=1.5)
+        if res.returncode != 0: return None
+        # apk info output is a bit different, often line-based
+        lines = res.stdout.splitlines()
+        info = {"package": pkg_name, "name": pkg_name.title()}
+        if len(lines) > 1:
+            info["description"] = lines[1].strip()
+        # Get more info
+        res = subprocess.run(["apk", "info", "-s", pkg_name], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0:
+            info["installed_size"] = res.stdout.splitlines()[1].strip() if len(res.stdout.splitlines()) > 1 else ""
+        return info
+    except Exception: pass
+    return None
+
 def _try_desktop_file(prog):
     """Search .desktop files for application metadata."""
     try:
         desktop_dirs = ["/usr/share/applications", "/var/lib/snapd/desktop/applications",
-                        os.path.expanduser("~/.local/share/applications")]
+                        os.path.expanduser("~/.local/share/applications"), "/usr/local/share/applications"]
         for d in desktop_dirs:
             if not os.path.isdir(d):
                 continue
