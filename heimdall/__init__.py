@@ -8200,7 +8200,20 @@ def load_plugins(heimdall_instance=None):
 
 class HeimdallDummyInstance:
     # Small dummy instance if plugins need simple callbacks, could be enriched later.
-    pass
+    def __init__(self, stdscr=None):
+        self.stdscr = stdscr
+
+    def show_message(self, *args, **kwargs):
+        msg_args = list(args)
+        if msg_args and msg_args[0] is None:
+            msg_args[0] = self.stdscr
+        show_message(*msg_args, **kwargs)
+
+    def show_modal_message(self, *args, **kwargs):
+        msg_args = list(args)
+        if msg_args and msg_args[0] is None:
+            msg_args[0] = self.stdscr
+        show_modal_message(*msg_args, **kwargs)
 
 def draw_outbound_modal(stdscr):
     global OUTBOUND_DATA, OUTBOUND_LOCK
@@ -9559,7 +9572,7 @@ def main(stdscr, args=None):
     apply_current_theme(stdscr)
 
     # Load Plugins
-    load_plugins(HeimdallDummyInstance())
+    load_plugins(HeimdallDummyInstance(stdscr))
     active_tab = 0 # 0 = Heimdall, 1+ = Plugins
     
     # Check for update on startup
@@ -9680,7 +9693,11 @@ def main(stdscr, args=None):
                     # Read-only scrollable command output inside Heimdall
                     plugin_win = stdscr.derwin(h - 1, w, 1, 0)
                     plugin.render(plugin_win)
+                    
+                    # Ensure status bar is drawn while in plugin
+                    draw_status_indicator(stdscr)
                     curses.doupdate()
+                    
                     stdscr.timeout(500)  # allow periodic auto-refresh
                     k = stdscr.getch()
                     if k not in (-1, getattr(curses, 'ERR', -1), curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME, curses.KEY_END): debug_log(f'User Action - Key pressed: {k} (chr: {chr(k) if isinstance(k, int) and 32<=k<127 else ""})', context='main')
@@ -9710,7 +9727,7 @@ def main(stdscr, args=None):
                         exit_animation(stdscr)
                         try:
                             if os.path.exists(IPC_SOCKET_PATH):
-                                os.remove(IPC_SOCKET_PATH)
+                                 os.remove(IPC_SOCKET_PATH)
                         except: pass
                         break
                     continue

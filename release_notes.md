@@ -1,3 +1,18 @@
+## 🌀 Interactive Integrity Feedback & Plugin UI Stability (v1.10.0)
+
+This minor release focuses on refining the **Verifiable Integrity** user experience with real-time audio-visual feedback and critical UI stability fixes for the plugin ecosystem.
+
+### **✨ New Features (v1.10.0)**
+- **Real-time Action Feedback**: Pressing keys like `v` (Baseline) or `r` (Remeasure) now triggers instant status bar notifications and high-visibility modal confirmation windows.
+- **Improved UI Stability**: Plugin windows are now correctly dimensioned to leave space for the global status bar, preventing UI overlaps and ensuring active scan notifications remain visible.
+- **Rock-Solid PCR Alignment**: Implemented a new "pixel-perfect" grid system for the PCR table that accounts for emoji visual width, ensuring consistent alignment on all terminal types.
+- **Enhanced Plugin API**: Added new UI bridge methods to the internal plugin system, allowing plugins to directly trigger Heimdall's native notification and modal components.
+
+### **🔧 Bug Fixes**
+- **Plugin Overlay Issue**: Fixed a bug where plugin drawing windows would overwrite the global status notification area.
+- **PCR Table Drift**: Resolved an alignment issue in the Boot Integrity panel where long hash values would cause column headers to drift.
+- **AttributeError**: Fixed a crash in the `show_modal_message` bridge when called from a plugin context with a `None` screen reference.
+
 ## 🔏 Verifiable Integrity & Distro-Agnostic Intelligence (v1.9.0)
 
 This major release introduces the **Verifiable Integrity Dashboard**, providing deep visibility into boot and runtime integrity using TPM2, PCR measurements, and systemd measured boot. It also makes Heimdall truly distro-agnostic with intelligent package manager detection and cross-distro support.

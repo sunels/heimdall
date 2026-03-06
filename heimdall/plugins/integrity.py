@@ -844,23 +844,30 @@ class Plugin:
         elif key in (curses.KEY_END,):
             self._scroll = max(0, len(self._lines) - 1)
         elif key in (ord('r'), ord('R')):
+            # Feedback
+            self.h.show_message(None, "🔄 Re-measuring integrity state...")
             self._last_run = 0.0
             self._checker._check()
             self._refresh()
         elif key in (ord('v'), ord('V')):
+            # User feedback
+            self.h.show_modal_message(None, "⏳ Saving PCR & IMA Baselines...", duration=0.8)
             self._save_baseline()
             self._refresh()
         elif key in (ord('b'), ord('B')):
             self._panel = PANEL_BOOT
             self._scroll = 0
+            self.h.show_message(None, "📂 Switching to Boot Integrity panel")
             self._refresh()
         elif key in (ord('i'), ord('I')):
             self._panel = PANEL_IMA
             self._scroll = 0
+            self.h.show_message(None, "📂 Switching to IMA / Runtime panel")
             self._refresh()
         elif key in (ord('a'), ord('A')):
             self._panel = PANEL_ANOM
             self._scroll = 0
+            self.h.show_message(None, "🚨 Switching to Anomalies panel")
             self._refresh()
 
     # ── Internal ──────────────────────────────────────────────────────────
@@ -1094,16 +1101,25 @@ class Plugin:
                 val_display = val[:64] if val != "N/A" else "N/A"
 
                 if idx in mismatch_set:
-                    status_icon = "🔴 FAIL "   # 2(emoji)+1(space)+4(FAIL)+1(space)=8
+                    icon, label = "🔴", "FAIL"
                     attr = curses.color_pair(4) | A_BOLD
                 elif k in baseline:
-                    status_icon = "🟢 OK   "     # 2(emoji)+1(space)+2(OK)+3(spaces)=8
+                    icon, label = "🟢", "OK"
                     attr = curses.color_pair(2)
                 else:
-                    status_icon = "⚪ N/A  "      # 2(emoji)+1(space)+3(N/A)+2(spaces)=8
+                    icon, label = "⚪", "N/A"
                     attr = A_DIM
 
-                lines.append((f"  │  {idx}  │ {val_display:<67s} │ {status_icon} │", attr))
+                # Rock-solid formatting matching header borders (5, 68, 10 dashes)
+                # Visual width calculation: emoji is count as 2, others as 1
+                pcr_col_vis = f" {idx} ".center(5)
+                # SHA col: 1 space + 64 hash + 3 spaces = 68
+                val_col_vis = f" {val_display:<64}   " 
+                # Status col: Space(1) + icon(2) + space(1) + label(2-4) + padding = 10
+                # label_vis = label.ljust(6) # for OK: "OK    " (6), for FAIL: "FAIL  " (6)
+                status_col_vis = f" {icon} {label:<6}" 
+                
+                lines.append((f"  │{pcr_col_vis}│{val_col_vis}│{status_col_vis}│", attr))
 
             lines.append(("  └─────┴────────────────────────────────────────────────────────────────────┴──────────┘", A_DIM))
 
@@ -1309,6 +1325,11 @@ class Plugin:
         pcrs = read_pcrs()
         if "_error" not in pcrs:
             save_pcr_baseline(pcrs)
+            self.h.show_message(None, "✅ Integrity Baseline Saved (PCR + Unit Hashes)")
+            self.h.show_modal_message(None, "✅ Baseline successfully saved to vault!", duration=1.2)
+        else:
+            self.h.show_message(None, f"❌ Baseline Failed: {pcrs['_error']}")
+            self.h.show_modal_message(None, f"❌ FAILED: {pcrs['_error']}", duration=2.5)
 
         unit_hashes = hash_systemd_units()
         if unit_hashes:
