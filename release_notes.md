@@ -1,3 +1,17 @@
+## 🛡️ Expanded Security Guidance & Full Hotkey Ledger (v1.11.1)
+
+This patch release significantly expands the **Integrated Help System** with deep architectural insights and a full ledger of all system hotkeys for better user sovereignty.
+
+### **✨ New Features (v1.11.1)**
+- **Security Architecture Blueprint**: The `[h]` Help modal now details Heimdall's 3-tier defense strategy: **Daemon Mode** (Background), **TUI Level Protection** (Active), and **Guardian Mode** (Autonomous).
+- **Full Hotkey Ledger**: Comprehensive breakdown of every single key available in the TUI, ensuring no feature is hidden.
+- **Scrollable Help Interface**: The Help window now supports full vertical scrolling to accommodate the expanded knowledge base.
+- **Improved Feedback**: Action confirmations and background scan notifications are now more tightly integrated into the global status bar.
+
+### **🔧 Bug Fixes**
+- **Help Content Accuracy**: Corrected several shortcut descriptions in the Help UI to align with current keyboard mappings.
+- **Release Documentation**: Updated internal release notes to include the "Security Architecture" section.
+
 ## 💁 Integrated Help System & User Guidance (v1.11.0)
 
 This release introduces a comprehensive **Integrated Help System**, making Heimdall more accessible to new users and providing deep insights into your system's configuration.
