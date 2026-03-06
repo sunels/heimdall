@@ -374,6 +374,19 @@ That's it — Heimdall will discover and load it automatically on next launch.
 
 ---
 
+### 🔏 Verifiable Integrity Dashboard — Boot & Runtime Cryptographic Checks (Plugin Tab)
+
+Inspired by **Amutable's** (Lennart Poettering & Christian Brauner) verifiable integrity vision.
+Heimdall ships a built-in **Integrity Dashboard** plugin that performs cryptographic verification at three levels:
+
+- **Boot Integrity** — Reads TPM2 PCR 0-7 (Secure Boot, kernel, bootloader) and compares against a stored baseline. Detects measured boot chain tampering.
+- **Runtime Integrity** — Parses Linux IMA (`/sys/kernel/security/ima/ascii_runtime_measurements`) for critical paths (`/bin`, `/usr/bin`, `/etc`, systemd units). Checks `security.ima` extended attributes for appraisal status.
+- **Anomaly Detection** — Hashes all systemd `.service`/`.timer`/`.socket` unit files and alerts on any modification, addition, or deletion since baseline. Integrates with Sentinel risk scoring and Guardian Mode auto-mitigation.
+
+Optional dependencies: `tpm2-pytss` (TPM), `tpm2-tools` (CLI fallback), `ima-evm-utils` (appraisal). All checks degrade gracefully without them.
+
+---
+
 ### 📩 Vulnerability Scanner — Integrated NVD Security Feed (n)
 <img src="https://raw.githubusercontent.com/sunels/heimdall/main/screenshots/pp-22.png" alt="heimdall vulnerability list" width="100%"/>
 
