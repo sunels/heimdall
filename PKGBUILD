@@ -1,6 +1,6 @@
 # Maintainer: Serkan Sunel <serkan.sunel@gmail.com>
 pkgname=heimdall
-pkgver=1.11.1
+pkgver=1.11.2
 pkgrel=1
 pkgdesc="Interactive curses-based port and process viewer"
 arch=('any')

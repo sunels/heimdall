@@ -1,3 +1,16 @@
+## 🎨 Visual UI Refinements & Layout Optimization (v1.11.2)
+
+This maintenance release focuses on "pixel-perfect" UI adjustments to ensure a flawless visual experience across different terminal sizes.
+
+### **✨ Visual Improvements (v1.11.2)**
+- **Sidebar Layout Optimization**: Re-architected the vertical spacing in the help sidebar. The **Sentinel Legend** now fits perfectly without overflowing or touching the borders, even on smaller terminal windows.
+- **ZFS Asset Alignment**: Fixed a minor icon alignment issue in the Dashboard's ZFS/Storage health status section for better visual symmetry.
+- **Improved Sidebar Density**: Removed unnecessary gaps at the top of the shortcuts list, providing 3-4 lines of extra space for diagnostic data.
+
+### **🔧 Bug Fixes**
+- **Indentation Recovery**: Fixed a potential indentation error in the UI rendering loop that could affect sidebar stability.
+- **Border Collision**: Implemented strict boundary checks for the Sentinel Legend to prevent icon clipping at the bottom of the screen.
+
 ## 🛡️ Expanded Security Guidance & Full Hotkey Ledger (v1.11.1)
 
 This patch release significantly expands the **Integrated Help System** with deep architectural insights and a full ledger of all system hotkeys for better user sovereignty.

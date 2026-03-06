@@ -1,3 +1,9 @@
+heimdall (1.11.2-1) unstable; urgency=medium
+
+  * Release v1.11.2
+
+ -- Serkan Sunel <serkan.sunel@gmail.com>  Sat, 07 Mar 2026 00:17:39 +0200
+
 heimdall (1.11.1-1) unstable; urgency=medium
 
   * Release v1.11.1

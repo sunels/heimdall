@@ -6073,7 +6073,7 @@ def draw_detail(win, wrapped_icon_lines, scroll=0, conn_info=None, is_active=Fal
                     p_info = ", ".join([f"{p[0]}:{p[1]}" for p in zfs])
                     health_add(hy, f" 🗄️ ZFS    : {p_info} (See tab 6)", curses.color_pair(CP_ACCENT))
                 else:
-                    health_add(hy, f" 🗄️ Storage: No ZFS detected", curses.A_DIM)
+                    health_add(hy, f" 🗄️  Storage: No ZFS detected", curses.A_DIM)
                 hy += 2
                 
                 # ── System Info ──
@@ -6366,9 +6366,9 @@ def draw_help_bar(stdscr, active_pane=0):
         if SNAPSHOT_MODE:
             shortcuts.insert(0, (snap, curses.color_pair(CP_ACCENT)))
 
-        y = 2
+        y = 1
         for text, attr in shortcuts:
-            if y >= h - 1: break
+            if y >= h - 2: break
             if text == "": 
                 y += 1
                 continue
@@ -6380,10 +6380,9 @@ def draw_help_bar(stdscr, active_pane=0):
 
         # 🛡️ SENTINEL ICON LEGEND (Bottom Section)
         # Check if we have enough space for the legend
-        if h - y >= 8:
+        if h - y >= 11:
             try:
-                # Separator
-                y += 1
+                # Separator + Legend Title
                 bar_win.attron(curses.color_pair(CP_BORDER))
                 bar_win.hline(y, 1, curses.ACS_HLINE, bar_w - 2)
                 bar_win.attroff(curses.color_pair(CP_BORDER))
@@ -6392,7 +6391,7 @@ def draw_help_bar(stdscr, active_pane=0):
                 # Legend Title
                 legend_title = " SENTINEL LEGEND "
                 bar_win.addstr(y, max(1, (bar_w - len(legend_title)) // 2), legend_title, curses.color_pair(CP_HEADER) | curses.A_BOLD)
-                y += 2  # Leaving a blank line here
+                y += 1
                 
                 legend_items = [
                     (" 🚩 Risk (DB)", CP_WARN),
@@ -6407,7 +6406,7 @@ def draw_help_bar(stdscr, active_pane=0):
                 ]
                 
                 for item_text, pair_id in legend_items:
-                    if y >= h - 1: break
+                    if y >= h - 2: break # Stay away from border
                     bar_win.addstr(y, 1, item_text[:bar_w-2], curses.color_pair(pair_id))
                     y += 1
             except: pass
